@@ -1,0 +1,10 @@
+data: {"id":"chatcmpl-ar001","object":"chat.completion.chunk","created":1782681700,"model":"/Users/operator/.lmstudio/models/unsloth/diffusiongemma-26B-A4B-it-GGUF","choices":[{"index":0,"delta":{"role":"assistant"}}]}
+
+data: {"id":"chatcmpl-ar001","object":"chat.completion.chunk","created":1782681700,"model":"/Users/operator/.lmstudio/models/unsloth/diffusiongemma-26B-A4B-it-GGUF","choices":[{"index":0,"delta":{"content":"The answer"}}]}
+
+data: {"id":"chatcmpl-ar001","object":"chat.completion.chunk","created":1782681700,"model":"/Users/operator/.lmstudio/models/unsloth/diffusiongemma-26B-A4B-it-GGUF","choices":[{"index":0,"delta":{"content":" is 42."}}]}
+
+data: {"id":"chatcmpl-ar001","object":"chat.completion.chunk","created":1782681700,"model":"/Users/operator/.lmstudio/models/unsloth/diffusiongemma-26B-A4B-it-GGUF","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+
