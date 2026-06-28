@@ -6,8 +6,9 @@ require_relative "schemas"
 
 module LocalInferenceProxy
   class AntNormalizer
-    def initialize(advertised_model:)
-      @advertised_model = advertised_model
+    def initialize(advertised_model:, supports_reasoning: true)
+      @advertised_model   = advertised_model
+      @supports_reasoning = supports_reasoning
     end
 
     # Normalize a non-stream Anthropic message hash.
@@ -74,7 +75,9 @@ module LocalInferenceProxy
       blocks.flat_map do |block|
         next [block] unless block["type"] == "text"
 
-        text   = block["text"].to_s
+        text = block["text"].to_s
+        next [{ "type" => "text", "text" => text }] unless @supports_reasoning
+
         parser = ReasoningParser.new
         r      = parser.push(text)
         r2     = parser.flush
@@ -90,6 +93,8 @@ module LocalInferenceProxy
     end
 
     def restructure_text_block(text)
+      return passthrough_text_events(text) unless @supports_reasoning
+
       parser = ReasoningParser.new
       r      = parser.push(text)
       r2     = parser.flush
@@ -136,6 +141,18 @@ module LocalInferenceProxy
       end
 
       events
+    end
+
+    def passthrough_text_events(text)
+      return [] if text.empty?
+
+      [
+        { event: "content_block_start", data: { "type" => "content_block_start", "index" => 0,
+"content_block" => { "type" => "text", "text" => "" }, }, },
+        { event: "content_block_delta", data: { "type" => "content_block_delta", "index" => 0,
+"delta" => { "type" => "text_delta", "text" => text }, }, },
+        { event: "content_block_stop",  data: { "type" => "content_block_stop", "index" => 0 } },
+      ]
     end
 
     def parse_sse_events(text)
