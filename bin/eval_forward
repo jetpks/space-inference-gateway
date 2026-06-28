@@ -1,0 +1,95 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Quick eval: starts two local echo servers, runs the proxy between them,
+# sends data through the chain, verifies round-trip.
+#
+# Usage: ruby bin/eval_forward [listen_port]
+#   Default listen port: 9997
+
+require "socket"
+require "timeout"
+require "open3"
+
+LISTEN_PORT = (ARGV[0]&.to_i) || 9997
+TARGET_PORT = LISTEN_PORT + 1
+PROXY_PORT  = LISTEN_PORT - 1
+
+$stdout.sync = true
+
+# --- echo server: accepts, reads lines, echoes them back ---
+def start_echo_server(port)
+  server = TCPServer.new("127.0.0.1", port)
+  Thread.new do
+    loop do
+      c = server.accept
+      Thread.new(c) do |s|
+        while line = s.gets
+          s.puts "ECHO: #{line.chomp}"
+        end
+      rescue EOFError, ConnectionResetError
+      ensure
+        s.close rescue nil
+      end
+    end
+  end
+  server
+end
+
+# --- send data through proxy, collect response ---
+def test_forward(port, payload, timeout_sec: 3)
+  sock = TCPSocket.new("127.0.0.1", port)
+  sock.write(payload + "\n")
+  sock.close_write
+  begin
+    resp = Timeout.timeout(timeout_sec) { sock.gets }
+    resp&.chomp
+  rescue Timeout::Error
+    "TIMEOUT"
+  ensure
+    sock.close rescue nil
+  end
+end
+
+# --- main ---
+echo_server = start_echo_server(TARGET_PORT)
+sleep 0.3 # let echo server bind
+
+puts "Setup:"
+puts "  Echo server:   127.0.0.1:#{TARGET_PORT}"
+puts "  Proxy listens: 127.0.0.1:#{PROXY_PORT} -> #{TARGET_PORT}"
+puts ""
+
+# Start the proxy as a subprocess
+stdin, stdout, stderr, wait_thr = Open3.popen3(
+  { "TARGET_HOST" => "127.0.0.1" },
+  "local-inference-proxy", PROXY_PORT.to_s, TARGET_PORT.to_s
+)
+
+sleep 0.5 # let proxy bind
+
+results = []
+tests = ["hello", "world"] + (1..5).map { |i| "line #{i}" }
+
+tests.each do |payload|
+  resp = test_forward(PROXY_PORT, payload)
+  results << [payload, resp]
+end
+
+# Kill the proxy
+Process.kill("INT", wait_thr.pid) rescue nil
+wait_thr.join
+
+puts ""
+puts "Results:"
+all_pass = true
+results.each do |(payload, resp)|
+  expected = "ECHO: #{payload}"
+  status_str = resp == expected ? "PASS" : "FAIL"
+  all_pass &&= (status_str == "PASS")
+  puts "  #{status_str}: sent=#{payload.inspect} got=#{resp.inspect}"
+end
+
+puts ""
+puts all_pass ? "ALL PASS" : "SOME FAILED"
+echo_server.close

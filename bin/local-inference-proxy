@@ -1,0 +1,14 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require_relative "../lib/local_inference_proxy"
+
+listen_port  = (ARGV[0] || 3001).to_i
+target_host  = ENV.fetch("TARGET_HOST", "10.10.4.10")
+target_port  = (ARGV[1] || 3001).to_i
+
+LocalInferenceProxy::Forwarder.new(
+  listen_port:  listen_port,
+  target_host:  target_host,
+  target_port:  target_port,
+).run
