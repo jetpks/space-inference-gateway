@@ -75,5 +75,54 @@ module LocalInferenceProxy
     end
 
     DIFFUSION_BANNED_KEYS = %w[type block step total text].freeze
+
+    # GET /v1/models response
+    MODELS_LIST = Dry::Schema.JSON do
+      config.validate_keys = true
+
+      required(:object).value(eql?: "list")
+      required(:data).array(:hash) do
+        required(:id).filled(:string)
+        required(:object).filled(:string)
+        required(:created).filled(:integer)
+        required(:owned_by).filled(:string)
+      end
+    end
+
+    # GET /v1/load-progress response (proxied from upstream)
+    LOAD_PROGRESS = Dry::Schema.JSON do
+      config.validate_keys = true
+
+      required(:phase).maybe(:string)
+      required(:bytes_loaded).filled(:integer)
+      required(:bytes_total).filled(:integer)
+      required(:fraction).filled(:float)
+    end
+
+    # POST /v1/load response (synthesized after readiness poll)
+    LOAD_RESPONSE = Dry::Schema.JSON do
+      config.validate_keys = true
+
+      required(:status).filled(:string)
+      required(:model_path).filled(:string)
+    end
+
+    # POST /v1/unload response (synthesized)
+    UNLOAD_RESPONSE = Dry::Schema.JSON do
+      config.validate_keys = true
+
+      required(:status).filled(:string)
+      required(:model_path).filled(:string)
+    end
+
+    # Error body for 4xx / 5xx control-plane responses
+    CP_ERROR = Dry::Schema.JSON do
+      config.validate_keys = true
+
+      required(:error).hash do
+        required(:message).filled(:string)
+        required(:type).filled(:string)
+      end
+    end
   end
 end

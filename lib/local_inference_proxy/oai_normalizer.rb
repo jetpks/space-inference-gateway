@@ -6,8 +6,9 @@ require_relative "schemas"
 
 module LocalInferenceProxy
   class OaiNormalizer
-    def initialize(advertised_model:)
-      @advertised_model = advertised_model
+    def initialize(advertised_model:, supports_reasoning: true)
+      @advertised_model   = advertised_model
+      @supports_reasoning = supports_reasoning
     end
 
     # Normalize a non-stream OpenAI chat.completion hash.
@@ -29,9 +30,9 @@ module LocalInferenceProxy
 
     # Feed raw SSE text from the upstream; returns array of normalized chunk hashes.
     # Diffusion_frame chunks are silently dropped.
-    # Normal delta chunks are run through the streaming reasoning parser.
+    # Normal delta chunks are run through the streaming reasoning parser when supports_reasoning.
     def normalize_stream_chunks(sse_text)
-      parser     = ReasoningParser.new
+      parser     = @supports_reasoning ? ReasoningParser.new : nil
       canonical  = nil
       created    = nil
       result     = []
@@ -49,9 +50,9 @@ module LocalInferenceProxy
       end
 
       # Flush any remaining buffered content before done
-      flush = parser.flush
-      if canonical && (!flush[:thinking].empty? || !flush[:visible].empty?)
-        result.concat(flush_chunks(flush, canonical, created))
+      if parser && canonical
+        flush = parser.flush
+        result.concat(flush_chunks(flush, canonical, created)) unless flush[:thinking].empty? && flush[:visible].empty?
       end
 
       result
@@ -71,12 +72,16 @@ module LocalInferenceProxy
       msg     = choice["message"] || {}
       content = msg["content"].to_s
 
-      parser  = ReasoningParser.new
-      r       = parser.push(content)
-      r2      = parser.flush
-
-      thinking = r[:thinking] + r2[:thinking]
-      visible  = r[:visible]  + r2[:visible]
+      if @supports_reasoning
+        parser   = ReasoningParser.new
+        r        = parser.push(content)
+        r2       = parser.flush
+        thinking = r[:thinking] + r2[:thinking]
+        visible  = r[:visible]  + r2[:visible]
+      else
+        thinking = ""
+        visible  = content
+      end
 
       message = {
         "role" => msg["role"],
@@ -123,35 +128,53 @@ module LocalInferenceProxy
     end
 
     def emit_chunks(data, canonical, created, parser)
-      choices = data["choices"] || []
-      result  = []
-      base    = base_chunk(canonical, created)
+      base = base_chunk(canonical, created)
+      (data["choices"] || []).flat_map { |c| emit_choice(c, base, canonical, created, parser) }
+    end
 
-      choices.each do |choice|
-        delta = choice["delta"] || {}
+    def emit_choice(choice, base, canonical, created, parser)
+      delta  = choice["delta"] || {}
+      result = []
 
-        if delta.key?("content")
-          r = parser.push(delta["content"].to_s)
-          result.concat(flush_chunks(r, canonical, created, choice["index"]))
-          if choice["finish_reason"]
-            flush_r = parser.flush
-            result.concat(flush_chunks(flush_r, canonical, created, choice["index"]))
-            result << base.merge("choices" => [{ "index" => choice["index"], "delta" => {},
-"finish_reason" => choice["finish_reason"], }])
-          end
-        elsif choice["finish_reason"]
-          flush_r = parser.flush
-          result.concat(flush_chunks(flush_r, canonical, created, choice["index"]))
-          result << base.merge("choices" => [{ "index" => choice["index"], "delta" => {},
-"finish_reason" => choice["finish_reason"], }])
-        else
-          # Role or empty delta pass-through
-          clean_delta = delta.slice("role")
-          result << base.merge("choices" => [{ "index" => choice["index"], "delta" => clean_delta }])
-        end
+      if delta.key?("content")
+        result.concat(emit_content_delta(choice, base, canonical, created, parser))
+      elsif choice["finish_reason"]
+        flush_into(result, parser, canonical, created, choice["index"])
+        result << finish_chunk(base, choice)
+      else
+        result << base.merge("choices" => [{ "index" => choice["index"], "delta" => delta.slice("role") }])
       end
 
       result
+    end
+
+    def emit_content_delta(choice, base, canonical, created, parser)
+      delta  = choice["delta"] || {}
+      result = []
+
+      if parser
+        r = parser.push(delta["content"].to_s)
+        result.concat(flush_chunks(r, canonical, created, choice["index"]))
+      else
+        result << base.merge("choices" => [{ "index" => choice["index"],
+                                             "delta" => { "content" => delta["content"] }, }])
+      end
+      return result unless choice["finish_reason"]
+
+      flush_into(result, parser, canonical, created, choice["index"])
+      result << finish_chunk(base, choice)
+      result
+    end
+
+    def flush_into(result, parser, canonical, created, index)
+      return unless parser
+
+      result.concat(flush_chunks(parser.flush, canonical, created, index))
+    end
+
+    def finish_chunk(base, choice)
+      base.merge("choices" => [{ "index" => choice["index"], "delta" => {},
+                                 "finish_reason" => choice["finish_reason"], }])
     end
 
     def flush_chunks(r, canonical, created, index = 0)
