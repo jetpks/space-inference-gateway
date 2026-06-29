@@ -6,6 +6,7 @@ require_relative "ant_normalizer"
 require_relative "model_registry"
 require_relative "model_controller"
 require_relative "upstream_client"
+require_relative "llama_server_supervisor"
 
 module LocalInferenceProxy
   class App
@@ -37,13 +38,13 @@ module LocalInferenceProxy
     private_constant :StreamBody
 
     # upstream_fn:     optional (path, body) => [body, status, headers] — legacy test seam.
-    # upstream_client: optional UpstreamClient — real HTTP path; built from ENV when omitted.
+    # upstream_client: optional UpstreamClient — injected test seam; wins over default.
     # controller:      optional ModelController — built from config/models.yml when omitted.
     def initialize(upstream_fn: nil, upstream_client: nil, controller: nil)
-      @upstream_fn      = upstream_fn
-      @upstream_client  = upstream_client || build_upstream_client
+      @upstream_fn     = upstream_fn
+      @controller      = controller || build_default_controller
+      @upstream_client = upstream_client || UpstreamClient.new(base_url: -> { @controller.base_url })
       @advertised_model = ADVERTISED_MODEL
-      @controller       = controller || build_default_controller
     end
 
     def call(env)
@@ -146,8 +147,9 @@ module LocalInferenceProxy
 
       result = @controller.ensure_active(model_alias.to_s)
       if result.success?
-        entry = @controller.registry.resolve(model_alias.to_s)
-        body  = JSON.generate({ "status" => "loaded", "model_path" => entry[:model_path] })
+        entry      = @controller.registry.resolve(model_alias.to_s)
+        model_path = entry[:gguf] || entry[:model_path]
+        body       = JSON.generate({ "status" => "loaded", "model_path" => model_path.to_s })
         [200, JSON_HEADERS.dup, [body]]
       else
         swap_error_response(result.failure)
@@ -181,7 +183,7 @@ module LocalInferenceProxy
       succeeded = false
       response, client = @upstream_client.open_stream(path, body_str)
       if response.status == 200
-        on_close = -> { @controller.end_generation }
+        on_close  = -> { @controller.end_generation }
         succeeded = true
         [200, SSE_HEADERS.dup, StreamBody.new(response, client, normalizer, on_close)]
       else
@@ -215,7 +217,7 @@ module LocalInferenceProxy
     def swap_error_response(failure)
       case failure
       when :busy
-        body = JSON.generate({ error: { message: "Model swap refused: generation in flight or swap in progress",
+        body = JSON.generate({ error: { message: "Model swap refused: generation in flight",
                                         type:    "model_busy", } })
         [409, JSON_HEADERS.dup, [body]]
       when :unknown_model
@@ -234,16 +236,11 @@ module LocalInferenceProxy
       @controller.registry.resolve(alias_name) ? alias_name : @advertised_model
     end
 
-    def build_upstream_client
-      UpstreamClient.new(
-        base_url: ENV.fetch("UPSTREAM_URL",   "http://127.0.0.1:8888"),
-        token:    ENV.fetch("UPSTREAM_TOKEN", ""),
-      )
-    end
-
     def build_default_controller
-      registry = ModelRegistry.load
-      ModelController.new(registry: registry, upstream_client: @upstream_client)
+      registry   = ModelRegistry.load
+      binary     = ENV.fetch("LLAMA_SERVER_BINARY", LlamaServerSupervisor::DEFAULT_BINARY)
+      supervisor = LlamaServerSupervisor.new(registry: registry, binary: binary)
+      ModelController.new(registry: registry, supervisor: supervisor)
     end
   end
 end
