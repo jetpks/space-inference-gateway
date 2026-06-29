@@ -78,11 +78,11 @@ RSpec.describe LocalInferenceProxy::LlamaServerSupervisor do
 
     it "config/models.yml carries llama.cpp launch fields and has a text-model default" do
       loaded = LocalInferenceProxy::ModelRegistry.load
-      expect(loaded.default_alias).to eq("qwen3-27b")
-      expect(loaded.aliases).to include("qwen3-27b")
+      expect(loaded.default_alias).to eq("qwen3-35b-a3b")
+      expect(loaded.aliases).to include("qwen3-35b-a3b")
       expect(loaded.aliases).not_to include("diffusiongemma")
 
-      entry = loaded.resolve("qwen3-27b")
+      entry = loaded.resolve("qwen3-35b-a3b")
       expect(entry).to be_a(Hash)
       expect(entry[:gguf]).to be_a(String)
       expect(entry[:port]).to be_a(Integer)
