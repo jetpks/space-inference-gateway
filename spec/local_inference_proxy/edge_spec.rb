@@ -45,9 +45,28 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
     fixture("cp_status.json")
   end
 
-  # A simple non-streaming registry + controller backed by a stub upstream.
+  # Fixture registry carrying the model aliases the edge tests reference.
+  # Decouples edge tests from the production config/models.yml.
+  def fixture_registry
+    LocalInferenceProxy::ModelRegistry.new(
+      "default" => "diffusiongemma",
+      "models"  => {
+        "diffusiongemma" => {
+          "model_path" => "/Users/operator/.lmstudio/models/unsloth/diffusiongemma-26B-A4B-it-GGUF",
+        },
+        "qwen3.6-27b" => {
+          "model_path" => "qwen3.6-27b",
+        },
+      },
+    )
+  end
+
+  # Boot an App with a fixture controller so model-name assertions don't depend
+  # on the production config/models.yml.
   def make_app(upstream_client:)
-    LocalInferenceProxy::App.new(upstream_client: upstream_client)
+    registry   = fixture_registry
+    controller = LocalInferenceProxy::ModelController.new(registry: registry, upstream_client: upstream_client)
+    LocalInferenceProxy::App.new(upstream_client: upstream_client, controller: controller)
   end
 
   # ── AC1 — Boot + routing over real HTTP ────────────────────────────────────
@@ -254,6 +273,11 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
           expect(full_output).to eq(expected)
           expect(full_output).to end_with("data: [DONE]\n\n")
         ensure
+          begin
+            response&.body&.close
+          rescue StandardError
+            nil
+          end
           client.close
           proxy_task.stop
           proxy_bound.close
@@ -331,6 +355,12 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
               chunk # drain
             end
           ensure
+            begin
+              stream_response&.body&.close
+              swap_response&.body&.close
+            rescue StandardError
+              nil
+            end
             stream_client.close
             swap_client.close
             proxy_task.stop

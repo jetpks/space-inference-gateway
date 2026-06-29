@@ -1,8 +1,10 @@
-default: diffusiongemma
+default: qwen3-27b
 
 models:
-  diffusiongemma:
-    model_path: unsloth/diffusiongemma-26B-A4B-it-GGUF
-    gguf_variant: Q8_0
-  qwen3.6-27b:
-    model_path: unsloth/Qwen3.6-27B-MTP-GGUF
+  qwen3-27b:
+    gguf: /models/Qwen3.6-27B.Q4_K_M.gguf
+    port: 8080
+    ctx: 32768
+    parallel: 4
+    offload: fit
+    binary: llama-server
