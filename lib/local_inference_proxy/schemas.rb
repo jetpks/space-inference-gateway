@@ -114,15 +114,5 @@ module LocalInferenceProxy
       required(:status).filled(:string)
       required(:model_path).filled(:string)
     end
-
-    # Error body for 4xx / 5xx control-plane responses
-    CP_ERROR = Dry::Schema.JSON do
-      config.validate_keys = true
-
-      required(:error).hash do
-        required(:message).filled(:string)
-        required(:type).filled(:string)
-      end
-    end
   end
 end

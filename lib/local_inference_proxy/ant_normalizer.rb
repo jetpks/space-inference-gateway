@@ -43,6 +43,31 @@ module LocalInferenceProxy
       events.map { |ev| "event: #{ev[:event]}\ndata: #{JSON.generate(ev[:data])}\n\n" }.join
     end
 
+    # Incremental streaming entry — pulls raw SSE bytes from upstream_body chunk-by-chunk
+    # and yields normalized SSE strings as they become available.
+    # Byte-identical to normalize_stream_to_sse when output is concatenated.
+    def stream_to_sse(upstream_body)
+      state = { result: [], text_buffer: +"", in_text: false }
+      buf   = +""
+
+      upstream_body.each do |raw_chunk|
+        buf << raw_chunk
+
+        while (idx = buf.index("\n\n"))
+          event_block = buf.slice!(0, idx + 2)
+          ev = parse_sse_block(event_block)
+          next unless ev[:data]
+
+          process_event(ev, state)
+
+          state[:result].each do |evt|
+            yield "event: #{evt[:event]}\ndata: #{JSON.generate(evt[:data])}\n\n"
+          end
+          state[:result].clear
+        end
+      end
+    end
+
     private
 
     def process_event(ev, state)
@@ -153,6 +178,19 @@ module LocalInferenceProxy
 "delta" => { "type" => "text_delta", "text" => text }, }, },
         { event: "content_block_stop",  data: { "type" => "content_block_stop", "index" => 0 } },
       ]
+    end
+
+    def parse_sse_block(text)
+      current = {}
+      text.each_line do |line|
+        line = line.chomp
+        if line.start_with?("event:")
+          current[:event] = line.sub(/\Aevent:\s*/, "")
+        elsif line.start_with?("data:")
+          current[:data] = JSON.parse(line.sub(/\Adata:\s*/, ""))
+        end
+      end
+      current
     end
 
     def parse_sse_events(text)
