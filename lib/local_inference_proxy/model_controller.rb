@@ -83,12 +83,20 @@ module LocalInferenceProxy
       Success(JSON.parse(body))
     end
 
+    def begin_generation
+      @active_generations += 1
+    end
+
+    def end_generation
+      @active_generations -= 1
+    end
+
     # Track in-flight generations. Swap attempts see @active_generations > 0 and 409.
     def with_generation
-      @active_generations += 1
+      begin_generation
       yield
     ensure
-      @active_generations -= 1
+      end_generation
     end
 
     private
