@@ -20,12 +20,17 @@ module LocalInferenceProxy
 
     # Streaming Rack body for SSE generation paths.
     # Owns the upstream HTTP client and closes it when the body is done.
-    StreamBody = Struct.new(:response, :client, :normalizer) do
+    # on_close is called once on first close (generation lifetime hook).
+    StreamBody = Struct.new(:response, :client, :normalizer, :on_close) do
       def each(&block)
         normalizer.stream_to_sse(response.body, &block)
       end
 
       def close
+        return if @closed
+
+        @closed = true
+        on_close&.call
         client&.close
       end
     end
@@ -77,22 +82,20 @@ module LocalInferenceProxy
         supports_reasoning: mode[:supports_reasoning],
       )
 
+      return open_stream("/v1/chat/completions", body_str, normalizer) if streaming && @upstream_fn.nil?
+
       result = nil
       @controller.with_generation do
-        if streaming && @upstream_fn.nil?
-          result = open_oai_stream("/v1/chat/completions", body_str, normalizer)
-        else
-          body_up, status, = call_upstream("/v1/chat/completions", body_str)
-          result = if status == 200
-                     if streaming
-                       [200, SSE_HEADERS.dup, [normalizer.normalize_stream_to_sse(body_up)]]
-                     else
-                       [200, JSON_HEADERS.dup, [JSON.generate(normalizer.normalize(JSON.parse(body_up)))]]
-                     end
+        body_up, status, = call_upstream("/v1/chat/completions", body_str)
+        result = if status == 200
+                   if streaming
+                     [200, SSE_HEADERS.dup, [normalizer.normalize_stream_to_sse(body_up)]]
                    else
-                     upstream_error(status)
+                     [200, JSON_HEADERS.dup, [JSON.generate(normalizer.normalize(JSON.parse(body_up)))]]
                    end
-        end
+                 else
+                   upstream_error(status)
+                 end
       end
       result
     end
@@ -112,22 +115,20 @@ module LocalInferenceProxy
         supports_reasoning: mode[:supports_reasoning],
       )
 
+      return open_stream("/v1/messages", body_str, normalizer) if streaming && @upstream_fn.nil?
+
       result = nil
       @controller.with_generation do
-        if streaming && @upstream_fn.nil?
-          result = open_ant_stream("/v1/messages", body_str, normalizer)
-        else
-          body_up, status, = call_upstream("/v1/messages", body_str)
-          result = if status == 200
-                     if streaming
-                       [200, SSE_HEADERS.dup, [normalizer.normalize_stream_to_sse(body_up)]]
-                     else
-                       [200, JSON_HEADERS.dup, [JSON.generate(normalizer.normalize(JSON.parse(body_up)))]]
-                     end
+        body_up, status, = call_upstream("/v1/messages", body_str)
+        result = if status == 200
+                   if streaming
+                     [200, SSE_HEADERS.dup, [normalizer.normalize_stream_to_sse(body_up)]]
                    else
-                     upstream_error(status)
+                     [200, JSON_HEADERS.dup, [JSON.generate(normalizer.normalize(JSON.parse(body_up)))]]
                    end
-        end
+                 else
+                   upstream_error(status)
+                 end
       end
       result
     end
@@ -175,22 +176,21 @@ module LocalInferenceProxy
       end
     end
 
-    def open_oai_stream(path, body_str, normalizer)
+    def open_stream(path, body_str, normalizer)
+      @controller.begin_generation
+      succeeded = false
       response, client = @upstream_client.open_stream(path, body_str)
-      return upstream_error(response.status) unless response.status == 200
-
-      [200, SSE_HEADERS.dup, StreamBody.new(response, client, normalizer)]
+      if response.status == 200
+        on_close = -> { @controller.end_generation }
+        succeeded = true
+        [200, SSE_HEADERS.dup, StreamBody.new(response, client, normalizer, on_close)]
+      else
+        upstream_error(response.status)
+      end
     rescue StandardError
       upstream_error(502)
-    end
-
-    def open_ant_stream(path, body_str, normalizer)
-      response, client = @upstream_client.open_stream(path, body_str)
-      return upstream_error(response.status) unless response.status == 200
-
-      [200, SSE_HEADERS.dup, StreamBody.new(response, client, normalizer)]
-    rescue StandardError
-      upstream_error(502)
+    ensure
+      @controller.end_generation unless succeeded
     end
 
     def call_upstream(path, body_str)
