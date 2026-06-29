@@ -4,9 +4,8 @@ require "async/http/client"
 require "async/http/endpoint"
 
 module LocalInferenceProxy
-  # Shared HTTP client for upstream (unsloth) requests.
-  # Holds base_url + token so both App and ModelController
-  # draw from the same injected config.
+  # Shared HTTP client for upstream requests.
+  # base_url accepts a String or any callable (#call → String); resolved per request.
   class UpstreamClient
     def initialize(base_url:, token: "")
       @base_url = base_url
@@ -16,8 +15,8 @@ module LocalInferenceProxy
     # Buffered call — suitable for control-plane and non-stream generations.
     # Returns [body_string, status, {}].
     def call(method, path, body_str = nil)
-      client  = build_client
-      request = build_request(method, path, body_str)
+      client   = build_client
+      request  = build_request(method, path, body_str)
       response = client.call(request)
       [response.read, response.status, {}]
     rescue StandardError => e
@@ -41,7 +40,8 @@ module LocalInferenceProxy
     private
 
     def build_client
-      endpoint = Async::HTTP::Endpoint.parse(@base_url)
+      url      = @base_url.respond_to?(:call) ? @base_url.call : @base_url
+      endpoint = Async::HTTP::Endpoint.parse(url)
       Async::HTTP::Client.new(endpoint)
     end
 
