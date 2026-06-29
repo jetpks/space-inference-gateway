@@ -1,0 +1,59 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Fake llama-server for testing LlamaServerSupervisor.
+#
+# Usage: fake_llama_server --port PORT [other-llama-server-flags-ignored]
+#
+# Env:
+#   FAKE_UNREADY_POLLS=N  number of /health requests that return 503 before switching
+#                         to 200 (default: 3)
+#
+# Routes:
+#   GET /health     → 503 for the first N requests, then 200
+#   GET /v1/models  → 200 with an empty list
+#   SIGTERM         → graceful shutdown
+
+require "webrick"
+
+port = nil
+args = ARGV.dup
+until args.empty?
+  arg = args.shift
+  port = args.shift.to_i if arg == "--port"
+end
+
+abort "Usage: fake_llama_server --port PORT" unless port
+
+unready_polls = Integer(ENV.fetch("FAKE_UNREADY_POLLS", "3"))
+health_hits = 0
+
+server = WEBrick::HTTPServer.new(
+  Port:      port,
+  Logger:    WEBrick::Log.new(File::NULL),
+  AccessLog: [],
+)
+
+server.mount_proc("/health") do |_req, res|
+  health_hits += 1
+  if health_hits <= unready_polls
+    res.status       = 503
+    res.content_type = "application/json"
+    res.body         = '{"status":"loading"}'
+  else
+    res.status       = 200
+    res.content_type = "application/json"
+    res.body         = '{"status":"ok"}'
+  end
+end
+
+server.mount_proc("/v1/models") do |_req, res|
+  res.status       = 200
+  res.content_type = "application/json"
+  res.body         = '{"object":"list","data":[]}'
+end
+
+trap("TERM") { server.shutdown }
+trap("INT")  { server.shutdown }
+
+server.start
