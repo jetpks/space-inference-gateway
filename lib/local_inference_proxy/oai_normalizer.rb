@@ -66,6 +66,38 @@ module LocalInferenceProxy
       lines.join
     end
 
+    # Incremental streaming entry — pulls raw SSE bytes from upstream_body chunk-by-chunk
+    # and yields normalized SSE strings as they become available.
+    # Byte-identical to normalize_stream_to_sse when output is concatenated.
+    def stream_to_sse(upstream_body)
+      parser    = @supports_reasoning ? ReasoningParser.new : nil
+      canonical = nil
+      created   = nil
+      buf       = +""
+
+      upstream_body.each do |raw_chunk|
+        buf << raw_chunk
+
+        while (idx = buf.index("\n\n"))
+          buf.slice!(0, idx + 2).each_line do |line|
+            canonical, created, chunks = normalize_sse_line(line, canonical, created, parser)
+            chunks.each { |chunk| yield "data: #{JSON.generate(chunk)}\n\n" }
+          end
+        end
+      end
+
+      if parser && canonical
+        flush = parser.flush
+        unless flush[:thinking].empty? && flush[:visible].empty?
+          flush_chunks(flush, canonical, created).each do |chunk|
+            yield "data: #{JSON.generate(chunk)}\n\n"
+          end
+        end
+      end
+
+      yield "data: [DONE]\n\n"
+    end
+
     private
 
     def normalize_choice(choice)
@@ -107,6 +139,21 @@ module LocalInferenceProxy
         "completion_tokens" => usage["completion_tokens"].to_i,
         "total_tokens" => usage["total_tokens"].to_i,
       }
+    end
+
+    def normalize_sse_line(line, canonical, created, parser)
+      stripped = line.strip
+      return [canonical, created, []] unless stripped.start_with?("data:")
+
+      raw = stripped.sub(/\Adata:\s*/, "")
+      return [canonical, created, []] if raw == "[DONE]"
+
+      data = JSON.parse(raw)
+      return [canonical, created, []] if data["type"] == "diffusion_frame"
+
+      canonical ||= data["id"]
+      created   ||= data["created"]
+      [canonical, created, emit_chunks(data, canonical, created, parser)]
     end
 
     def parse_sse_data(text)
