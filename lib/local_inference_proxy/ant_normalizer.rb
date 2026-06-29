@@ -12,7 +12,7 @@ module LocalInferenceProxy
     end
 
     # Normalize a non-stream Anthropic message hash.
-    # <think> is lifted out of text content blocks into a thinking block.
+    # Native thinking blocks are conformed (signature stripped); inline <think> is lifted.
     def normalize(input)
       content_blocks = build_content_blocks(input["content"] || [])
 
@@ -32,7 +32,7 @@ module LocalInferenceProxy
     # Each event is { event: String, data: Hash }.
     # Handles Anthropic's message_start / content_block_* / message_delta / message_stop.
     def normalize_stream_events(sse_text)
-      state = { result: [], text_buffer: +"", in_text: false }
+      state = init_stream_state
       parse_sse_events(sse_text).each { |ev| process_event(ev, state) }
       state[:result]
     end
@@ -47,7 +47,7 @@ module LocalInferenceProxy
     # and yields normalized SSE strings as they become available.
     # Byte-identical to normalize_stream_to_sse when output is concatenated.
     def stream_to_sse(upstream_body)
-      state = { result: [], text_buffer: +"", in_text: false }
+      state = init_stream_state
       buf   = +""
 
       upstream_body.each do |raw_chunk|
@@ -70,50 +70,88 @@ module LocalInferenceProxy
 
     private
 
+    def init_stream_state
+      {
+        result: [], text_buffer: +"", in_text: false,
+        thinking_buffer: +"", in_thinking: false, native_thinking: false,
+      }
+    end
+
     def process_event(ev, state)
-      type = ev[:data]["type"]
-      case type
-      when "message_start"
-        msg = deep_dup(ev[:data]["message"])
-        msg["model"] = @advertised_model
-        state[:result] << { event: "message_start", data: { "type" => "message_start", "message" => msg } }
-      when "content_block_start"
-        if ev[:data].dig("content_block", "type") == "text"
-          state[:in_text]     = true
-          state[:text_buffer] = +""
-        end
-      when "content_block_delta"
-        state[:text_buffer] << ev[:data].dig("delta", "text").to_s if state[:in_text]
-      when "content_block_stop"
-        if state[:in_text]
-          state[:in_text] = false
-          state[:result].concat(restructure_text_block(state[:text_buffer]))
-        end
-      when "message_delta"
-        state[:result] << { event: "message_delta", data: ev[:data] }
-      when "message_stop"
-        state[:result] << { event: "message_stop", data: ev[:data] }
+      case ev[:data]["type"]
+      when "message_start"       then handle_message_start(ev, state)
+      when "content_block_start" then handle_block_start(ev, state)
+      when "content_block_delta" then handle_block_delta(ev, state)
+      when "content_block_stop"  then handle_block_stop(state)
+      when "message_delta"       then state[:result] << { event: "message_delta", data: ev[:data] }
+      when "message_stop"        then state[:result] << { event: "message_stop",  data: ev[:data] }
+      end
+    end
+
+    def handle_message_start(ev, state)
+      msg = deep_dup(ev[:data]["message"])
+      msg["model"] = @advertised_model
+      state[:result] << { event: "message_start", data: { "type" => "message_start", "message" => msg } }
+    end
+
+    def handle_block_start(ev, state)
+      case ev[:data].dig("content_block", "type")
+      when "thinking"
+        state[:in_thinking] = true
+        state[:native_thinking] = true
+        state[:thinking_buffer] = +""
+      when "text"
+        state[:in_text]     = true
+        state[:text_buffer] = +""
+      end
+    end
+
+    def handle_block_delta(ev, state)
+      delta = ev[:data]["delta"]
+      case delta&.fetch("type", nil)
+      when "thinking_delta" then state[:thinking_buffer] << delta["thinking"].to_s if state[:in_thinking]
+      when "text_delta"     then state[:text_buffer] << delta["text"].to_s if state[:in_text]
+      end
+    end
+
+    def handle_block_stop(state)
+      if state[:in_thinking]
+        state[:in_thinking] = false
+        state[:result].concat(emit_thinking_events(state[:thinking_buffer]))
+      elsif state[:in_text]
+        state[:in_text] = false
+        events = if state[:native_thinking]
+                   passthrough_text_events(state[:text_buffer], index: 1)
+                 else
+                   restructure_text_block(state[:text_buffer])
+                 end
+        state[:result].concat(events)
       end
     end
 
     def build_content_blocks(blocks)
       blocks.flat_map do |block|
-        next [block] unless block["type"] == "text"
+        case block["type"]
+        when "thinking"
+          [{ "type" => "thinking", "thinking" => block["thinking"].to_s }]
+        when "text"
+          text = block["text"].to_s
+          next [{ "type" => "text", "text" => text }] unless @supports_reasoning
 
-        text = block["text"].to_s
-        next [{ "type" => "text", "text" => text }] unless @supports_reasoning
+          parser = ReasoningParser.new
+          r      = parser.push(text)
+          r2     = parser.flush
 
-        parser = ReasoningParser.new
-        r      = parser.push(text)
-        r2     = parser.flush
+          thinking = r[:thinking] + r2[:thinking]
+          visible  = r[:visible]  + r2[:visible]
 
-        thinking = r[:thinking] + r2[:thinking]
-        visible  = r[:visible]  + r2[:visible]
-
-        out = []
-        out << { "type" => "thinking", "thinking" => thinking } unless thinking.empty?
-        out << { "type" => "text",     "text"     => visible  } unless visible.empty?
-        out
+          out = []
+          out << { "type" => "thinking", "thinking" => thinking } unless thinking.empty?
+          out << { "type" => "text",     "text"     => visible  } unless visible.empty?
+          out
+        else
+          [block]
+        end
       end
     end
 
@@ -127,56 +165,30 @@ module LocalInferenceProxy
       thinking = r[:thinking] + r2[:thinking]
       visible  = r[:visible]  + r2[:visible]
 
-      events  = []
-      index   = 0
-
-      unless thinking.empty?
-        events << {
-          event: "content_block_start",
-          data: { "type" => "content_block_start", "index" => index,
-"content_block" => { "type" => "thinking", "thinking" => "" }, },
-        }
-        events << {
-          event: "content_block_delta",
-          data: { "type" => "content_block_delta", "index" => index,
-"delta" => { "type" => "thinking_delta", "thinking" => thinking }, },
-        }
-        events << {
-          event: "content_block_stop",
-          data: { "type" => "content_block_stop", "index" => index },
-        }
-        index += 1
-      end
-
-      unless visible.empty?
-        events << {
-          event: "content_block_start",
-          data: { "type" => "content_block_start", "index" => index,
-"content_block" => { "type" => "text", "text" => "" }, },
-        }
-        events << {
-          event: "content_block_delta",
-          data: { "type" => "content_block_delta", "index" => index,
-"delta" => { "type" => "text_delta", "text" => visible }, },
-        }
-        events << {
-          event: "content_block_stop",
-          data: { "type" => "content_block_stop", "index" => index },
-        }
-      end
-
-      events
+      emit_thinking_events(thinking) + passthrough_text_events(visible, index: thinking.empty? ? 0 : 1)
     end
 
-    def passthrough_text_events(text)
-      return [] if text.empty?
+    def emit_thinking_events(thinking)
+      return [] if thinking.empty?
 
       [
         { event: "content_block_start", data: { "type" => "content_block_start", "index" => 0,
-"content_block" => { "type" => "text", "text" => "" }, }, },
+"content_block" => { "type" => "thinking", "thinking" => "" }, }, },
         { event: "content_block_delta", data: { "type" => "content_block_delta", "index" => 0,
-"delta" => { "type" => "text_delta", "text" => text }, }, },
+"delta" => { "type" => "thinking_delta", "thinking" => thinking }, }, },
         { event: "content_block_stop",  data: { "type" => "content_block_stop", "index" => 0 } },
+      ]
+    end
+
+    def passthrough_text_events(text, index: 0)
+      return [] if text.empty?
+
+      [
+        { event: "content_block_start", data: { "type" => "content_block_start", "index" => index,
+"content_block" => { "type" => "text", "text" => "" }, }, },
+        { event: "content_block_delta", data: { "type" => "content_block_delta", "index" => index,
+"delta" => { "type" => "text_delta", "text" => text }, }, },
+        { event: "content_block_stop",  data: { "type" => "content_block_stop", "index" => index } },
       ]
     end
 
