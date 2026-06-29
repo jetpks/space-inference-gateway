@@ -115,6 +115,7 @@ RSpec.describe LocalInferenceProxy::LlamaServerSupervisor do
                            "--parallel", "2",
                            "--flash-attn", "on",
                            "--no-context-shift",
+                           "--jinja",
                            "--fit", "on",
                          ])
     end

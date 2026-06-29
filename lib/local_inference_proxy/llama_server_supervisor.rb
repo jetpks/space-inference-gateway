@@ -112,6 +112,7 @@ module LocalInferenceProxy
       argv  += ["--parallel", (entry[:parallel] || 1).to_s]
       argv  += ["--flash-attn", "on"]
       argv  += ["--no-context-shift"]
+      argv  += ["--jinja"] # chat template → native reasoning_content / thinking separation (BRIEF §3.2.1)
 
       case entry[:offload].to_s
       when "fit" then argv += ["--fit", "on"]
