@@ -9,6 +9,18 @@ require "async/http/body/writable"
 require "protocol/http/middleware"
 require "uri"
 
+# Minimal fake supervisor double — reports the given alias as already active
+# so ensure_active_if_known is a no-op Success; no subprocess spawns.
+FakeSupervisor = Struct.new(:active_alias) do
+  include Dry::Monads[:result]
+
+  def running? = true
+  def base_url = "http://127.0.0.1:9999"
+  def start(_alias_name) = Success(nil)
+  def stop = nil
+  def swap(to:) = Success(to)
+end
+
 RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
   # ── helpers ────────────────────────────────────────────────────────────────
 
@@ -62,10 +74,12 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
   end
 
   # Boot an App with a fixture controller so model-name assertions don't depend
-  # on the production config/models.yml.
+  # on the production config/models.yml. The fake supervisor reports diffusiongemma
+  # as already-active so no subprocess spawns in edge tests.
   def make_app(upstream_client:)
     registry   = fixture_registry
-    controller = LocalInferenceProxy::ModelController.new(registry: registry, upstream_client: upstream_client)
+    supervisor = FakeSupervisor.new("diffusiongemma")
+    controller = LocalInferenceProxy::ModelController.new(registry: registry, supervisor: supervisor)
     LocalInferenceProxy::App.new(upstream_client: upstream_client, controller: controller)
   end
 
@@ -110,8 +124,6 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
           stub_handler = lambda do |req|
             received << { method: req.method, path: req.path, auth: req.headers["authorization"] }
             case req.path
-            when "/api/inference/status"
-              Protocol::HTTP::Response[200, { "content-type" => "application/json" }, [cp_status_body]]
             when "/v1/chat/completions"
               Protocol::HTTP::Response[200, { "content-type" => "application/json" }, [fixture("oai_ns.json")]]
             else
@@ -155,21 +167,11 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
       end
     end
 
-    it "AC2b — GET /v1/load-progress causes stub to observe GET method" do
+    it "AC2b — GET /v1/load-progress returns 200 with schema-valid body" do
       Async do |task|
         task.with_timeout(5) do
-          received = []
-
-          stub_handler = lambda do |req|
-            received << { method: req.method, path: req.path }
-            case req.path
-            when "/api/inference/status"
-              Protocol::HTTP::Response[200, { "content-type" => "application/json" }, [cp_status_body]]
-            when "/v1/load-progress"
-              Protocol::HTTP::Response[200, { "content-type" => "application/json" }, [fixture("cp_load_progress.json")]]
-            else
-              Protocol::HTTP::Response[404, {}, []]
-            end
+          stub_handler = lambda do |_req|
+            Protocol::HTTP::Response[404, {}, []]
           end
 
           stub_port, stub_task, stub_bound = boot_stub(stub_handler)
@@ -183,10 +185,6 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
             expect(response.status).to eq(200)
             body = JSON.parse(response.read)
             expect(body).to include("phase", "bytes_loaded", "bytes_total", "fraction")
-
-            progress_call = received.find { |r| r[:path] == "/v1/load-progress" }
-            expect(progress_call).not_to be_nil
-            expect(progress_call[:method]).to eq("GET")
           ensure
             client.close
             proxy_task.stop
@@ -213,8 +211,6 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
 
         stub_handler = lambda do |req|
           case req.path
-          when "/api/inference/status"
-            Protocol::HTTP::Response[200, { "content-type" => "application/json" }, [cp_status_body]]
           when "/v1/chat/completions"
             body = Protocol::HTTP::Body::Writable.new
             task.async do
@@ -300,8 +296,6 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
 
           stub_handler = lambda do |req|
             case req.path
-            when "/api/inference/status"
-              Protocol::HTTP::Response[200, { "content-type" => "application/json" }, [cp_status_body]]
             when "/v1/chat/completions"
               body = Protocol::HTTP::Body::Writable.new
               task.async do
@@ -373,10 +367,10 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
     end
   end
 
-  # ── AC4 — Single injected upstream config drives both planes ───────────────
+  # ── AC4 — Single injected upstream config drives generation ────────────────
 
-  describe "AC4 — injected upstream_client drives generation + control-plane; no App:: constant reach" do
-    it "same upstream_client reaches both generation and CP calls; re-pointing at different stub hits it instead" do
+  describe "AC4 — injected upstream_client drives generation; no App:: constant reach" do
+    it "same upstream_client reaches generation calls; re-pointing at different stub hits it instead" do
       Async do |task|
         task.with_timeout(5) do
           hits_a = []
@@ -386,8 +380,6 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
             lambda do |req|
               hits << req.path
               case req.path
-              when "/api/inference/status"
-                Protocol::HTTP::Response[200, { "content-type" => "application/json" }, [cp_status_body]]
               when "/v1/chat/completions"
                 Protocol::HTTP::Response[200, { "content-type" => "application/json" }, [fixture("oai_ns.json")]]
               else
@@ -419,13 +411,11 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
             resp_b = client_b.post("/v1/chat/completions", [["content-type", "application/json"]], request_body)
             resp_b.read
 
-            # Stub A was hit by app_a (generation + CP status check)
+            # Stub A was hit by app_a (generation)
             expect(hits_a).to include("/v1/chat/completions")
-            expect(hits_a).to include("/api/inference/status")
 
-            # Stub B was hit by app_b (generation + CP status check)
+            # Stub B was hit by app_b (generation)
             expect(hits_b).to include("/v1/chat/completions")
-            expect(hits_b).to include("/api/inference/status")
 
             # Neither stub was hit by the other app
             expect(hits_a).not_to include("/v2/impossible")
