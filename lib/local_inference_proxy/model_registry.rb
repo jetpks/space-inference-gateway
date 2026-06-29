@@ -18,6 +18,8 @@ module LocalInferenceProxy
       end
     end
 
+    # Returns the entry Hash for alias_name, or nil if unknown.
+    # Callers that need a Result monad should map nil → Failure(:unknown_model).
     def resolve(alias_name)
       @models[alias_name]
     end

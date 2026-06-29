@@ -14,8 +14,9 @@ Gem::Specification.new do |spec|
 
   spec.required_ruby_version = ">= 3.3"
 
-  spec.add_dependency "async",       "~> 2.0"
-  spec.add_dependency "async-http",  "~> 0.75"
+  spec.add_dependency "async",         "~> 2.0"
+  spec.add_dependency "async-http",    "~> 0.75"
+  spec.add_dependency "async-process", "~> 1.1"
   spec.add_dependency "dry-monads",  "~> 1.10"
   spec.add_dependency "dry-schema",  "~> 1.16"
   spec.add_dependency "falcon",      "~> 0.55"
