@@ -1,10 +1,10 @@
-default: qwen3-27b
+default: qwen3-35b-a3b
 
 models:
-  qwen3-27b:
-    gguf: /models/Qwen3.6-27B.Q4_K_M.gguf
+  qwen3-35b-a3b:
+    gguf: /Users/lemonslut/.cache/huggingface/hub/models--unsloth--Qwen3.6-35B-A3B-MTP-GGUF/snapshots/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
     port: 8080
-    ctx: 32768
-    parallel: 4
+    ctx: 8192
+    parallel: 2
     offload: fit
-    binary: llama-server
+    binary: /Users/lemonslut/.unsloth/llama.cpp/llama-server
