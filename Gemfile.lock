@@ -25,6 +25,8 @@ GEM
       async-http (~> 0.56)
     async-pool (0.11.2)
       async (>= 2.0)
+    async-process (1.4.0)
+      async (~> 2.0)
     async-service (0.24.1)
       async
       async-container (~> 0.34)
@@ -164,6 +166,7 @@ GEM
     unicode-display_width (3.2.0)
       unicode-emoji (~> 4.1)
     unicode-emoji (4.2.0)
+    webrick (1.9.2)
     zeitwerk (2.8.2)
 
 PLATFORMS
@@ -173,6 +176,7 @@ PLATFORMS
 DEPENDENCIES
   async (~> 2.0)
   async-http (~> 0.75)
+  async-process (~> 1.1)
   dry-monads (~> 1.10)
   dry-schema (~> 1.16)
   falcon (~> 0.55)
@@ -181,6 +185,7 @@ DEPENDENCIES
   rspec (~> 3.13)
   rubocop (~> 1.70)
   rubocop-performance (~> 1.23)
+  webrick (~> 1.8)
 
 CHECKSUMS
   ast (2.4.3) sha256=954615157c1d6a382bc27d690d973195e79db7f55e9765ac7c481c60bdb4d383
@@ -189,6 +194,7 @@ CHECKSUMS
   async-http (0.95.1) sha256=0c3dd458c204c06d5c4b20b01bbec4794a1203db627fb2ce536e1799ec14786c
   async-http-cache (0.4.6) sha256=2038d1f093182f16b50b4db271c25085e3938da10bfcfc2904cadb0530fddfd6
   async-pool (0.11.2) sha256=0a43a17b02b04d9c451b7d12fafa9a50e55dc6dd00d4369aca00433f16a7e3ed
+  async-process (1.4.0) sha256=859c2901b9047b6b8843e9a21ec7f3c626eb04efdcff66185a05ede99257f590
   async-service (0.24.1) sha256=3ee313fa2d6c1427ffac68f42f272889c496fa1088cf1432b1e7a5f5bff56b06
   async-utilization (0.4.0) sha256=4da53cb1733a12c9cf70ff22bd37d29c10fa9162a03ddb10f34e12acd171fe32
   bake (0.25.0) sha256=a47bdc6a26addc048827debc36fe27bb4d5d71ac2958ad910b5386e9baf49869
@@ -247,6 +253,7 @@ CHECKSUMS
   traces (0.18.2) sha256=80f1649cb4daace1d7174b81f3b3b7427af0b93047759ba349960cb8f315e214
   unicode-display_width (3.2.0) sha256=0cdd96b5681a5949cdbc2c55e7b420facae74c4aaf9a9815eee1087cb1853c42
   unicode-emoji (4.2.0) sha256=519e69150f75652e40bf736106cfbc8f0f73aa3fb6a65afe62fefa7f80b0f80f
+  webrick (1.9.2) sha256=beb4a15fc474defed24a3bda4ffd88a490d517c9e4e6118c3edce59e45864131
   zeitwerk (2.8.2) sha256=7212a61311083c604184b1ea2574b9aa05cd14f855a0841c06985cabe9181d12
 
 BUNDLED WITH
