@@ -1,5 +1,15 @@
 # frozen_string_literal: true
 
+LLAMACPP_FIXTURE_PATH = File.expand_path("../fixtures/llamacpp", __dir__)
+
+def fixture_llamacpp(name)
+  File.read(File.join(LLAMACPP_FIXTURE_PATH, name))
+end
+
+def fixture_llamacpp_json(name)
+  JSON.parse(fixture_llamacpp(name))
+end
+
 RSpec.describe LocalInferenceProxy::AntNormalizer do
   subject(:normalizer) { described_class.new(advertised_model: "test-model") }
 
@@ -168,6 +178,113 @@ RSpec.describe LocalInferenceProxy::AntNormalizer do
 
     it "validates against schema" do
       expect(LocalInferenceProxy::Schemas::ANT_MESSAGE.call(result)).to be_success
+    end
+  end
+
+  # ── AC-A1: Non-stream native thinking conformed (llama.cpp real fixture) ─
+  describe "#normalize — AC-A1 native thinking non-stream" do
+    let(:raw)    { fixture_llamacpp_json("ant_ns_real.json") }
+    let(:result) { normalizer.normalize(raw) }
+
+    it "validates against ANT_MESSAGE schema" do
+      schema_result = LocalInferenceProxy::Schemas::ANT_MESSAGE.call(result)
+      expect(schema_result).to be_success, "schema errors: #{schema_result.errors.to_h.inspect}"
+    end
+
+    it "thinking block byte-equals upstream thinking" do
+      upstream_thinking = raw["content"].find { |b| b["type"] == "thinking" }["thinking"]
+      out_thinking      = result["content"].find { |b| b["type"] == "thinking" }
+      expect(out_thinking["thinking"]).to eq(upstream_thinking)
+    end
+
+    it "text block byte-equals upstream text" do
+      upstream_text = raw["content"].find { |b| b["type"] == "text" }["text"]
+      out_text      = result["content"].find { |b| b["type"] == "text" }
+      expect(out_text["text"]).to eq(upstream_text)
+    end
+
+    it "no content block carries signature or extra keys" do
+      result["content"].each do |block|
+        expect(block.keys).to match_array(
+          block["type"] == "thinking" ? %w[type thinking] : %w[type text],
+        )
+      end
+    end
+
+    it "model is the advertised alias, not a gguf path" do
+      expect(result["model"]).to eq("test-model")
+      expect(result["model"]).not_to include("/")
+    end
+  end
+
+  # ── AC-A2: Stream native thinking relayed losslessly (llama.cpp real fixture)
+  describe "#normalize_stream_events — AC-A2 native thinking stream" do
+    let(:raw_sse) { fixture_llamacpp("ant_s_real.txt") }
+
+    let(:upstream_thinking) do
+      raw_sse.lines.each_with_object(+"") do |l, buf|
+        next unless l.start_with?("data:")
+
+        d = JSON.parse(l.sub(/\Adata:\s*/, ""))
+        buf << d.dig("delta", "thinking").to_s if d.dig("delta", "type") == "thinking_delta"
+      rescue JSON::ParserError
+        nil
+      end
+    end
+
+    let(:upstream_text) do
+      raw_sse.lines.each_with_object(+"") do |l, buf|
+        next unless l.start_with?("data:")
+
+        d = JSON.parse(l.sub(/\Adata:\s*/, ""))
+        buf << d.dig("delta", "text").to_s if d.dig("delta", "type") == "text_delta"
+      rescue JSON::ParserError
+        nil
+      end
+    end
+
+    let(:events) { normalizer.normalize_stream_events(raw_sse) }
+
+    it "concatenated thinking_delta byte-equals upstream thinking" do
+      out = events.select { |e| e[:data].dig("delta", "type") == "thinking_delta" }
+                  .map { |e| e[:data].dig("delta", "thinking").to_s }
+                  .join
+      expect(out).to eq(upstream_thinking)
+    end
+
+    it "concatenated text_delta byte-equals upstream text" do
+      out = events.select { |e| e[:data].dig("delta", "type") == "text_delta" }
+                  .map { |e| e[:data].dig("delta", "text").to_s }
+                  .join
+      expect(out).to eq(upstream_text)
+    end
+
+    it "message_start model is the advertised alias" do
+      msg_start = events.find { |e| e[:event] == "message_start" }
+      expect(msg_start[:data].dig("message", "model")).to eq("test-model")
+      expect(msg_start[:data].dig("message", "model")).not_to include("/")
+    end
+
+    it "no emitted thinking content_block carries signature" do
+      thinking_starts = events.select do |e|
+        e[:event] == "content_block_start" &&
+          e[:data].dig("content_block", "type") == "thinking"
+      end
+      expect(thinking_starts).not_to be_empty
+      thinking_starts.each do |e|
+        expect(e[:data]["content_block"].keys).not_to include("signature")
+      end
+    end
+
+    it "includes content_block_start for both thinking and text" do
+      types = events.select { |e| e[:event] == "content_block_start" }
+                    .map { |e| e[:data].dig("content_block", "type") }
+      expect(types).to include("thinking")
+      expect(types).to include("text")
+    end
+
+    it "ends with message_stop" do
+      expect(events.last[:event]).to eq("message_stop")
     end
   end
 end
