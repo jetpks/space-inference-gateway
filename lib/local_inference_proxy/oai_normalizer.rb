@@ -105,11 +105,16 @@ module LocalInferenceProxy
       content = msg["content"].to_s
 
       if @supports_reasoning
-        parser   = ReasoningParser.new
-        r        = parser.push(content)
-        r2       = parser.flush
-        thinking = r[:thinking] + r2[:thinking]
-        visible  = r[:visible]  + r2[:visible]
+        if msg.key?("reasoning_content")
+          thinking = msg["reasoning_content"].to_s
+          visible  = content
+        else
+          parser   = ReasoningParser.new
+          r        = parser.push(content)
+          r2       = parser.flush
+          thinking = r[:thinking] + r2[:thinking]
+          visible  = r[:visible]  + r2[:visible]
+        end
       else
         thinking = ""
         visible  = content
@@ -183,7 +188,9 @@ module LocalInferenceProxy
       delta  = choice["delta"] || {}
       result = []
 
-      if delta.key?("content")
+      if delta.key?("reasoning_content")
+        result.concat(emit_reasoning_delta(choice, base))
+      elsif delta.key?("content")
         result.concat(emit_content_delta(choice, base, canonical, created, parser))
       elsif choice["finish_reason"]
         flush_into(result, parser, canonical, created, choice["index"])
@@ -192,6 +199,14 @@ module LocalInferenceProxy
         result << base.merge("choices" => [{ "index" => choice["index"], "delta" => delta.slice("role") }])
       end
 
+      result
+    end
+
+    def emit_reasoning_delta(choice, base)
+      delta = choice["delta"] || {}
+      rc    = delta["reasoning_content"]
+      result = [base.merge("choices" => [{ "index" => choice["index"], "delta" => { "reasoning_content" => rc } }])]
+      result << finish_chunk(base, choice) if choice["finish_reason"]
       result
     end
 

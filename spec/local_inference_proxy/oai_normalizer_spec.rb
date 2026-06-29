@@ -1,5 +1,15 @@
 # frozen_string_literal: true
 
+LLAMACPP_FIXTURE_PATH = File.expand_path("../fixtures/llamacpp", __dir__)
+
+def llamacpp_fixture(name)
+  File.read(File.join(LLAMACPP_FIXTURE_PATH, name))
+end
+
+def llamacpp_fixture_json(name)
+  JSON.parse(llamacpp_fixture(name))
+end
+
 RSpec.describe LocalInferenceProxy::OaiNormalizer do
   subject(:normalizer) { described_class.new(advertised_model: "test-model") }
 
@@ -174,4 +184,104 @@ RSpec.describe LocalInferenceProxy::OaiNormalizer do
       expect(LocalInferenceProxy::Schemas::OAI_COMPLETION.call(result)).to be_success
     end
   end
+
+  # ── AC-O1: Non-stream real llama.cpp fixture — upstream reasoning_content consumed ─
+  describe "#normalize — AC-O1 real llama.cpp non-stream" do
+    let(:upstream) { llamacpp_fixture_json("oai_ns_complete_real.json") }
+    let(:result)   { normalizer.normalize(upstream) }
+
+    it "validates OAI_COMPLETION schema" do
+      expect(LocalInferenceProxy::Schemas::OAI_COMPLETION.call(result)).to be_success
+    end
+
+    it "reasoning_content present and byte-equal to upstream" do
+      expected = upstream.dig("choices", 0, "message", "reasoning_content")
+      expect(result.dig("choices", 0, "message", "reasoning_content")).to eq(expected)
+    end
+
+    it "content byte-equal to upstream content" do
+      expected = upstream.dig("choices", 0, "message", "content")
+      expect(result.dig("choices", 0, "message", "content")).to eq(expected)
+    end
+
+    it "model is advertised alias, not gguf path" do
+      expect(result["model"]).to eq("test-model")
+      expect(result["model"]).not_to start_with("/")
+    end
+
+    it "no top-level timings key" do
+      expect(result.keys).not_to include("timings")
+    end
+
+    it "usage has exactly prompt_tokens/completion_tokens/total_tokens" do
+      expect(result["usage"].keys.sort).to eq(%w[completion_tokens prompt_tokens total_tokens])
+    end
+  end
+
+  # ── AC-O2: Stream real llama.cpp fixture — reasoning_content relayed losslessly ─
+  describe "#normalize_stream_chunks — AC-O2 real llama.cpp stream" do
+    let(:fixture_text) { llamacpp_fixture("oai_s_complete_real.txt") }
+    let(:chunks)       { normalizer.normalize_stream_chunks(fixture_text) }
+
+    let(:upstream_reasoning) do
+      fixture_text.lines.filter_map do |line|
+        stripped = line.strip
+        next unless stripped.start_with?("data:")
+
+        raw = stripped.sub(/\Adata:\s*/, "")
+        next if raw == "[DONE]"
+
+        JSON.parse(raw).dig("choices", 0, "delta", "reasoning_content")
+      end.join
+    end
+
+    let(:upstream_content) do
+      fixture_text.lines.filter_map do |line|
+        stripped = line.strip
+        next unless stripped.start_with?("data:")
+
+        raw = stripped.sub(/\Adata:\s*/, "")
+        next if raw == "[DONE]"
+
+        JSON.parse(raw).dig("choices", 0, "delta", "content")
+      end.join
+    end
+
+    it "every emitted chunk validates OAI_CHUNK" do
+      chunks.each do |chunk|
+        r = LocalInferenceProxy::Schemas::OAI_CHUNK.call(chunk)
+        expect(r).to be_success,
+                     "chunk failed schema: #{r.errors.to_h.inspect}\nchunk=#{chunk.inspect}"
+      end
+    end
+
+    it "concatenated delta.reasoning_content equals upstream" do
+      output_rc = chunks.filter_map { |c| c.dig("choices", 0, "delta", "reasoning_content") }.join
+      expect(output_rc).to eq(upstream_reasoning)
+    end
+
+    it "concatenated delta.content equals upstream" do
+      output_content = chunks.filter_map { |c| c.dig("choices", 0, "delta", "content") }.join
+      expect(output_content).to eq(upstream_content)
+    end
+
+    it "no chunk carries timings" do
+      chunks.each { |c| expect(c.keys).not_to include("timings") }
+    end
+
+    it "no chunk model is a gguf path" do
+      chunks.each { |c| expect(c["model"]).not_to start_with("/") }
+    end
+
+    it "SSE output ends with data: [DONE]" do
+      sse = normalizer.normalize_stream_to_sse(fixture_text)
+      expect(sse.strip).to end_with("data: [DONE]")
+    end
+  end
+
+  # ── AC-O3: Inline <think> fallback intact ─────────────────────────────────
+  # The existing AC1/AC3 describe blocks above exercise this path:
+  # oai_ns.json has inline <think>…</think> in content, no upstream reasoning_content key.
+  # oai_s.txt has inline <think>…</think> in delta.content.
+  # Both paths continue to lift think text into reasoning_content correctly.
 end
