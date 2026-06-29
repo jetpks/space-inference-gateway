@@ -264,6 +264,85 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
     end
   end
 
+  # ── AC5 — Swap refused 409 while streaming generation is in flight ─────────
+
+  describe "AC5 — swap refused 409 while streaming generation is in flight" do
+    it "refuses swap (HTTP 409) while a streaming generation is in flight" do
+      Async do |task|
+        task.with_timeout(15) do
+          barrier = Async::Condition.new
+          oai_fixture = fixture("oai_s.txt")
+          events = oai_fixture.split(/(?<=\n\n)/).reject(&:empty?)
+
+          stub_handler = lambda do |req|
+            case req.path
+            when "/api/inference/status"
+              Protocol::HTTP::Response[200, { "content-type" => "application/json" }, [cp_status_body]]
+            when "/v1/chat/completions"
+              body = Protocol::HTTP::Body::Writable.new
+              task.async do
+                body.write(events.first)
+                barrier.wait
+                events[1..].each { |ev| body.write(ev) }
+                body.close_write
+              end
+              Protocol::HTTP::Response[200, { "content-type" => "text/event-stream" }, body]
+            else
+              Protocol::HTTP::Response[404, {}, []]
+            end
+          end
+
+          stub_port, stub_task, stub_bound = boot_stub(stub_handler)
+          upstream = LocalInferenceProxy::UpstreamClient.new(base_url: "http://localhost:#{stub_port}")
+          app = make_app(upstream_client: upstream)
+          proxy_port, proxy_task, proxy_bound = boot_proxy(app)
+          stream_client = client_for(proxy_port)
+          swap_client = client_for(proxy_port)
+
+          stream_body_str = JSON.generate({ model: "diffusiongemma", messages: [], stream: true })
+          swap_body_str = JSON.generate({ model: "qwen3.6-27b" })
+
+          begin
+            stream_response = stream_client.post(
+              "/v1/chat/completions",
+              [["content-type", "application/json"]],
+              stream_body_str,
+            )
+            expect(stream_response.status).to eq(200)
+
+            # Read first event — stream is now genuinely in flight
+            task.with_timeout(3) do
+              first_chunk = stream_response.body.read
+              expect(first_chunk).to include("data:")
+            end
+
+            # While stream is held at the barrier, attempt swap to a different model
+            swap_response = swap_client.post(
+              "/v1/load",
+              [["content-type", "application/json"]],
+              swap_body_str,
+            )
+            expect(swap_response.status).to eq(409)
+            swap_response.read
+
+            # Release the barrier and drain the stream — it must complete normally
+            barrier.signal
+            while (chunk = stream_response.body.read)
+              chunk # drain
+            end
+          ensure
+            stream_client.close
+            swap_client.close
+            proxy_task.stop
+            proxy_bound.close
+            stub_task.stop
+            stub_bound.close
+          end
+        end
+      end
+    end
+  end
+
   # ── AC4 — Single injected upstream config drives both planes ───────────────
 
   describe "AC4 — injected upstream_client drives generation + control-plane; no App:: constant reach" do
