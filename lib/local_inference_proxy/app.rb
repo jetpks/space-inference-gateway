@@ -1,30 +1,47 @@
 # frozen_string_literal: true
 
 require "json"
-require "async/http/client"
-require "async/http/endpoint"
 require_relative "oai_normalizer"
 require_relative "ant_normalizer"
 require_relative "model_registry"
 require_relative "model_controller"
+require_relative "upstream_client"
 
 module LocalInferenceProxy
   class App
     ADVERTISED_MODEL = ENV.fetch("ADVERTISED_MODEL", "local-inference")
-    UPSTREAM_URL     = ENV.fetch("UPSTREAM_URL",     "http://127.0.0.1:8888")
-    UPSTREAM_TOKEN   = ENV.fetch("UPSTREAM_TOKEN",   "")
 
     JSON_HEADERS = { "content-type" => "application/json" }.freeze
-    SSE_HEADERS  = {
+    SSE_HEADERS = {
       "content-type" => "text/event-stream",
       "cache-control" => "no-cache",
       "x-accel-buffering" => "no",
     }.freeze
 
-    # upstream_fn: optional (path, body) => [body, status, headers] — injected in tests.
-    # controller:  optional ModelController — built from config/models.yml when omitted.
-    def initialize(upstream_fn: nil, controller: nil)
+    # Streaming Rack body for SSE generation paths.
+    # Owns the upstream HTTP client and closes it when the body is done.
+    # on_close is called once on first close (generation lifetime hook).
+    StreamBody = Struct.new(:response, :client, :normalizer, :on_close) do
+      def each(&block)
+        normalizer.stream_to_sse(response.body, &block)
+      end
+
+      def close
+        return if @closed
+
+        @closed = true
+        on_close&.call
+        client&.close
+      end
+    end
+    private_constant :StreamBody
+
+    # upstream_fn:     optional (path, body) => [body, status, headers] — legacy test seam.
+    # upstream_client: optional UpstreamClient — real HTTP path; built from ENV when omitted.
+    # controller:      optional ModelController — built from config/models.yml when omitted.
+    def initialize(upstream_fn: nil, upstream_client: nil, controller: nil)
       @upstream_fn      = upstream_fn
+      @upstream_client  = upstream_client || build_upstream_client
       @advertised_model = ADVERTISED_MODEL
       @controller       = controller || build_default_controller
     end
@@ -54,31 +71,32 @@ module LocalInferenceProxy
       body_str    = read_body(env)
       request     = JSON.parse(body_str)
       model_alias = request["model"]
+      streaming   = request["stream"] == true
 
       swap_r = @controller.ensure_active_if_known(model_alias)
       return swap_error_response(swap_r.failure) if swap_r.failure?
 
-      mode      = @controller.active_mode
-      streaming = request["stream"] == true
-      result    = nil
+      mode       = @controller.active_mode
+      normalizer = OaiNormalizer.new(
+        advertised_model:   effective_model(model_alias),
+        supports_reasoning: mode[:supports_reasoning],
+      )
 
+      return open_stream("/v1/chat/completions", body_str, normalizer) if streaming && @upstream_fn.nil?
+
+      result = nil
       @controller.with_generation do
-        upstream_body, status, = call_upstream("/v1/chat/completions", body_str, env)
-        if status == 200
-          normalizer = OaiNormalizer.new(
-            advertised_model:   effective_model(model_alias),
-            supports_reasoning: mode[:supports_reasoning],
-          )
-          result = if streaming
-                     [200, SSE_HEADERS.dup, [normalizer.normalize_stream_to_sse(upstream_body)]]
+        body_up, status, = call_upstream("/v1/chat/completions", body_str)
+        result = if status == 200
+                   if streaming
+                     [200, SSE_HEADERS.dup, [normalizer.normalize_stream_to_sse(body_up)]]
                    else
-                     [200, JSON_HEADERS.dup, [JSON.generate(normalizer.normalize(JSON.parse(upstream_body)))]]
+                     [200, JSON_HEADERS.dup, [JSON.generate(normalizer.normalize(JSON.parse(body_up)))]]
                    end
-        else
-          result = upstream_error(status)
-        end
+                 else
+                   upstream_error(status)
+                 end
       end
-
       result
     end
 
@@ -86,31 +104,32 @@ module LocalInferenceProxy
       body_str    = read_body(env)
       request     = JSON.parse(body_str)
       model_alias = request["model"]
+      streaming   = request["stream"] == true
 
       swap_r = @controller.ensure_active_if_known(model_alias)
       return swap_error_response(swap_r.failure) if swap_r.failure?
 
-      mode      = @controller.active_mode
-      streaming = request["stream"] == true
-      result    = nil
+      mode       = @controller.active_mode
+      normalizer = AntNormalizer.new(
+        advertised_model:   effective_model(model_alias),
+        supports_reasoning: mode[:supports_reasoning],
+      )
 
+      return open_stream("/v1/messages", body_str, normalizer) if streaming && @upstream_fn.nil?
+
+      result = nil
       @controller.with_generation do
-        upstream_body, status, = call_upstream("/v1/messages", body_str, env)
-        if status == 200
-          normalizer = AntNormalizer.new(
-            advertised_model:   effective_model(model_alias),
-            supports_reasoning: mode[:supports_reasoning],
-          )
-          result = if streaming
-                     [200, SSE_HEADERS.dup, [normalizer.normalize_stream_to_sse(upstream_body)]]
+        body_up, status, = call_upstream("/v1/messages", body_str)
+        result = if status == 200
+                   if streaming
+                     [200, SSE_HEADERS.dup, [normalizer.normalize_stream_to_sse(body_up)]]
                    else
-                     [200, JSON_HEADERS.dup, [JSON.generate(normalizer.normalize(JSON.parse(upstream_body)))]]
+                     [200, JSON_HEADERS.dup, [JSON.generate(normalizer.normalize(JSON.parse(body_up)))]]
                    end
-        else
-          result = upstream_error(status)
-        end
+                 else
+                   upstream_error(status)
+                 end
       end
-
       result
     end
 
@@ -157,33 +176,29 @@ module LocalInferenceProxy
       end
     end
 
-    def call_upstream(path, body_str, env)
+    def open_stream(path, body_str, normalizer)
+      @controller.begin_generation
+      succeeded = false
+      response, client = @upstream_client.open_stream(path, body_str)
+      if response.status == 200
+        on_close = -> { @controller.end_generation }
+        succeeded = true
+        [200, SSE_HEADERS.dup, StreamBody.new(response, client, normalizer, on_close)]
+      else
+        upstream_error(response.status)
+      end
+    rescue StandardError
+      upstream_error(502)
+    ensure
+      @controller.end_generation unless succeeded
+    end
+
+    def call_upstream(path, body_str)
       if @upstream_fn
         @upstream_fn.call(path, body_str)
       else
-        call_upstream_http(path, body_str, env)
+        @upstream_client.call("POST", path, body_str)
       end
-    end
-
-    def call_upstream_http(path, body_str, _env)
-      require "async"
-      endpoint = Async::HTTP::Endpoint.parse("#{UPSTREAM_URL}#{path}")
-      client   = Async::HTTP::Client.new(endpoint)
-
-      headers = Protocol::HTTP::Headers.new
-      headers["content-type"]  = "application/json"
-      headers["authorization"] = "Bearer #{UPSTREAM_TOKEN}" unless UPSTREAM_TOKEN.empty?
-
-      request  = Protocol::HTTP::Request.new("POST", path, headers, body_str)
-      response = client.call(request)
-      status   = response.status
-      body     = response.read
-
-      [body, status, {}]
-    rescue StandardError => e
-      [e.message, 502, {}]
-    ensure
-      client&.close
     end
 
     def read_body(env)
@@ -219,9 +234,16 @@ module LocalInferenceProxy
       @controller.registry.resolve(alias_name) ? alias_name : @advertised_model
     end
 
+    def build_upstream_client
+      UpstreamClient.new(
+        base_url: ENV.fetch("UPSTREAM_URL",   "http://127.0.0.1:8888"),
+        token:    ENV.fetch("UPSTREAM_TOKEN", ""),
+      )
+    end
+
     def build_default_controller
       registry = ModelRegistry.load
-      ModelController.new(registry: registry)
+      ModelController.new(registry: registry, upstream_client: @upstream_client)
     end
   end
 end

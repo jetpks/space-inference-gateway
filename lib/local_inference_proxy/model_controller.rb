@@ -14,15 +14,17 @@ module LocalInferenceProxy
 
     attr_reader :registry
 
-    def initialize(registry:, cp_fn: nil, load_timeout: LOAD_TIMEOUT, poll_interval: POLL_INTERVAL)
-      @registry      = registry
-      @cp_fn         = cp_fn
-      @load_timeout  = load_timeout
-      @poll_interval = poll_interval
-      @semaphore     = Async::Semaphore.new(1)
+    def initialize(registry:, cp_fn: nil, upstream_client: nil,
+                   load_timeout: LOAD_TIMEOUT, poll_interval: POLL_INTERVAL)
+      @registry        = registry
+      @cp_fn           = cp_fn
+      @upstream_client = upstream_client
+      @load_timeout    = load_timeout
+      @poll_interval   = poll_interval
+      @semaphore       = Async::Semaphore.new(1)
       @active_generations = 0
-      @loading_model = nil
-      @active_mode   = { is_diffusion: false, supports_reasoning: true }
+      @loading_model   = nil
+      @active_mode     = { is_diffusion: false, supports_reasoning: true }
     end
 
     def models_list
@@ -81,12 +83,20 @@ module LocalInferenceProxy
       Success(JSON.parse(body))
     end
 
+    def begin_generation
+      @active_generations += 1
+    end
+
+    def end_generation
+      @active_generations -= 1
+    end
+
     # Track in-flight generations. Swap attempts see @active_generations > 0 and 409.
     def with_generation
-      @active_generations += 1
+      begin_generation
       yield
     ensure
-      @active_generations -= 1
+      end_generation
     end
 
     private
@@ -175,27 +185,7 @@ module LocalInferenceProxy
     def cp_call(method, path, body)
       return @cp_fn.call(method, path, body) if @cp_fn
 
-      call_http(method, path, body)
-    end
-
-    def call_http(method, path, body)
-      require "async/http/client"
-      require "async/http/endpoint"
-
-      endpoint = Async::HTTP::Endpoint.parse("#{App::UPSTREAM_URL}#{path}")
-      client   = Async::HTTP::Client.new(endpoint)
-
-      headers = Protocol::HTTP::Headers.new
-      headers["content-type"]  = "application/json"
-      headers["authorization"] = "Bearer #{App::UPSTREAM_TOKEN}" unless App::UPSTREAM_TOKEN.empty?
-
-      request  = Protocol::HTTP::Request.new(method, path, headers, body)
-      response = client.call(request)
-      [response.read, response.status, {}]
-    rescue StandardError => e
-      [e.message, 502, {}]
-    ensure
-      client&.close
+      @upstream_client.call(method, path, body)
     end
   end
 end
