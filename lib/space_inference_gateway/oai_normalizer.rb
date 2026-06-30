@@ -4,7 +4,7 @@ require "json"
 require_relative "reasoning_parser"
 require_relative "schemas"
 
-module LocalInferenceProxy
+module SpaceInferenceGateway
   class OaiNormalizer
     def initialize(advertised_model:, supports_reasoning: true)
       @advertised_model   = advertised_model

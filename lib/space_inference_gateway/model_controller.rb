@@ -2,7 +2,7 @@
 
 require "dry/monads"
 
-module LocalInferenceProxy
+module SpaceInferenceGateway
   class ModelController
     include Dry::Monads[:result]
 

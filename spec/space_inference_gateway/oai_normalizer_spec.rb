@@ -10,7 +10,7 @@ def llamacpp_fixture_json(name)
   JSON.parse(llamacpp_fixture(name))
 end
 
-RSpec.describe LocalInferenceProxy::OaiNormalizer do
+RSpec.describe SpaceInferenceGateway::OaiNormalizer do
   subject(:normalizer) { described_class.new(advertised_model: "test-model") }
 
   let(:oai_ns_fixture) { fixture_json("oai_ns.json") }
@@ -54,12 +54,12 @@ RSpec.describe LocalInferenceProxy::OaiNormalizer do
     end
 
     it "validates against OAI_COMPLETION schema" do
-      schema_result = LocalInferenceProxy::Schemas::OAI_COMPLETION.call(result)
+      schema_result = SpaceInferenceGateway::Schemas::OAI_COMPLETION.call(result)
       expect(schema_result).to be_success
     end
 
     it "contains no diffusion_frame keys at top level" do
-      LocalInferenceProxy::Schemas::DIFFUSION_BANNED_KEYS.each do |key|
+      SpaceInferenceGateway::Schemas::DIFFUSION_BANNED_KEYS.each do |key|
         expect(result.keys).not_to include(key),
                                    "expected result not to contain key #{key.inspect}"
       end
@@ -67,8 +67,8 @@ RSpec.describe LocalInferenceProxy::OaiNormalizer do
 
     it "schema to_h strips any banned keys" do
       payload = result.merge("type" => "diffusion_frame", "block" => 0, "step" => 0, "total" => 48, "text" => "noise")
-      stripped = LocalInferenceProxy::Schemas::OAI_COMPLETION.call(payload).to_h
-      LocalInferenceProxy::Schemas::DIFFUSION_BANNED_KEYS.each do |key|
+      stripped = SpaceInferenceGateway::Schemas::OAI_COMPLETION.call(payload).to_h
+      SpaceInferenceGateway::Schemas::DIFFUSION_BANNED_KEYS.each do |key|
         expect(stripped.keys).not_to include(key)
       end
     end
@@ -80,12 +80,12 @@ RSpec.describe LocalInferenceProxy::OaiNormalizer do
 
     it "(a) all chunks validate strict chat.completion.chunk — no diffusion extras" do
       chunks.each do |chunk|
-        LocalInferenceProxy::Schemas::DIFFUSION_BANNED_KEYS.each do |key|
+        SpaceInferenceGateway::Schemas::DIFFUSION_BANNED_KEYS.each do |key|
           expect(chunk.keys).not_to include(key),
                                     "chunk contains banned key #{key.inspect}: #{chunk.inspect}"
         end
 
-        schema_result = LocalInferenceProxy::Schemas::OAI_CHUNK.call(chunk)
+        schema_result = SpaceInferenceGateway::Schemas::OAI_CHUNK.call(chunk)
         expect(schema_result).to be_success,
                                  "chunk failed schema validation: #{schema_result.errors.to_h.inspect}\nchunk=#{chunk.inspect}"
       end
@@ -148,14 +148,14 @@ RSpec.describe LocalInferenceProxy::OaiNormalizer do
 
     it "all chunks pass strict schema" do
       chunks.each do |chunk|
-        result = LocalInferenceProxy::Schemas::OAI_CHUNK.call(chunk)
+        result = SpaceInferenceGateway::Schemas::OAI_CHUNK.call(chunk)
         expect(result).to be_success, "failed: #{result.errors.to_h.inspect}"
       end
     end
 
     it "no banned diffusion keys present" do
       chunks.each do |chunk|
-        LocalInferenceProxy::Schemas::DIFFUSION_BANNED_KEYS.each do |key|
+        SpaceInferenceGateway::Schemas::DIFFUSION_BANNED_KEYS.each do |key|
           expect(chunk.keys).not_to include(key)
         end
       end
@@ -181,7 +181,7 @@ RSpec.describe LocalInferenceProxy::OaiNormalizer do
     end
 
     it "validates against schema" do
-      expect(LocalInferenceProxy::Schemas::OAI_COMPLETION.call(result)).to be_success
+      expect(SpaceInferenceGateway::Schemas::OAI_COMPLETION.call(result)).to be_success
     end
   end
 
@@ -191,7 +191,7 @@ RSpec.describe LocalInferenceProxy::OaiNormalizer do
     let(:result)   { normalizer.normalize(upstream) }
 
     it "validates OAI_COMPLETION schema" do
-      expect(LocalInferenceProxy::Schemas::OAI_COMPLETION.call(result)).to be_success
+      expect(SpaceInferenceGateway::Schemas::OAI_COMPLETION.call(result)).to be_success
     end
 
     it "reasoning_content present and byte-equal to upstream" do
@@ -249,7 +249,7 @@ RSpec.describe LocalInferenceProxy::OaiNormalizer do
 
     it "every emitted chunk validates OAI_CHUNK" do
       chunks.each do |chunk|
-        r = LocalInferenceProxy::Schemas::OAI_CHUNK.call(chunk)
+        r = SpaceInferenceGateway::Schemas::OAI_CHUNK.call(chunk)
         expect(r).to be_success,
                      "chunk failed schema: #{r.errors.to_h.inspect}\nchunk=#{chunk.inspect}"
       end

@@ -1,5 +1,5 @@
 # frozen_string_literal: true
 
-require_relative "lib/local_inference_proxy"
+require_relative "lib/space_inference_gateway"
 
-run LocalInferenceProxy::App.new
+run SpaceInferenceGateway::App.new

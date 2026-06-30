@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe LocalInferenceProxy::ReasoningParser do
+RSpec.describe SpaceInferenceGateway::ReasoningParser do
   subject(:parser) { described_class.new }
 
   def full_extract(parser, *chunks)

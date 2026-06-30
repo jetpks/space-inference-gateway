@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "local_inference_proxy"
+require "space_inference_gateway"
 
 RSpec.configure do |config|
   config.expect_with :rspec do |expectations|

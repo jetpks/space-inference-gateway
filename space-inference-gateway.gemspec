@@ -3,14 +3,15 @@
 lib = File.expand_path("lib", __dir__)
 $LOAD_PATH.unshift(lib) unless $LOAD_PATH.include?(lib)
 
-require_relative "lib/local_inference_proxy/version"
+require_relative "lib/space_inference_gateway/version"
 
 Gem::Specification.new do |spec|
-  spec.name          = "local-inference-proxy"
-  spec.version       = LocalInferenceProxy::VERSION
+  spec.name          = "space-inference-gateway"
+  spec.version       = SpaceInferenceGateway::VERSION
   spec.authors       = ["eric"]
-  spec.summary       = "Falcon normalization proxy for local unsloth inference (OpenAI + Anthropic flavors)"
-  spec.executables   = ["local-inference-proxy"]
+  spec.summary       = "Falcon gateway for local llama.cpp inference: supervises llama-server, " \
+                       "swaps models, and normalizes OpenAI + Anthropic flavors"
+  spec.executables   = ["space-inference-gateway"]
 
   spec.required_ruby_version = ">= 3.3"
 

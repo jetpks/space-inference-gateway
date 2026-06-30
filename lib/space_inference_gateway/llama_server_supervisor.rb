@@ -8,7 +8,7 @@ require "async/semaphore"
 require "async/process/child"
 require "dry/monads"
 
-module LocalInferenceProxy
+module SpaceInferenceGateway
   class LlamaServerSupervisor
     include Dry::Monads[:result]
 
@@ -20,7 +20,7 @@ module LocalInferenceProxy
 
     def initialize(registry:,
                    binary: DEFAULT_BINARY,
-                   log_dir: File.join(Dir.tmpdir, "local-inference-proxy"),
+                   log_dir: File.join(Dir.tmpdir, "space-inference-gateway"),
                    timeouts: Timeouts.default)
       @registry  = registry
       @binary    = binary
