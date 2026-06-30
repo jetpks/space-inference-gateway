@@ -2,7 +2,7 @@
 
 require "rack/test"
 
-RSpec.describe LocalInferenceProxy::App do
+RSpec.describe SpaceInferenceGateway::App do
   include Rack::Test::Methods
 
   let(:oai_response)   { fixture("oai_ns.json") }
@@ -54,7 +54,7 @@ RSpec.describe LocalInferenceProxy::App do
 
     it "AC6 — non-reasoning response schema-valid" do
       body   = JSON.parse(last_response.body)
-      result = LocalInferenceProxy::Schemas::OAI_COMPLETION.call(body)
+      result = SpaceInferenceGateway::Schemas::OAI_COMPLETION.call(body)
       expect(result).to be_success
     end
   end

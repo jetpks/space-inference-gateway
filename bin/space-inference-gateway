@@ -3,17 +3,17 @@
 
 require "falcon"
 require "async"
-require_relative "../lib/local_inference_proxy"
+require_relative "../lib/space_inference_gateway"
 
 port     = ENV.fetch("PORT", "3001").to_i
 endpoint = Async::HTTP::Endpoint.parse("http://localhost:#{port}")
-app      = LocalInferenceProxy::App.new
+app      = SpaceInferenceGateway::App.new
 # cache: false — disable Async::HTTP::Cache::General. Responses are dynamic
 # (model list, inference, SSE); the cache replays cacheable GETs with an empty
 # body and must not sit in front of this API.
 server   = Falcon::Server.new(Falcon::Server.middleware(app, cache: false), endpoint)
 
-puts "local-inference-proxy listening on http://localhost:#{port}"
+puts "space-inference-gateway listening on http://localhost:#{port}"
 
 Async do
   server.run.wait

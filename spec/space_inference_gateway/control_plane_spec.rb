@@ -51,7 +51,7 @@ RSpec.describe "Model Control Plane (I05 — Supervisor Backend)" do
   let(:port_b) { free_port }
 
   let(:registry) do
-    LocalInferenceProxy::ModelRegistry.new(
+    SpaceInferenceGateway::ModelRegistry.new(
       "default" => "model-a",
       "models"  => {
         "model-a" => {
@@ -73,22 +73,22 @@ RSpec.describe "Model Control Plane (I05 — Supervisor Backend)" do
   end
 
   let(:timeouts) do
-    LocalInferenceProxy::LlamaServerSupervisor::Timeouts.new(
+    SpaceInferenceGateway::LlamaServerSupervisor::Timeouts.new(
       readiness: 10, stop_grace: 0.5, poll_interval: 0.05,
     )
   end
 
   let(:supervisor) do
-    LocalInferenceProxy::LlamaServerSupervisor.new(
+    SpaceInferenceGateway::LlamaServerSupervisor.new(
       registry: registry, timeouts: timeouts, log_dir: Dir.tmpdir,
     )
   end
 
   let(:controller) do
-    LocalInferenceProxy::ModelController.new(registry: registry, supervisor: supervisor)
+    SpaceInferenceGateway::ModelController.new(registry: registry, supervisor: supervisor)
   end
 
-  let(:app) { LocalInferenceProxy::App.new(controller: controller) }
+  let(:app) { SpaceInferenceGateway::App.new(controller: controller) }
 
   around do |ex|
     ENV["FAKE_UNREADY_POLLS"] = "3"
@@ -132,7 +132,7 @@ RSpec.describe "Model Control Plane (I05 — Supervisor Backend)" do
     end
 
     it "validates against Schemas::MODELS_LIST" do
-      result = LocalInferenceProxy::Schemas::MODELS_LIST.call(JSON.parse(last_response.body))
+      result = SpaceInferenceGateway::Schemas::MODELS_LIST.call(JSON.parse(last_response.body))
       expect(result).to be_success
     end
   end
@@ -357,7 +357,7 @@ RSpec.describe "Model Control Plane (I05 — Supervisor Backend)" do
           parsed = JSON.parse(resp.body)
           expect(parsed["status"]).to eq("loaded")
           expect(parsed["model_path"]).to eq("/fake/a.gguf")
-          expect(LocalInferenceProxy::Schemas::LOAD_RESPONSE.call(parsed)).to be_success
+          expect(SpaceInferenceGateway::Schemas::LOAD_RESPONSE.call(parsed)).to be_success
         end
       end
     end
@@ -375,7 +375,7 @@ RSpec.describe "Model Control Plane (I05 — Supervisor Backend)" do
           expect { Process.kill(0, pid) }.to raise_error(Errno::ESRCH)
 
           parsed = JSON.parse(resp.body)
-          expect(LocalInferenceProxy::Schemas::UNLOAD_RESPONSE.call(parsed)).to be_success
+          expect(SpaceInferenceGateway::Schemas::UNLOAD_RESPONSE.call(parsed)).to be_success
         end
       end
     end
@@ -387,7 +387,7 @@ RSpec.describe "Model Control Plane (I05 — Supervisor Backend)" do
           expect(idle.status).to eq(200)
           idle_body = JSON.parse(idle.body)
           expect(idle_body["fraction"]).to eq(0.0)
-          expect(LocalInferenceProxy::Schemas::LOAD_PROGRESS.call(idle_body)).to be_success
+          expect(SpaceInferenceGateway::Schemas::LOAD_PROGRESS.call(idle_body)).to be_success
 
           controller.ensure_active("model-a")
 
@@ -395,7 +395,7 @@ RSpec.describe "Model Control Plane (I05 — Supervisor Backend)" do
           expect(ready.status).to eq(200)
           ready_body = JSON.parse(ready.body)
           expect(ready_body["fraction"]).to eq(1.0)
-          expect(LocalInferenceProxy::Schemas::LOAD_PROGRESS.call(ready_body)).to be_success
+          expect(SpaceInferenceGateway::Schemas::LOAD_PROGRESS.call(ready_body)).to be_success
         end
       end
     end
@@ -405,19 +405,19 @@ RSpec.describe "Model Control Plane (I05 — Supervisor Backend)" do
 
   describe "AC7 — readiness timeout is clean (no hang)" do
     let(:timeout_timeouts) do
-      LocalInferenceProxy::LlamaServerSupervisor::Timeouts.new(
+      SpaceInferenceGateway::LlamaServerSupervisor::Timeouts.new(
         readiness: 0.5, stop_grace: 0.5, poll_interval: 0.05,
       )
     end
 
     let(:timeout_supervisor) do
-      LocalInferenceProxy::LlamaServerSupervisor.new(
+      SpaceInferenceGateway::LlamaServerSupervisor.new(
         registry: registry, timeouts: timeout_timeouts, log_dir: Dir.tmpdir,
       )
     end
 
     let(:timeout_controller) do
-      LocalInferenceProxy::ModelController.new(registry: registry, supervisor: timeout_supervisor)
+      SpaceInferenceGateway::ModelController.new(registry: registry, supervisor: timeout_supervisor)
     end
 
     around do |ex|
@@ -443,7 +443,7 @@ RSpec.describe "Model Control Plane (I05 — Supervisor Backend)" do
     it "POST /v1/chat/completions with never-ready alias returns HTTP 504" do
       Async do |task|
         task.with_timeout(20) do
-          timeout_app = LocalInferenceProxy::App.new(controller: timeout_controller)
+          timeout_app = SpaceInferenceGateway::App.new(controller: timeout_controller)
           proxy_port, proxy_task, proxy_bound = boot_proxy(timeout_app)
           client = http_client(proxy_port)
 

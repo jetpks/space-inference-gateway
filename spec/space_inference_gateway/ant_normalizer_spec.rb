@@ -10,7 +10,7 @@ def fixture_llamacpp_json(name)
   JSON.parse(fixture_llamacpp(name))
 end
 
-RSpec.describe LocalInferenceProxy::AntNormalizer do
+RSpec.describe SpaceInferenceGateway::AntNormalizer do
   subject(:normalizer) { described_class.new(advertised_model: "test-model") }
 
   let(:ant_ns_fixture) { fixture_json("ant_ns.json") }
@@ -57,7 +57,7 @@ RSpec.describe LocalInferenceProxy::AntNormalizer do
     end
 
     it "validates against ANT_MESSAGE schema" do
-      schema_result = LocalInferenceProxy::Schemas::ANT_MESSAGE.call(result)
+      schema_result = SpaceInferenceGateway::Schemas::ANT_MESSAGE.call(result)
       expect(schema_result).to be_success,
                                "schema errors: #{schema_result.errors.to_h.inspect}"
     end
@@ -177,7 +177,7 @@ RSpec.describe LocalInferenceProxy::AntNormalizer do
     end
 
     it "validates against schema" do
-      expect(LocalInferenceProxy::Schemas::ANT_MESSAGE.call(result)).to be_success
+      expect(SpaceInferenceGateway::Schemas::ANT_MESSAGE.call(result)).to be_success
     end
   end
 
@@ -187,7 +187,7 @@ RSpec.describe LocalInferenceProxy::AntNormalizer do
     let(:result) { normalizer.normalize(raw) }
 
     it "validates against ANT_MESSAGE schema" do
-      schema_result = LocalInferenceProxy::Schemas::ANT_MESSAGE.call(result)
+      schema_result = SpaceInferenceGateway::Schemas::ANT_MESSAGE.call(result)
       expect(schema_result).to be_success, "schema errors: #{schema_result.errors.to_h.inspect}"
     end
 

@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-module LocalInferenceProxy
+module SpaceInferenceGateway
   # Streaming-capable extractor that lifts <think>…</think> out of text.
   # Buffers across chunk boundaries so no partial tag ever leaks into
   # visible content.

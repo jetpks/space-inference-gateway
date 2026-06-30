@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-RSpec.describe LocalInferenceProxy::Schemas do
+RSpec.describe SpaceInferenceGateway::Schemas do
   describe "OAI_COMPLETION" do
     subject(:schema) { described_class::OAI_COMPLETION }
 

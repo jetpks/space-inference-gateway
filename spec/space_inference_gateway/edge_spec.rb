@@ -60,7 +60,7 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
   # Fixture registry carrying the model aliases the edge tests reference.
   # Decouples edge tests from the production config/models.yml.
   def fixture_registry
-    LocalInferenceProxy::ModelRegistry.new(
+    SpaceInferenceGateway::ModelRegistry.new(
       "default" => "diffusiongemma",
       "models"  => {
         "diffusiongemma" => {
@@ -79,8 +79,8 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
   def make_app(upstream_client:)
     registry   = fixture_registry
     supervisor = FakeSupervisor.new("diffusiongemma")
-    controller = LocalInferenceProxy::ModelController.new(registry: registry, supervisor: supervisor)
-    LocalInferenceProxy::App.new(upstream_client: upstream_client, controller: controller)
+    controller = SpaceInferenceGateway::ModelController.new(registry: registry, supervisor: supervisor)
+    SpaceInferenceGateway::App.new(upstream_client: upstream_client, controller: controller)
   end
 
   # ── AC1 — Boot + routing over real HTTP ────────────────────────────────────
@@ -89,7 +89,7 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
     it "GET /v1/models returns 200 with OpenAI list shape" do
       Async do |task|
         task.with_timeout(5) do
-          app = LocalInferenceProxy::App.new(
+          app = SpaceInferenceGateway::App.new(
             upstream_fn: ->(_path, _body) { [fixture("oai_ns.json"), 200, {}] },
           )
           proxy_port, proxy_task, proxy_bound = boot_proxy(app)
@@ -132,7 +132,7 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
           end
 
           stub_port, stub_task, stub_bound = boot_stub(stub_handler)
-          upstream = LocalInferenceProxy::UpstreamClient.new(
+          upstream = SpaceInferenceGateway::UpstreamClient.new(
             base_url: "http://localhost:#{stub_port}",
             token:    stub_token,
           )
@@ -175,7 +175,7 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
           end
 
           stub_port, stub_task, stub_bound = boot_stub(stub_handler)
-          upstream = LocalInferenceProxy::UpstreamClient.new(base_url: "http://localhost:#{stub_port}")
+          upstream = SpaceInferenceGateway::UpstreamClient.new(base_url: "http://localhost:#{stub_port}")
           app = make_app(upstream_client: upstream)
           proxy_port, proxy_task, proxy_bound = boot_proxy(app)
           client = client_for(proxy_port)
@@ -226,7 +226,7 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
         end
 
         stub_port, stub_task, stub_bound = boot_stub(stub_handler)
-        upstream = LocalInferenceProxy::UpstreamClient.new(base_url: "http://localhost:#{stub_port}")
+        upstream = SpaceInferenceGateway::UpstreamClient.new(base_url: "http://localhost:#{stub_port}")
         app      = make_app(upstream_client: upstream)
         proxy_port, proxy_task, proxy_bound = boot_proxy(app)
         client = client_for(proxy_port)
@@ -260,7 +260,7 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
           end
 
           full_output = chunks.join
-          normalizer  = LocalInferenceProxy::OaiNormalizer.new(
+          normalizer  = SpaceInferenceGateway::OaiNormalizer.new(
             advertised_model:   "diffusiongemma",
             supports_reasoning: true,
           )
@@ -311,7 +311,7 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
           end
 
           stub_port, stub_task, stub_bound = boot_stub(stub_handler)
-          upstream = LocalInferenceProxy::UpstreamClient.new(base_url: "http://localhost:#{stub_port}")
+          upstream = SpaceInferenceGateway::UpstreamClient.new(base_url: "http://localhost:#{stub_port}")
           app = make_app(upstream_client: upstream)
           proxy_port, proxy_task, proxy_bound = boot_proxy(app)
           stream_client = client_for(proxy_port)
@@ -392,13 +392,13 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
           stub_b_port, stub_b_task, stub_b_bound = boot_stub(make_stub.call(hits_b))
 
           # App A: pointed at stub A
-          upstream_a = LocalInferenceProxy::UpstreamClient.new(base_url: "http://localhost:#{stub_a_port}")
+          upstream_a = SpaceInferenceGateway::UpstreamClient.new(base_url: "http://localhost:#{stub_a_port}")
           app_a = make_app(upstream_client: upstream_a)
           proxy_a_port, proxy_a_task, proxy_a_bound = boot_proxy(app_a)
           client_a = client_for(proxy_a_port)
 
           # App B: pointed at stub B
-          upstream_b = LocalInferenceProxy::UpstreamClient.new(base_url: "http://localhost:#{stub_b_port}")
+          upstream_b = SpaceInferenceGateway::UpstreamClient.new(base_url: "http://localhost:#{stub_b_port}")
           app_b = make_app(upstream_client: upstream_b)
           proxy_b_port, proxy_b_task, proxy_b_bound = boot_proxy(app_b)
           client_b = client_for(proxy_b_port)
@@ -423,7 +423,7 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
 
             # Structural: ModelController must not reference App:: constants
             mc_source = File.read(
-              File.expand_path("../../lib/local_inference_proxy/model_controller.rb", __dir__),
+              File.expand_path("../../lib/space_inference_gateway/model_controller.rb", __dir__),
             )
             expect(mc_source).not_to include("App::UPSTREAM_URL")
             expect(mc_source).not_to include("App::UPSTREAM_TOKEN")

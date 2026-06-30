@@ -8,7 +8,7 @@ require_relative "model_controller"
 require_relative "upstream_client"
 require_relative "llama_server_supervisor"
 
-module LocalInferenceProxy
+module SpaceInferenceGateway
   class App
     ADVERTISED_MODEL = ENV.fetch("ADVERTISED_MODEL", "local-inference")
 

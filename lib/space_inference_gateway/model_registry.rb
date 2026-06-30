@@ -2,7 +2,7 @@
 
 require "yaml"
 
-module LocalInferenceProxy
+module SpaceInferenceGateway
   class ModelRegistry
     DEFAULT_CONFIG_PATH = File.expand_path("../../config/models.yml", __dir__)
 

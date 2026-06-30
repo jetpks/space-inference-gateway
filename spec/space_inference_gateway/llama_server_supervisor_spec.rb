@@ -5,7 +5,7 @@ require "socket"
 
 FAKE_BINARY = File.expand_path("../support/fake_llama_server", __dir__)
 
-RSpec.describe LocalInferenceProxy::LlamaServerSupervisor do
+RSpec.describe SpaceInferenceGateway::LlamaServerSupervisor do
   def free_port
     srv = TCPServer.new("127.0.0.1", 0)
     port = srv.addr[1]
@@ -14,7 +14,7 @@ RSpec.describe LocalInferenceProxy::LlamaServerSupervisor do
   end
 
   def build_registry(models_hash, default_alias)
-    LocalInferenceProxy::ModelRegistry.new(
+    SpaceInferenceGateway::ModelRegistry.new(
       "default" => default_alias,
       "models"  => models_hash,
     )
@@ -40,9 +40,9 @@ RSpec.describe LocalInferenceProxy::LlamaServerSupervisor do
   end
 
   let(:supervisor) do
-    LocalInferenceProxy::LlamaServerSupervisor.new(
+    SpaceInferenceGateway::LlamaServerSupervisor.new(
       registry: registry,
-      timeouts:  LocalInferenceProxy::LlamaServerSupervisor::Timeouts.new(readiness: 10, stop_grace: 0.5, poll_interval: 0.05),
+      timeouts:  SpaceInferenceGateway::LlamaServerSupervisor::Timeouts.new(readiness: 10, stop_grace: 0.5, poll_interval: 0.05),
       log_dir:   Dir.tmpdir,
     )
   end
@@ -77,7 +77,7 @@ RSpec.describe LocalInferenceProxy::LlamaServerSupervisor do
     end
 
     it "config/models.yml carries llama.cpp launch fields and has a text-model default" do
-      loaded = LocalInferenceProxy::ModelRegistry.load
+      loaded = SpaceInferenceGateway::ModelRegistry.load
       expect(loaded.default_alias).to eq("qwen3-35b-a3b")
       expect(loaded.aliases).to include("qwen3-35b-a3b")
       expect(loaded.aliases).not_to include("diffusiongemma")
@@ -139,7 +139,7 @@ RSpec.describe LocalInferenceProxy::LlamaServerSupervisor do
 
     it "falls back to constructor binary when entry omits :binary" do
       entry = sample_entry.except(:binary)
-      sup   = LocalInferenceProxy::LlamaServerSupervisor.new(
+      sup   = SpaceInferenceGateway::LlamaServerSupervisor.new(
         registry: registry, binary: "/custom/llama-server", log_dir: Dir.tmpdir,
       )
       expect(sup.send(:build_argv, entry).first).to eq("/custom/llama-server")
@@ -229,9 +229,9 @@ RSpec.describe LocalInferenceProxy::LlamaServerSupervisor do
       let(:unready_polls) { 99_999 }
 
       it "returns Failure(:readiness_timeout) and stops the child" do
-        timeout_sup = LocalInferenceProxy::LlamaServerSupervisor.new(
+        timeout_sup = SpaceInferenceGateway::LlamaServerSupervisor.new(
           registry: registry,
-          timeouts:  LocalInferenceProxy::LlamaServerSupervisor::Timeouts.new(readiness: 0.5, stop_grace: 0.5, poll_interval: 0.05),
+          timeouts:  SpaceInferenceGateway::LlamaServerSupervisor::Timeouts.new(readiness: 0.5, stop_grace: 0.5, poll_interval: 0.05),
           log_dir:   Dir.tmpdir,
         )
 
@@ -282,9 +282,9 @@ RSpec.describe LocalInferenceProxy::LlamaServerSupervisor do
                                   "ctx" => 0, "parallel" => 1, "binary" => FAKE_BINARY,
                                 },
                               }, "model-b",)
-      sup_b = LocalInferenceProxy::LlamaServerSupervisor.new(
+      sup_b = SpaceInferenceGateway::LlamaServerSupervisor.new(
         registry: reg_b,
-        timeouts:  LocalInferenceProxy::LlamaServerSupervisor::Timeouts.new(readiness: 10, stop_grace: 0.5, poll_interval: 0.05),
+        timeouts:  SpaceInferenceGateway::LlamaServerSupervisor::Timeouts.new(readiness: 10, stop_grace: 0.5, poll_interval: 0.05),
         log_dir:   Dir.tmpdir,
       )
 

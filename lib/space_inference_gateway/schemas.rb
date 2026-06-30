@@ -2,7 +2,7 @@
 
 require "dry-schema"
 
-module LocalInferenceProxy
+module SpaceInferenceGateway
   module Schemas
     # OpenAI non-stream chat.completion
     OAI_COMPLETION = Dry::Schema.JSON do

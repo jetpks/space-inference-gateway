@@ -3,7 +3,7 @@
 require "async/http/client"
 require "async/http/endpoint"
 
-module LocalInferenceProxy
+module SpaceInferenceGateway
   # Shared HTTP client for upstream requests.
   # base_url accepts a String or any callable (#call → String); resolved per request.
   class UpstreamClient
