@@ -11,10 +11,16 @@ module SpaceInferenceGateway
       new(raw)
     end
 
+    # Path-valued entry keys get `~` expanded (and made absolute) so config can
+    # use `~/...` — argv goes straight to exec, which never expands a shell `~`.
+    PATH_KEYS = %i[gguf binary].freeze
+
     def initialize(config)
       @default = config["default"]
       @models  = (config["models"] || {}).transform_values do |v|
-        v.transform_keys(&:to_sym)
+        entry = v.transform_keys(&:to_sym)
+        PATH_KEYS.each { |k| entry[k] = File.expand_path(entry[k]) if entry[k] }
+        entry
       end
     end
 
