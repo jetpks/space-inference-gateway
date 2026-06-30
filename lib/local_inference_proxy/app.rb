@@ -74,8 +74,10 @@ module LocalInferenceProxy
       model_alias = request["model"]
       streaming   = request["stream"] == true
 
-      swap_r = @controller.ensure_active_if_known(model_alias)
-      return swap_error_response(swap_r.failure) if swap_r.failure?
+      unless @upstream_fn # legacy test seam injects upstream directly; skip the supervisor
+        swap_r = @controller.ensure_active_if_known(model_alias)
+        return swap_error_response(swap_r.failure) if swap_r.failure?
+      end
 
       mode       = @controller.active_mode
       normalizer = OaiNormalizer.new(
@@ -107,8 +109,10 @@ module LocalInferenceProxy
       model_alias = request["model"]
       streaming   = request["stream"] == true
 
-      swap_r = @controller.ensure_active_if_known(model_alias)
-      return swap_error_response(swap_r.failure) if swap_r.failure?
+      unless @upstream_fn # legacy test seam injects upstream directly; skip the supervisor
+        swap_r = @controller.ensure_active_if_known(model_alias)
+        return swap_error_response(swap_r.failure) if swap_r.failure?
+      end
 
       mode       = @controller.active_mode
       normalizer = AntNormalizer.new(

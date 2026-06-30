@@ -30,11 +30,15 @@ module LocalInferenceProxy
       @supervisor.base_url
     end
 
-    # Unknown or nil alias → Success() pass-through. Known alias → ensure_active.
+    # Lazy auto-swap on the request's `model` field. Real clients (Claude Code,
+    # opencode) send their own model names, not our registry aliases, so an
+    # unknown/nil name must still be served: keep whatever is already running,
+    # else start the default. A known alias swaps to it as before.
     def ensure_active_if_known(alias_name)
-      return Success() unless alias_name && @registry.resolve(alias_name)
+      return ensure_active(alias_name) if alias_name && @registry.resolve(alias_name)
+      return Success() if @supervisor.running?
 
-      ensure_active(alias_name)
+      ensure_active(@registry.default_alias)
     end
 
     # Explicit load — Failure(:unknown_model) for unregistered aliases.

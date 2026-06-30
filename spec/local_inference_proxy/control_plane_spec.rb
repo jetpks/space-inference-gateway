@@ -174,6 +174,35 @@ RSpec.describe "Model Control Plane (I05 — Supervisor Backend)" do
       end
     end
 
+    it "lazy: unknown model name with nothing running starts the default" do
+      Async do |task|
+        task.with_timeout(30) do
+          expect(supervisor.running?).to be(false)
+          result = controller.ensure_active_if_known("claude-sonnet-4-5")
+          expect(result).to be_success
+          expect(supervisor.active_alias).to eq("model-a")
+          expect(supervisor.running?).to be(true)
+        ensure
+          supervisor.stop
+        end
+      end
+    end
+
+    it "lazy: unknown model name leaves an already-running model untouched" do
+      Async do |task|
+        task.with_timeout(30) do
+          controller.ensure_active("model-b")
+          pid_before = supervisor.pid
+          result = controller.ensure_active_if_known("gpt-4o-mini")
+          expect(result).to be_success
+          expect(supervisor.active_alias).to eq("model-b")
+          expect(supervisor.pid).to eq(pid_before)
+        ensure
+          supervisor.stop
+        end
+      end
+    end
+
     it "POST /v1/load with unknown alias returns 4xx" do
       Async do |task|
         task.with_timeout(5) do
