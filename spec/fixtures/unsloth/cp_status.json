@@ -1,6 +1,6 @@
 {
-  "active_model": "/Users/lemonslut/.lmstudio/models/unsloth/diffusiongemma-26B-A4B-it-GGUF",
-  "model_identifier": "/Users/lemonslut/.lmstudio/models/unsloth/diffusiongemma-26B-A4B-it-GGUF",
+  "active_model": "/Users/user/.lmstudio/models/unsloth/diffusiongemma-26B-A4B-it-GGUF",
+  "model_identifier": "/Users/user/.lmstudio/models/unsloth/diffusiongemma-26B-A4B-it-GGUF",
   "is_vision": false,
   "is_gguf": true,
   "is_diffusion": true,
@@ -10,7 +10,7 @@
   "has_audio_input": false,
   "loading": [],
   "loaded": [
-    "/Users/lemonslut/.lmstudio/models/unsloth/diffusiongemma-26B-A4B-it-GGUF"
+    "/Users/user/.lmstudio/models/unsloth/diffusiongemma-26B-A4B-it-GGUF"
   ],
   "inference": {
     "temperature": 1.0,
