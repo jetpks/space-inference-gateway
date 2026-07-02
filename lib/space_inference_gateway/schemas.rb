@@ -40,7 +40,7 @@ module SpaceInferenceGateway
     end
 
     # OpenAI streaming chat.completion.chunk
-    OAI_CHUNK = Dry::Schema.JSON do
+    OAI_CHUNK = Dry::Schema.JSON do # rubocop:disable Metrics/BlockLength
       config.validate_keys = true
 
       required(:id).filled(:string)
@@ -65,6 +65,11 @@ module SpaceInferenceGateway
           end
         end
         optional(:finish_reason).maybe(:string)
+      end
+      optional(:usage).hash do
+        required(:prompt_tokens).filled(:integer)
+        required(:completion_tokens).filled(:integer)
+        required(:total_tokens).filled(:integer)
       end
     end
 

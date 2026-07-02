@@ -5,7 +5,7 @@ require_relative "reasoning_parser"
 require_relative "schemas"
 
 module SpaceInferenceGateway
-  class OaiNormalizer
+  class OaiNormalizer # rubocop:disable Metrics/ClassLength
     def initialize(advertised_model:, supports_reasoning: true)
       @advertised_model   = advertised_model
       @supports_reasoning = supports_reasoning
@@ -181,8 +181,16 @@ module SpaceInferenceGateway
     end
 
     def emit_chunks(data, canonical, created, parser)
-      base = base_chunk(canonical, created)
-      (data["choices"] || []).flat_map { |c| emit_choice(c, base, canonical, created, parser) }
+      base    = base_chunk(canonical, created)
+      choices = data["choices"] || []
+
+      return [usage_chunk(base, data["usage"])] if choices.empty? && data["usage"].is_a?(Hash)
+
+      choices.flat_map { |c| emit_choice(c, base, canonical, created, parser) }
+    end
+
+    def usage_chunk(base, usage)
+      base.merge("choices" => [], "usage" => sanitize_usage(usage))
     end
 
     def emit_choice(choice, base, canonical, created, parser)

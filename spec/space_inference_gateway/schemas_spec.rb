@@ -106,6 +106,19 @@ RSpec.describe SpaceInferenceGateway::Schemas do
                                   }])
       expect(schema.call(payload)).to be_success
     end
+
+    it "accepts a usage-only chunk (empty choices + usage)" do
+      payload = valid_chunk.merge(
+        "choices" => [],
+        "usage" => { "prompt_tokens" => 281, "completion_tokens" => 175, "total_tokens" => 456 },
+      )
+      expect(schema.call(payload)).to be_success
+    end
+
+    it "still rejects an unexpected top-level key" do
+      payload = valid_chunk.merge("choices" => [], "unexpected_key" => "bad")
+      expect(schema.call(payload)).not_to be_success
+    end
   end
 
   describe "ANT_MESSAGE" do
