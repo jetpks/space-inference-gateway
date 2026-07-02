@@ -9,7 +9,52 @@ require_relative "upstream_client"
 require_relative "llama_server_supervisor"
 
 module SpaceInferenceGateway
+  # Relays a non-200 upstream response back to the caller in the correct API
+  # flavor. Extracted from App to keep Metrics/ClassLength in bounds.
+  module UpstreamErrorRelay
+    private
+
+    # Returns a Rack triple [status, headers, [body]] that mirrors the upstream
+    # error in the client's API flavor (:oai or :ant).
+    def relay_upstream_error(status, body, flavor:)
+      case flavor
+      when :oai
+        [status, { "content-type" => "application/json" }, [oai_error_body(body)]]
+      when :ant
+        msg = safe_error_message(body) || body
+        out = JSON.generate({ type: "error", error: { type: ant_error_type(status), message: msg } })
+        [status, { "content-type" => "application/json" }, [out]]
+      end
+    end
+
+    def oai_error_body(body)
+      JSON.parse(body)
+      body
+    rescue JSON::ParserError
+      JSON.generate({ error: { message: body, type: "upstream_error" } })
+    end
+
+    def safe_error_message(body)
+      JSON.parse(body).dig("error", "message")
+    rescue JSON::ParserError
+      nil
+    end
+
+    def ant_error_type(status)
+      case status
+      when 401      then "authentication_error"
+      when 403      then "permission_error"
+      when 429      then "rate_limit_error"
+      when 529      then "overloaded_error"
+      when 500..599 then "api_error"
+      else               "invalid_request_error"
+      end
+    end
+  end
+
   class App
+    include UpstreamErrorRelay
+
     ADVERTISED_MODEL = ENV.fetch("ADVERTISED_MODEL", "local-inference")
 
     JSON_HEADERS = { "content-type" => "application/json" }.freeze
@@ -85,7 +130,7 @@ module SpaceInferenceGateway
         supports_reasoning: mode[:supports_reasoning],
       )
 
-      return open_stream("/v1/chat/completions", body_str, normalizer) if streaming && @upstream_fn.nil?
+      return open_stream("/v1/chat/completions", body_str, normalizer, flavor: :oai) if streaming && @upstream_fn.nil?
 
       result = nil
       @controller.with_generation do
@@ -97,7 +142,7 @@ module SpaceInferenceGateway
                      [200, JSON_HEADERS.dup, [JSON.generate(normalizer.normalize(JSON.parse(body_up)))]]
                    end
                  else
-                   upstream_error(status)
+                   relay_upstream_error(status, body_up, flavor: :oai)
                  end
       end
       result
@@ -120,7 +165,7 @@ module SpaceInferenceGateway
         supports_reasoning: mode[:supports_reasoning],
       )
 
-      return open_stream("/v1/messages", body_str, normalizer) if streaming && @upstream_fn.nil?
+      return open_stream("/v1/messages", body_str, normalizer, flavor: :ant) if streaming && @upstream_fn.nil?
 
       result = nil
       @controller.with_generation do
@@ -132,7 +177,7 @@ module SpaceInferenceGateway
                      [200, JSON_HEADERS.dup, [JSON.generate(normalizer.normalize(JSON.parse(body_up)))]]
                    end
                  else
-                   upstream_error(status)
+                   relay_upstream_error(status, body_up, flavor: :ant)
                  end
       end
       result
@@ -182,7 +227,7 @@ module SpaceInferenceGateway
       end
     end
 
-    def open_stream(path, body_str, normalizer)
+    def open_stream(path, body_str, normalizer, flavor:)
       @controller.begin_generation
       succeeded = false
       response, client = @upstream_client.open_stream(path, body_str)
@@ -191,7 +236,7 @@ module SpaceInferenceGateway
         succeeded = true
         [200, SSE_HEADERS.dup, StreamBody.new(response, client, normalizer, on_close)]
       else
-        upstream_error(response.status)
+        relay_upstream_error(response.status, response.read.tap { client.close }, flavor: flavor)
       end
     rescue StandardError
       upstream_error(502)

@@ -111,4 +111,114 @@ RSpec.describe SpaceInferenceGateway::App do
       expect(last_response.body.strip).to end_with("data: [DONE]")
     end
   end
+
+  describe "upstream error passthrough" do
+    let(:incident_body) do
+      '{"error":{"code":400,"message":"Cannot have 2 or more assistant messages at the end of the list.","type":"invalid_request_error"}}'
+    end
+
+    describe "OAI non-stream — upstream 400 relayed verbatim (AC1)" do
+      let(:upstream_fn) { ->(_path, _body) { [incident_body, 400, {}] } }
+
+      before do
+        post "/v1/chat/completions",
+             JSON.generate({ model: "any", messages: [] }),
+             "CONTENT_TYPE" => "application/json"
+      end
+
+      it "returns HTTP 400" do
+        expect(last_response.status).to eq(400)
+      end
+
+      it "returns application/json content-type" do
+        expect(last_response.headers["content-type"]).to include("application/json")
+      end
+
+      it "body is byte-verbatim the upstream JSON" do
+        expect(last_response.body).to eq(incident_body)
+      end
+    end
+
+    describe "ANT non-stream — upstream 400 wrapped in Anthropic envelope (AC3)" do
+      let(:upstream_fn) { ->(_path, _body) { [incident_body, 400, {}] } }
+
+      before do
+        post "/v1/messages",
+             JSON.generate({ model: "any", messages: [], max_tokens: 100 }),
+             "CONTENT_TYPE" => "application/json"
+      end
+
+      it "returns HTTP 400" do
+        expect(last_response.status).to eq(400)
+      end
+
+      it "wraps in Anthropic error envelope with invalid_request_error type" do
+        body = JSON.parse(last_response.body)
+        expect(body["type"]).to eq("error")
+        expect(body.dig("error", "type")).to eq("invalid_request_error")
+        expect(body.dig("error", "message")).to eq(
+          "Cannot have 2 or more assistant messages at the end of the list.",
+        )
+      end
+    end
+
+    describe "ANT non-stream — upstream 503 maps to api_error (AC3 spot-check)" do
+      let(:upstream_fn) { ->(_path, _body) { ['{"error":{"message":"overloaded"}}', 503, {}] } }
+
+      before do
+        post "/v1/messages",
+             JSON.generate({ model: "any", messages: [], max_tokens: 100 }),
+             "CONTENT_TYPE" => "application/json"
+      end
+
+      it "returns HTTP 503" do
+        expect(last_response.status).to eq(503)
+      end
+
+      it "maps 5xx to api_error type" do
+        expect(JSON.parse(last_response.body).dig("error", "type")).to eq("api_error")
+      end
+    end
+
+    describe "OAI non-stream — unparseable upstream body wrapped in error envelope (AC5)" do
+      let(:upstream_fn) { ->(_path, _body) { ["boom", 500, {}] } }
+
+      before do
+        post "/v1/chat/completions",
+             JSON.generate({ model: "any", messages: [] }),
+             "CONTENT_TYPE" => "application/json"
+      end
+
+      it "returns HTTP 500" do
+        expect(last_response.status).to eq(500)
+      end
+
+      it "wraps non-JSON body in OAI error envelope" do
+        body = JSON.parse(last_response.body)
+        expect(body.dig("error", "message")).to eq("boom")
+        expect(body.dig("error", "type")).to eq("upstream_error")
+      end
+    end
+
+    describe "ANT non-stream — unparseable upstream body wrapped in ANT error envelope (AC5)" do
+      let(:upstream_fn) { ->(_path, _body) { ["boom", 500, {}] } }
+
+      before do
+        post "/v1/messages",
+             JSON.generate({ model: "any", messages: [], max_tokens: 100 }),
+             "CONTENT_TYPE" => "application/json"
+      end
+
+      it "returns HTTP 500" do
+        expect(last_response.status).to eq(500)
+      end
+
+      it "wraps non-JSON body in ANT error envelope" do
+        body = JSON.parse(last_response.body)
+        expect(body["type"]).to eq("error")
+        expect(body.dig("error", "type")).to eq("api_error")
+        expect(body.dig("error", "message")).to eq("boom")
+      end
+    end
+  end
 end
