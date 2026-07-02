@@ -5,7 +5,7 @@ require_relative "reasoning_parser"
 require_relative "schemas"
 
 module SpaceInferenceGateway
-  class AntNormalizer
+  class AntNormalizer # rubocop:disable Metrics/ClassLength
     def initialize(advertised_model:, supports_reasoning: true)
       @advertised_model   = advertised_model
       @supports_reasoning = supports_reasoning
@@ -74,6 +74,7 @@ module SpaceInferenceGateway
       {
         result: [], text_buffer: +"", in_text: false,
         thinking_buffer: +"", in_thinking: false, native_thinking: false,
+        tool_use_indexes: [],
       }
     end
 
@@ -82,7 +83,7 @@ module SpaceInferenceGateway
       when "message_start"       then handle_message_start(ev, state)
       when "content_block_start" then handle_block_start(ev, state)
       when "content_block_delta" then handle_block_delta(ev, state)
-      when "content_block_stop"  then handle_block_stop(state)
+      when "content_block_stop"  then handle_block_stop(ev, state)
       when "message_delta"       then state[:result] << { event: "message_delta", data: ev[:data] }
       when "message_stop"        then state[:result] << { event: "message_stop",  data: ev[:data] }
       end
@@ -103,6 +104,9 @@ module SpaceInferenceGateway
       when "text"
         state[:in_text]     = true
         state[:text_buffer] = +""
+      when "tool_use"
+        state[:tool_use_indexes] << ev[:data]["index"]
+        state[:result] << { event: "content_block_start", data: ev[:data] }
       end
     end
 
@@ -111,11 +115,19 @@ module SpaceInferenceGateway
       case delta&.fetch("type", nil)
       when "thinking_delta" then state[:thinking_buffer] << delta["thinking"].to_s if state[:in_thinking]
       when "text_delta"     then state[:text_buffer] << delta["text"].to_s if state[:in_text]
+      when "input_json_delta"
+        if state[:tool_use_indexes].include?(ev[:data]["index"])
+          state[:result] << { event: "content_block_delta",
+data: ev[:data], }
+        end
       end
     end
 
-    def handle_block_stop(state)
-      if state[:in_thinking]
+    def handle_block_stop(ev, state)
+      idx = ev[:data]["index"]
+      if state[:tool_use_indexes].include?(idx)
+        state[:result] << { event: "content_block_stop", data: ev[:data] }
+      elsif state[:in_thinking]
         state[:in_thinking] = false
         state[:result].concat(emit_thinking_events(state[:thinking_buffer]))
       elsif state[:in_text]

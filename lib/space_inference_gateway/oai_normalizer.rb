@@ -126,6 +126,7 @@ module SpaceInferenceGateway
         "refusal" => msg["refusal"],
       }
       message["reasoning_content"] = thinking unless thinking.empty?
+      message["tool_calls"] = msg["tool_calls"] if msg.key?("tool_calls")
 
       out = {
         "index" => choice["index"],
@@ -192,6 +193,10 @@ module SpaceInferenceGateway
         result.concat(emit_reasoning_delta(choice, base))
       elsif delta.key?("content")
         result.concat(emit_content_delta(choice, base, canonical, created, parser))
+      elsif delta.key?("tool_calls")
+        flush_into(result, parser, canonical, created, choice["index"])
+        result << base.merge("choices" => [{ "index" => choice["index"],
+                                             "delta" => { "tool_calls" => delta["tool_calls"] }, }])
       elsif choice["finish_reason"]
         flush_into(result, parser, canonical, created, choice["index"])
         result << finish_chunk(base, choice)
