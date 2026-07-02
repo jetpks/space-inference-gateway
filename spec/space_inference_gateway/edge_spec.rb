@@ -443,4 +443,116 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
       end
     end
   end
+
+  # ── upstream error passthrough (AC2, AC4) ──────────────────────────────────
+
+  describe "upstream error passthrough" do
+    it "OAI stream — upstream 400 relayed as JSON, no SSE, accounting balanced (AC2)" do
+      Async do |task|
+        task.with_timeout(10) do
+          incident_body = '{"error":{"code":400,"message":"Cannot have 2 or more assistant messages at the end of the list.","type":"invalid_request_error"}}'
+
+          stub_handler = lambda do |req|
+            case req.path
+            when "/v1/chat/completions"
+              Protocol::HTTP::Response[400, { "content-type" => "application/json" }, [incident_body]]
+            else
+              Protocol::HTTP::Response[404, {}, []]
+            end
+          end
+
+          stub_port, stub_task, stub_bound = boot_stub(stub_handler)
+          upstream = SpaceInferenceGateway::UpstreamClient.new(base_url: "http://localhost:#{stub_port}")
+          app = make_app(upstream_client: upstream)
+          proxy_port, proxy_task, proxy_bound = boot_proxy(app)
+          client = client_for(proxy_port)
+          load_resp = nil
+
+          begin
+            response = client.post(
+              "/v1/chat/completions",
+              [["content-type", "application/json"]],
+              JSON.generate({ model: "diffusiongemma", messages: [], stream: true }),
+            )
+            expect(response.status).to eq(400)
+            expect(response.headers["content-type"]).to include("application/json")
+            expect(response.headers["content-type"]).not_to include("text/event-stream")
+            expect(response.read).to eq(incident_body)
+
+            # Accounting balanced: subsequent load must not return 409 :busy
+            load_resp = client.post(
+              "/v1/load",
+              [["content-type", "application/json"]],
+              JSON.generate({ model: "qwen3.6-27b" }),
+            )
+            expect(load_resp.status).to eq(200)
+            load_resp.read
+          ensure
+            begin
+              response&.body&.close
+              load_resp&.body&.close
+            rescue StandardError
+              nil
+            end
+            client.close
+            proxy_task.stop
+            proxy_bound.close
+            stub_task.stop
+            stub_bound.close
+          end
+        end
+      end
+    end
+
+    it "ANT stream — upstream 400 relayed as ANT JSON envelope, no SSE (AC4)" do
+      Async do |task|
+        task.with_timeout(10) do
+          incident_body = '{"error":{"code":400,"message":"Cannot have 2 or more assistant messages at the end of the list.","type":"invalid_request_error"}}'
+
+          stub_handler = lambda do |req|
+            case req.path
+            when "/v1/messages"
+              Protocol::HTTP::Response[400, { "content-type" => "application/json" }, [incident_body]]
+            else
+              Protocol::HTTP::Response[404, {}, []]
+            end
+          end
+
+          stub_port, stub_task, stub_bound = boot_stub(stub_handler)
+          upstream = SpaceInferenceGateway::UpstreamClient.new(base_url: "http://localhost:#{stub_port}")
+          app = make_app(upstream_client: upstream)
+          proxy_port, proxy_task, proxy_bound = boot_proxy(app)
+          client = client_for(proxy_port)
+
+          begin
+            response = client.post(
+              "/v1/messages",
+              [["content-type", "application/json"]],
+              JSON.generate({ model: "diffusiongemma", messages: [], stream: true }),
+            )
+            expect(response.status).to eq(400)
+            expect(response.headers["content-type"]).to include("application/json")
+            expect(response.headers["content-type"]).not_to include("text/event-stream")
+            body = JSON.parse(response.read)
+            expect(body["type"]).to eq("error")
+            expect(body.dig("error", "type")).to eq("invalid_request_error")
+            expect(body.dig("error", "message")).to eq(
+              "Cannot have 2 or more assistant messages at the end of the list.",
+            )
+          ensure
+            begin
+              response&.body&.close
+            rescue StandardError
+              nil
+            end
+            client.close
+            proxy_task.stop
+            proxy_bound.close
+            stub_task.stop
+            stub_bound.close
+          end
+        end
+      end
+    end
+  end
 end
