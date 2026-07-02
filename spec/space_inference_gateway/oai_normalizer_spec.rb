@@ -341,5 +341,59 @@ RSpec.describe SpaceInferenceGateway::OaiNormalizer do
         expect(r).to be_success, "chunk failed schema: #{r.errors.to_h.inspect}\nchunk=#{chunk.inspect}"
       end
     end
+
+    it "emits no usage-bearing chunk when the client did not ask for usage" do
+      expect(chunks.any? { |c| c.key?("usage") }).to be(false)
+    end
+  end
+
+  # ── g_usage: Stream usage passthrough when client asked (include_usage) ───
+  describe "#normalize_stream_chunks — g_usage usage passthrough" do
+    let(:fixture_text) { llamacpp_fixture("oai_s_toolcall_usage_real.txt") }
+    let(:chunks)       { normalizer.normalize_stream_chunks(fixture_text) }
+    let(:usage_chunks) { chunks.select { |c| c.key?("usage") } }
+
+    it "emits exactly one chunk carrying usage" do
+      expect(usage_chunks.size).to eq(1)
+    end
+
+    it "the usage chunk is the last emitted chunk" do
+      expect(chunks.last).to eq(usage_chunks.first)
+    end
+
+    it "the usage chunk has empty choices" do
+      expect(usage_chunks.first["choices"]).to eq([])
+    end
+
+    it "usage is sanitized to the three integer keys" do
+      expect(usage_chunks.first["usage"]).to eq(
+        "prompt_tokens" => 281, "completion_tokens" => 175, "total_tokens" => 456,
+      )
+    end
+
+    it "no emitted chunk carries timings" do
+      chunks.each { |c| expect(c.keys).not_to include("timings") }
+    end
+
+    it "every chunk uses the advertised model" do
+      expect(chunks.map { |c| c["model"] }.uniq).to eq(["test-model"])
+    end
+
+    it "every emitted chunk validates OAI_CHUNK schema" do
+      chunks.each do |chunk|
+        r = SpaceInferenceGateway::Schemas::OAI_CHUNK.call(chunk)
+        expect(r).to be_success, "chunk failed schema: #{r.errors.to_h.inspect}\nchunk=#{chunk.inspect}"
+      end
+    end
+
+    it "tool_calls deltas still concatenate to the tool arguments" do
+      args = chunks.flat_map { |c| c["choices"] }
+                   .compact
+                   .filter_map { |ch| ch.dig("delta", "tool_calls") }
+                   .flatten
+                   .filter_map { |t| t.dig("function", "arguments") }
+                   .join
+      expect(JSON.parse(args)).to eq("city" => "Denver")
+    end
   end
 end
