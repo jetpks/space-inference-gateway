@@ -69,9 +69,20 @@ module SpaceInferenceGateway
     end
 
     # Anthropic non-stream message
-    ANT_MESSAGE = Dry::Schema.JSON do # rubocop:disable Metrics/BlockLength
-      config.validate_keys = true
-
+    #
+    # No config.validate_keys: dry-schema's key_validator derives key paths from the
+    # *input data*, recursing unconditionally into every nested ::Hash regardless of
+    # how it's declared (dry-schema key_validator.rb key_paths, ~L66-84), and
+    # config.validate_keys is a single per-schema toggle with no per-path exemption
+    # (dry-schema dsl.rb:200). tool_use `input` is user-defined and arbitrarily nested,
+    # so validate_keys would reject it no matter how it's declared. A strip-before/
+    # restore-after key_validator hook was tried (I01) but Result#update mutates the
+    # shared result in place (dry-schema result.rb:60-63) and Result has no per-call
+    # scratch space, so restoring requires stashing data in schema-level state shared
+    # across concurrent calls — correctness would depend on no fiber yielding between
+    # the two hooks, an unenforced invariant. Dropped validate_keys instead; required
+    # fields are still enforced independently by the rule applier.
+    ANT_MESSAGE = Dry::Schema.JSON do
       required(:id).filled(:string)
       required(:type).value(eql?: "message")
       required(:role).value(eql?: "assistant")
@@ -91,16 +102,6 @@ module SpaceInferenceGateway
         required(:output_tokens).filled(:integer)
         optional(:cache_creation_input_tokens).maybe(:integer)
         optional(:cache_read_input_tokens).maybe(:integer)
-      end
-
-      # tool_use `input` is user-defined: strip it before key validation so
-      # validate_keys does not reject arbitrary argument keys.
-      before(:key_validator) do |result|
-        h = result.to_h
-        next result unless h["content"].is_a?(Array)
-
-        stripped = h["content"].map { |b| b.key?("input") ? b.except("input") : b }
-        result.update("content" => stripped)
       end
     end
 
