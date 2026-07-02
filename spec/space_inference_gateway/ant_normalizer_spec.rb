@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 LLAMACPP_FIXTURE_PATH = File.expand_path("../fixtures/llamacpp", __dir__)
+SYNTHETIC_FIXTURE_PATH = File.expand_path("../fixtures/synthetic", __dir__)
 
 def fixture_llamacpp(name)
   File.read(File.join(LLAMACPP_FIXTURE_PATH, name))
@@ -8,6 +9,10 @@ end
 
 def fixture_llamacpp_json(name)
   JSON.parse(fixture_llamacpp(name))
+end
+
+def fixture_synthetic(name)
+  File.read(File.join(SYNTHETIC_FIXTURE_PATH, name))
 end
 
 RSpec.describe SpaceInferenceGateway::AntNormalizer do
@@ -273,6 +278,51 @@ RSpec.describe SpaceInferenceGateway::AntNormalizer do
     it "emitted content_block_start indexes are distinct" do
       idxs = events.select { |e| e[:data]["type"] == "content_block_start" }.map { |e| e[:data]["index"] }
       expect(idxs.uniq).to eq(idxs)
+    end
+  end
+
+  # ── AC4: Stream inline-<think> + tool_use index collision (synthetic fixture) ──
+  describe "#normalize_stream_events — g_idx_synth inline think + tool_use indexes" do
+    let(:raw_sse) { fixture_synthetic("ant_s_inline_think_tooluse.txt") }
+    let(:events)  { normalizer.normalize_stream_events(raw_sse) }
+
+    let(:starts) { events.select { |e| e[:data]["type"] == "content_block_start" } }
+    let(:stops)  { events.select { |e| e[:data]["type"] == "content_block_stop" } }
+
+    let(:tool_use_start) do
+      starts.find { |e| e[:data].dig("content_block", "type") == "tool_use" }
+    end
+
+    it "emits pairwise-distinct content_block_start indexes" do
+      idxs = starts.map { |e| e[:data]["index"] }
+      expect(idxs.uniq).to eq(idxs)
+    end
+
+    it "emits thinking, text, and tool_use blocks" do
+      types = starts.map { |e| e[:data].dig("content_block", "type") }
+      expect(types.sort).to eq(%w[text thinking tool_use])
+    end
+
+    it "concatenated visible text is exactly the post-think text" do
+      text_deltas = events.select { |e| e[:data].dig("delta", "type") == "text_delta" }
+      visible_text = text_deltas.map { |e| e[:data].dig("delta", "text") }.join
+      expect(visible_text).to eq("visible answer")
+    end
+
+    it "tool_use deltas and stop carry the (re)mapped start index" do
+      idx = tool_use_start[:data]["index"]
+      deltas = events.select do |e|
+        e[:data]["type"] == "content_block_delta" &&
+          e[:data]["index"] == idx &&
+          e[:data].dig("delta", "type") == "input_json_delta"
+      end
+      json = deltas.map { |e| e[:data].dig("delta", "partial_json") }.join
+      expect(JSON.parse(json)).to eq("city" => "Denver")
+      expect(stops.any? { |e| e[:data]["index"] == idx }).to be(true)
+    end
+
+    it "every emitted stop index matches an emitted start index" do
+      expect(stops.map { |e| e[:data]["index"] }.sort).to eq(starts.map { |e| e[:data]["index"] }.sort)
     end
   end
 
