@@ -1,15 +1,5 @@
 # frozen_string_literal: true
 
-LLAMACPP_FIXTURE_PATH = File.expand_path("../fixtures/llamacpp", __dir__)
-
-def llamacpp_fixture(name)
-  File.read(File.join(LLAMACPP_FIXTURE_PATH, name))
-end
-
-def llamacpp_fixture_json(name)
-  JSON.parse(llamacpp_fixture(name))
-end
-
 RSpec.describe SpaceInferenceGateway::OaiNormalizer do
   subject(:normalizer) { described_class.new(advertised_model: "test-model") }
 

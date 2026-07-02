@@ -1,20 +1,5 @@
 # frozen_string_literal: true
 
-LLAMACPP_FIXTURE_PATH = File.expand_path("../fixtures/llamacpp", __dir__)
-SYNTHETIC_FIXTURE_PATH = File.expand_path("../fixtures/synthetic", __dir__)
-
-def fixture_llamacpp(name)
-  File.read(File.join(LLAMACPP_FIXTURE_PATH, name))
-end
-
-def fixture_llamacpp_json(name)
-  JSON.parse(fixture_llamacpp(name))
-end
-
-def fixture_synthetic(name)
-  File.read(File.join(SYNTHETIC_FIXTURE_PATH, name))
-end
-
 RSpec.describe SpaceInferenceGateway::AntNormalizer do
   subject(:normalizer) { described_class.new(advertised_model: "test-model") }
 
@@ -188,7 +173,7 @@ RSpec.describe SpaceInferenceGateway::AntNormalizer do
 
   # ── AC-A1: Non-stream native thinking conformed (llama.cpp real fixture) ─
   describe "#normalize — AC-A1 native thinking non-stream" do
-    let(:raw)    { fixture_llamacpp_json("ant_ns_real.json") }
+    let(:raw)    { llamacpp_fixture_json("ant_ns_real.json") }
     let(:result) { normalizer.normalize(raw) }
 
     it "validates against ANT_MESSAGE schema" do
@@ -224,7 +209,7 @@ RSpec.describe SpaceInferenceGateway::AntNormalizer do
 
   # ── g_ant_ns: Non-stream tool_use passthrough (AC4/AC5) ──────────────────
   describe "#normalize — g_ant_ns tool_use passthrough" do
-    let(:raw)    { fixture_llamacpp_json("ant_ns_tooluse_real.json") }
+    let(:raw)    { llamacpp_fixture_json("ant_ns_tooluse_real.json") }
     let(:result) { normalizer.normalize(raw) }
 
     it "preserves tool_use content block" do
@@ -247,7 +232,7 @@ RSpec.describe SpaceInferenceGateway::AntNormalizer do
 
   # ── g_ant_s: Stream tool_use passthrough (AC3) ────────────────────────────
   describe "#normalize_stream_events — g_ant_s tool_use stream passthrough" do
-    let(:raw_sse) { fixture_llamacpp("ant_s_tooluse_real.txt") }
+    let(:raw_sse) { llamacpp_fixture("ant_s_tooluse_real.txt") }
     let(:events)  { normalizer.normalize_stream_events(raw_sse) }
 
     let(:tool_use_start) do
@@ -283,7 +268,7 @@ RSpec.describe SpaceInferenceGateway::AntNormalizer do
 
   # ── AC4: Stream inline-<think> + tool_use index collision (synthetic fixture) ──
   describe "#normalize_stream_events — g_idx_synth inline think + tool_use indexes" do
-    let(:raw_sse) { fixture_synthetic("ant_s_inline_think_tooluse.txt") }
+    let(:raw_sse) { synthetic_fixture("ant_s_inline_think_tooluse.txt") }
     let(:events)  { normalizer.normalize_stream_events(raw_sse) }
 
     let(:starts) { events.select { |e| e[:data]["type"] == "content_block_start" } }
@@ -328,7 +313,7 @@ RSpec.describe SpaceInferenceGateway::AntNormalizer do
 
   # ── AC-A2: Stream native thinking relayed losslessly (llama.cpp real fixture)
   describe "#normalize_stream_events — AC-A2 native thinking stream" do
-    let(:raw_sse) { fixture_llamacpp("ant_s_real.txt") }
+    let(:raw_sse) { llamacpp_fixture("ant_s_real.txt") }
 
     let(:upstream_thinking) do
       raw_sse.lines.each_with_object(+"") do |l, buf|
