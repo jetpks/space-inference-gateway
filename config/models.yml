@@ -9,4 +9,4 @@ models:
     ctx: 524288
     parallel: 2
     offload: fit
-    binary: ~/.unsloth/llama.cpp/llama-server
+    binary: /opt/homebrew/bin/llama-server
