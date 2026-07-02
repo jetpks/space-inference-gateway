@@ -5,7 +5,7 @@ require_relative "reasoning_parser"
 require_relative "schemas"
 
 module SpaceInferenceGateway
-  class OaiNormalizer
+  class OaiNormalizer # rubocop:disable Metrics/ClassLength
     def initialize(advertised_model:, supports_reasoning: true)
       @advertised_model   = advertised_model
       @supports_reasoning = supports_reasoning
@@ -126,6 +126,7 @@ module SpaceInferenceGateway
         "refusal" => msg["refusal"],
       }
       message["reasoning_content"] = thinking unless thinking.empty?
+      message["tool_calls"] = msg["tool_calls"] if msg.key?("tool_calls")
 
       out = {
         "index" => choice["index"],
@@ -180,8 +181,16 @@ module SpaceInferenceGateway
     end
 
     def emit_chunks(data, canonical, created, parser)
-      base = base_chunk(canonical, created)
-      (data["choices"] || []).flat_map { |c| emit_choice(c, base, canonical, created, parser) }
+      base    = base_chunk(canonical, created)
+      choices = data["choices"] || []
+
+      return [usage_chunk(base, data["usage"])] if choices.empty? && data["usage"].is_a?(Hash)
+
+      choices.flat_map { |c| emit_choice(c, base, canonical, created, parser) }
+    end
+
+    def usage_chunk(base, usage)
+      base.merge("choices" => [], "usage" => sanitize_usage(usage))
     end
 
     def emit_choice(choice, base, canonical, created, parser)
@@ -192,6 +201,10 @@ module SpaceInferenceGateway
         result.concat(emit_reasoning_delta(choice, base))
       elsif delta.key?("content")
         result.concat(emit_content_delta(choice, base, canonical, created, parser))
+      elsif delta.key?("tool_calls")
+        flush_into(result, parser, canonical, created, choice["index"])
+        result << base.merge("choices" => [{ "index" => choice["index"],
+                                             "delta" => { "tool_calls" => delta["tool_calls"] }, }])
       elsif choice["finish_reason"]
         flush_into(result, parser, canonical, created, choice["index"])
         result << finish_chunk(base, choice)

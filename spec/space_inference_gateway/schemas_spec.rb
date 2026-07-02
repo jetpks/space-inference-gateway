@@ -33,6 +33,23 @@ RSpec.describe SpaceInferenceGateway::Schemas do
     it "rejects missing required fields" do
       expect(schema.call(valid_payload.except("id"))).not_to be_success
     end
+
+    it "accepts message with tool_calls array" do
+      payload = valid_payload.merge("choices" => [{
+                                      "index" => 0,
+                                      "message" => {
+                                        "role" => "assistant",
+                                        "content" => nil,
+                                        "tool_calls" => [{
+                                          "id" => "call_abc",
+                                          "type" => "function",
+                                          "function" => { "name" => "get_weather", "arguments" => '{"city":"Denver"}' },
+                                        }],
+                                      },
+                                      "finish_reason" => "tool_calls",
+                                    }])
+      expect(schema.call(payload)).to be_success
+    end
   end
 
   describe "OAI_CHUNK" do
@@ -70,6 +87,38 @@ RSpec.describe SpaceInferenceGateway::Schemas do
                                   }])
       expect(schema.call(payload)).not_to be_success
     end
+
+    it "accepts delta with tool_calls array" do
+      payload = valid_chunk.merge("choices" => [{
+                                    "index" => 0,
+                                    "delta" => {
+                                      "tool_calls" => [{ "index" => 0, "id" => "call_abc", "type" => "function",
+                                                         "function" => { "name" => "get_weather", "arguments" => "{" }, }],
+                                    },
+                                  }])
+      expect(schema.call(payload)).to be_success
+    end
+
+    it "accepts incremental tool_calls delta with only index and arguments" do
+      payload = valid_chunk.merge("choices" => [{
+                                    "index" => 0,
+                                    "delta" => { "tool_calls" => [{ "index" => 0, "function" => { "arguments" => "more" } }] },
+                                  }])
+      expect(schema.call(payload)).to be_success
+    end
+
+    it "accepts a usage-only chunk (empty choices + usage)" do
+      payload = valid_chunk.merge(
+        "choices" => [],
+        "usage" => { "prompt_tokens" => 281, "completion_tokens" => 175, "total_tokens" => 456 },
+      )
+      expect(schema.call(payload)).to be_success
+    end
+
+    it "still rejects an unexpected top-level key" do
+      payload = valid_chunk.merge("choices" => [], "unexpected_key" => "bad")
+      expect(schema.call(payload)).not_to be_success
+    end
   end
 
   describe "ANT_MESSAGE" do
@@ -100,9 +149,51 @@ RSpec.describe SpaceInferenceGateway::Schemas do
       expect(schema.call(payload)).to be_success
     end
 
-    it "AC2 — genuinely rejects payload with unexpected top-level keys" do
+    it "does not validate_keys — unexpected top-level keys pass structural validation" do
+      # tool_use `input` is user-defined and arbitrarily nested; dry-schema's
+      # key_validator recurses into it regardless of declaration, so ANT_MESSAGE
+      # drops config.validate_keys entirely (see comment above ANT_MESSAGE).
+      # Required-field enforcement (AC3) is unaffected.
       payload = valid_payload.merge("unexpected_key" => "bad")
-      expect(schema.call(payload)).not_to be_success
+      expect(schema.call(payload)).to be_success
+    end
+
+    it "rejects a message missing a required field" do
+      expect(schema.call(valid_payload.except("id"))).not_to be_success
+    end
+
+    it "accepts tool_use content block with arbitrary user-defined input keys" do
+      payload = valid_payload.merge(
+        "content" => [{ "type" => "tool_use", "id" => "tu_abc", "name" => "get_weather",
+                        "input" => { "city" => "Denver", "nested" => { "unit" => "F" } }, }],
+        "stop_reason" => "tool_use",
+      )
+      expect(schema.call(payload)).to be_success
+    end
+
+    it "does not mutate the caller's hash" do
+      payload = valid_payload.merge(
+        "content" => [{ "type" => "tool_use", "id" => "tu_abc", "name" => "get_weather",
+                        "input" => { "city" => "Denver" }, }],
+      )
+      copy = Marshal.load(Marshal.dump(payload))
+
+      schema.call(payload)
+
+      expect(payload).to eq(copy)
+    end
+
+    it "to_h round-trips the tool_use block with input intact" do
+      payload = valid_payload.merge(
+        "content" => [{ "type" => "tool_use", "id" => "tu_abc", "name" => "get_weather",
+                        "input" => { "city" => "Denver" }, }],
+        "stop_reason" => "tool_use",
+      )
+
+      result = schema.call(payload)
+      tool_use = result.to_h[:content].find { |b| b[:type] == "tool_use" }
+
+      expect(tool_use).to include(id: "tu_abc", name: "get_weather", input: { "city" => "Denver" })
     end
   end
 end

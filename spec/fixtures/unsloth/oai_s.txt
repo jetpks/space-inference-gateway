@@ -1,4 +1,4 @@
-data: {"id":"chatcmpl-427f8b35d748","object":"chat.completion.chunk","created":1782681523,"model":"/Users/lemonslut/.lmstudio/models/unsloth/diffusiongemma-26B-A4B-it-GGUF","choices":[{"index":0,"delta":{"role":"assistant"}}]}
+data: {"id":"chatcmpl-427f8b35d748","object":"chat.completion.chunk","created":1782681523,"model":"/Users/user/.lmstudio/models/unsloth/diffusiongemma-26B-A4B-it-GGUF","choices":[{"index":0,"delta":{"role":"assistant"}}]}
 
 data: {"id": "chatcmpl-f82aa85e78f84d018e406388", "object": "chat.completion.chunk", "created": 1782681523, "model": "diffusiongemma", "choices": [{"index": 0, "delta": {}, "finish_reason": null}], "type": "diffusion_frame", "block": 0, "step": 0, "total": 48, "text": "thought\n*   User 1:: \" hi.\"\n    *        2: \"Think one first first.\"\n          ::::: \" sentence sentence.\n    *****************************************************"}
 
@@ -24,11 +24,11 @@ data: {"id": "chatcmpl-f82aa85e78f84d018e406388", "object": "chat.completion.chu
 
 data: {"id": "chatcmpl-f82aa85e78f84d018e406388", "object": "chat.completion.chunk", "created": 1782681523, "model": "diffusiongemma", "choices": [{"index": 0, "delta": {}, "finish_reason": null}], "type": "diffusion_frame", "block": 0, "step": 11, "total": 48, "text": "thought\n*   Task 1: \"Say hi.\"\n    *   Task 2: \"Think one sentence first.\"\n\n    *   The user wants me to say \"hi\".\n    *   The user wants me to perform an internal thought process consisting of exactly one sentence before providing the output.\n\n    *   Thought: I need to greet the user as requested.\n    *   Output: Hi!\n\n    *   Thought: I will greet the user.\n    *   Output: Hi!Thought: I will greet the user.\n\nHi!"}
 
-data: {"id":"chatcmpl-427f8b35d748","object":"chat.completion.chunk","created":1782681523,"model":"/Users/lemonslut/.lmstudio/models/unsloth/diffusiongemma-26B-A4B-it-GGUF","choices":[{"index":0,"delta":{"content":"<think>*   Task 1: \"Say hi.\"\n    *   Task 2: \"Think one sentence first.\"\n\n    *   The user wants me to say \"hi\".\n    *   The user wants me to perform an internal thought process consisting of exactly one sentence before providing the output.\n\n    *   Thought: I need to greet the user as requested.\n    *   Output: Hi!\n\n    *   Thought: I will greet the user.\n    *   Output: Hi!"}}]}
+data: {"id":"chatcmpl-427f8b35d748","object":"chat.completion.chunk","created":1782681523,"model":"/Users/user/.lmstudio/models/unsloth/diffusiongemma-26B-A4B-it-GGUF","choices":[{"index":0,"delta":{"content":"<think>*   Task 1: \"Say hi.\"\n    *   Task 2: \"Think one sentence first.\"\n\n    *   The user wants me to say \"hi\".\n    *   The user wants me to perform an internal thought process consisting of exactly one sentence before providing the output.\n\n    *   Thought: I need to greet the user as requested.\n    *   Output: Hi!\n\n    *   Thought: I will greet the user.\n    *   Output: Hi!"}}]}
 
-data: {"id":"chatcmpl-427f8b35d748","object":"chat.completion.chunk","created":1782681523,"model":"/Users/lemonslut/.lmstudio/models/unsloth/diffusiongemma-26B-A4B-it-GGUF","choices":[{"index":0,"delta":{"content":"</think>Thought: I will greet the user.\n\nHi!"}}]}
+data: {"id":"chatcmpl-427f8b35d748","object":"chat.completion.chunk","created":1782681523,"model":"/Users/user/.lmstudio/models/unsloth/diffusiongemma-26B-A4B-it-GGUF","choices":[{"index":0,"delta":{"content":"</think>Thought: I will greet the user.\n\nHi!"}}]}
 
-data: {"id":"chatcmpl-427f8b35d748","object":"chat.completion.chunk","created":1782681523,"model":"/Users/lemonslut/.lmstudio/models/unsloth/diffusiongemma-26B-A4B-it-GGUF","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+data: {"id":"chatcmpl-427f8b35d748","object":"chat.completion.chunk","created":1782681523,"model":"/Users/user/.lmstudio/models/unsloth/diffusiongemma-26B-A4B-it-GGUF","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
 
 data: [DONE]
 

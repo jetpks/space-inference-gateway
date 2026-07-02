@@ -1,15 +1,5 @@
 # frozen_string_literal: true
 
-LLAMACPP_FIXTURE_PATH = File.expand_path("../fixtures/llamacpp", __dir__)
-
-def fixture_llamacpp(name)
-  File.read(File.join(LLAMACPP_FIXTURE_PATH, name))
-end
-
-def fixture_llamacpp_json(name)
-  JSON.parse(fixture_llamacpp(name))
-end
-
 RSpec.describe SpaceInferenceGateway::AntNormalizer do
   subject(:normalizer) { described_class.new(advertised_model: "test-model") }
 
@@ -183,7 +173,7 @@ RSpec.describe SpaceInferenceGateway::AntNormalizer do
 
   # ── AC-A1: Non-stream native thinking conformed (llama.cpp real fixture) ─
   describe "#normalize — AC-A1 native thinking non-stream" do
-    let(:raw)    { fixture_llamacpp_json("ant_ns_real.json") }
+    let(:raw)    { llamacpp_fixture_json("ant_ns_real.json") }
     let(:result) { normalizer.normalize(raw) }
 
     it "validates against ANT_MESSAGE schema" do
@@ -217,9 +207,113 @@ RSpec.describe SpaceInferenceGateway::AntNormalizer do
     end
   end
 
+  # ── g_ant_ns: Non-stream tool_use passthrough (AC4/AC5) ──────────────────
+  describe "#normalize — g_ant_ns tool_use passthrough" do
+    let(:raw)    { llamacpp_fixture_json("ant_ns_tooluse_real.json") }
+    let(:result) { normalizer.normalize(raw) }
+
+    it "preserves tool_use content block" do
+      tu = result["content"].find { |b| b["type"] == "tool_use" }
+      expect(tu).not_to be_nil
+      expect(tu["id"]).to be_a(String)
+      expect(tu["name"]).to eq("get_weather")
+      expect(tu["input"]).to eq("city" => "Denver")
+    end
+
+    it "preserves stop_reason: tool_use" do
+      expect(result["stop_reason"]).to eq("tool_use")
+    end
+
+    it "validates ANT_MESSAGE schema" do
+      r = SpaceInferenceGateway::Schemas::ANT_MESSAGE.call(result)
+      expect(r).to be_success, r.errors.to_h.inspect
+    end
+  end
+
+  # ── g_ant_s: Stream tool_use passthrough (AC3) ────────────────────────────
+  describe "#normalize_stream_events — g_ant_s tool_use stream passthrough" do
+    let(:raw_sse) { llamacpp_fixture("ant_s_tooluse_real.txt") }
+    let(:events)  { normalizer.normalize_stream_events(raw_sse) }
+
+    let(:tool_use_start) do
+      events.find { |e| e[:data]["type"] == "content_block_start" && e[:data].dig("content_block", "type") == "tool_use" }
+    end
+
+    it "emits content_block_start with type tool_use and name get_weather" do
+      expect(tool_use_start).not_to be_nil
+      expect(tool_use_start[:data].dig("content_block", "name")).to eq("get_weather")
+    end
+
+    it "emits input_json_delta events whose concatenated partial_json parses to city Denver" do
+      idx    = tool_use_start[:data]["index"]
+      deltas = events.select do |e|
+        e[:data]["type"] == "content_block_delta" &&
+          e[:data]["index"] == idx &&
+          e[:data].dig("delta", "type") == "input_json_delta"
+      end
+      json = deltas.map { |e| e[:data].dig("delta", "partial_json") }.join
+      expect(JSON.parse(json)).to eq("city" => "Denver")
+    end
+
+    it "emits content_block_stop for the tool_use block" do
+      idx = tool_use_start[:data]["index"]
+      expect(events.any? { |e| e[:data]["type"] == "content_block_stop" && e[:data]["index"] == idx }).to be(true)
+    end
+
+    it "emitted content_block_start indexes are distinct" do
+      idxs = events.select { |e| e[:data]["type"] == "content_block_start" }.map { |e| e[:data]["index"] }
+      expect(idxs.uniq).to eq(idxs)
+    end
+  end
+
+  # ── AC4: Stream inline-<think> + tool_use index collision (synthetic fixture) ──
+  describe "#normalize_stream_events — g_idx_synth inline think + tool_use indexes" do
+    let(:raw_sse) { synthetic_fixture("ant_s_inline_think_tooluse.txt") }
+    let(:events)  { normalizer.normalize_stream_events(raw_sse) }
+
+    let(:starts) { events.select { |e| e[:data]["type"] == "content_block_start" } }
+    let(:stops)  { events.select { |e| e[:data]["type"] == "content_block_stop" } }
+
+    let(:tool_use_start) do
+      starts.find { |e| e[:data].dig("content_block", "type") == "tool_use" }
+    end
+
+    it "emits pairwise-distinct content_block_start indexes" do
+      idxs = starts.map { |e| e[:data]["index"] }
+      expect(idxs.uniq).to eq(idxs)
+    end
+
+    it "emits thinking, text, and tool_use blocks" do
+      types = starts.map { |e| e[:data].dig("content_block", "type") }
+      expect(types.sort).to eq(%w[text thinking tool_use])
+    end
+
+    it "concatenated visible text is exactly the post-think text" do
+      text_deltas = events.select { |e| e[:data].dig("delta", "type") == "text_delta" }
+      visible_text = text_deltas.map { |e| e[:data].dig("delta", "text") }.join
+      expect(visible_text).to eq("visible answer")
+    end
+
+    it "tool_use deltas and stop carry the (re)mapped start index" do
+      idx = tool_use_start[:data]["index"]
+      deltas = events.select do |e|
+        e[:data]["type"] == "content_block_delta" &&
+          e[:data]["index"] == idx &&
+          e[:data].dig("delta", "type") == "input_json_delta"
+      end
+      json = deltas.map { |e| e[:data].dig("delta", "partial_json") }.join
+      expect(JSON.parse(json)).to eq("city" => "Denver")
+      expect(stops.any? { |e| e[:data]["index"] == idx }).to be(true)
+    end
+
+    it "every emitted stop index matches an emitted start index" do
+      expect(stops.map { |e| e[:data]["index"] }.sort).to eq(starts.map { |e| e[:data]["index"] }.sort)
+    end
+  end
+
   # ── AC-A2: Stream native thinking relayed losslessly (llama.cpp real fixture)
   describe "#normalize_stream_events — AC-A2 native thinking stream" do
-    let(:raw_sse) { fixture_llamacpp("ant_s_real.txt") }
+    let(:raw_sse) { llamacpp_fixture("ant_s_real.txt") }
 
     let(:upstream_thinking) do
       raw_sse.lines.each_with_object(+"") do |l, buf|

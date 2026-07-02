@@ -64,7 +64,7 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
       "default" => "diffusiongemma",
       "models"  => {
         "diffusiongemma" => {
-          "model_path" => "/Users/lemonslut/.lmstudio/models/unsloth/diffusiongemma-26B-A4B-it-GGUF",
+          "model_path" => "/Users/user/.lmstudio/models/unsloth/diffusiongemma-26B-A4B-it-GGUF",
         },
         "qwen3.6-27b" => {
           "model_path" => "qwen3.6-27b",

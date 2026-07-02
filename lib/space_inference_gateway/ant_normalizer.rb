@@ -5,7 +5,7 @@ require_relative "reasoning_parser"
 require_relative "schemas"
 
 module SpaceInferenceGateway
-  class AntNormalizer
+  class AntNormalizer # rubocop:disable Metrics/ClassLength
     def initialize(advertised_model:, supports_reasoning: true)
       @advertised_model   = advertised_model
       @supports_reasoning = supports_reasoning
@@ -74,7 +74,17 @@ module SpaceInferenceGateway
       {
         result: [], text_buffer: +"", in_text: false,
         thinking_buffer: +"", in_thinking: false, native_thinking: false,
+        tool_use_index_map: {}, next_index: 0,
       }
+    end
+
+    # Emitted block indexes are allocated in emission order (not upstream order), since
+    # thinking/text blocks are buffered and only emitted at their content_block_stop while
+    # tool_use blocks pass through immediately — this is the one counter that keeps every
+    # emitted content_block_start index distinct. tool_use upstream indexes are remapped
+    # through tool_use_index_map so their later deltas/stop carry the same emitted index.
+    def allocate_index(state)
+      state[:next_index].tap { state[:next_index] += 1 }
     end
 
     def process_event(ev, state)
@@ -82,7 +92,7 @@ module SpaceInferenceGateway
       when "message_start"       then handle_message_start(ev, state)
       when "content_block_start" then handle_block_start(ev, state)
       when "content_block_delta" then handle_block_delta(ev, state)
-      when "content_block_stop"  then handle_block_stop(state)
+      when "content_block_stop"  then handle_block_stop(ev, state)
       when "message_delta"       then state[:result] << { event: "message_delta", data: ev[:data] }
       when "message_stop"        then state[:result] << { event: "message_stop",  data: ev[:data] }
       end
@@ -103,6 +113,10 @@ module SpaceInferenceGateway
       when "text"
         state[:in_text]     = true
         state[:text_buffer] = +""
+      when "tool_use"
+        emitted_index = allocate_index(state)
+        state[:tool_use_index_map][ev[:data]["index"]] = emitted_index
+        state[:result] << { event: "content_block_start", data: ev[:data].merge("index" => emitted_index) }
       end
     end
 
@@ -111,19 +125,28 @@ module SpaceInferenceGateway
       case delta&.fetch("type", nil)
       when "thinking_delta" then state[:thinking_buffer] << delta["thinking"].to_s if state[:in_thinking]
       when "text_delta"     then state[:text_buffer] << delta["text"].to_s if state[:in_text]
+      when "input_json_delta"
+        emitted_index = state[:tool_use_index_map][ev[:data]["index"]]
+        if emitted_index
+          state[:result] << { event: "content_block_delta",
+data: ev[:data].merge("index" => emitted_index), }
+        end
       end
     end
 
-    def handle_block_stop(state)
-      if state[:in_thinking]
+    def handle_block_stop(ev, state)
+      emitted_index = state[:tool_use_index_map][ev[:data]["index"]]
+      if emitted_index
+        state[:result] << { event: "content_block_stop", data: ev[:data].merge("index" => emitted_index) }
+      elsif state[:in_thinking]
         state[:in_thinking] = false
-        state[:result].concat(emit_thinking_events(state[:thinking_buffer]))
+        state[:result].concat(emit_thinking_events(state[:thinking_buffer], state))
       elsif state[:in_text]
         state[:in_text] = false
         events = if state[:native_thinking]
-                   passthrough_text_events(state[:text_buffer], index: 1)
+                   passthrough_text_events(state[:text_buffer], state)
                  else
-                   restructure_text_block(state[:text_buffer])
+                   restructure_text_block(state[:text_buffer], state)
                  end
         state[:result].concat(events)
       end
@@ -155,8 +178,8 @@ module SpaceInferenceGateway
       end
     end
 
-    def restructure_text_block(text)
-      return passthrough_text_events(text) unless @supports_reasoning
+    def restructure_text_block(text, state)
+      return passthrough_text_events(text, state) unless @supports_reasoning
 
       parser = ReasoningParser.new
       r      = parser.push(text)
@@ -165,23 +188,27 @@ module SpaceInferenceGateway
       thinking = r[:thinking] + r2[:thinking]
       visible  = r[:visible]  + r2[:visible]
 
-      emit_thinking_events(thinking) + passthrough_text_events(visible, index: thinking.empty? ? 0 : 1)
+      emit_thinking_events(thinking, state) + passthrough_text_events(visible, state)
     end
 
-    def emit_thinking_events(thinking)
+    def emit_thinking_events(thinking, state)
       return [] if thinking.empty?
 
+      index = allocate_index(state)
+
       [
-        { event: "content_block_start", data: { "type" => "content_block_start", "index" => 0,
+        { event: "content_block_start", data: { "type" => "content_block_start", "index" => index,
 "content_block" => { "type" => "thinking", "thinking" => "" }, }, },
-        { event: "content_block_delta", data: { "type" => "content_block_delta", "index" => 0,
+        { event: "content_block_delta", data: { "type" => "content_block_delta", "index" => index,
 "delta" => { "type" => "thinking_delta", "thinking" => thinking }, }, },
-        { event: "content_block_stop",  data: { "type" => "content_block_stop", "index" => 0 } },
+        { event: "content_block_stop",  data: { "type" => "content_block_stop", "index" => index } },
       ]
     end
 
-    def passthrough_text_events(text, index: 0)
+    def passthrough_text_events(text, state)
       return [] if text.empty?
+
+      index = allocate_index(state)
 
       [
         { event: "content_block_start", data: { "type" => "content_block_start", "index" => index,

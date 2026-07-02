@@ -1,15 +1,5 @@
 # frozen_string_literal: true
 
-LLAMACPP_FIXTURE_PATH = File.expand_path("../fixtures/llamacpp", __dir__)
-
-def llamacpp_fixture(name)
-  File.read(File.join(LLAMACPP_FIXTURE_PATH, name))
-end
-
-def llamacpp_fixture_json(name)
-  JSON.parse(llamacpp_fixture(name))
-end
-
 RSpec.describe SpaceInferenceGateway::OaiNormalizer do
   subject(:normalizer) { described_class.new(advertised_model: "test-model") }
 
@@ -284,4 +274,116 @@ RSpec.describe SpaceInferenceGateway::OaiNormalizer do
   # oai_ns.json has inline <think>…</think> in content, no upstream reasoning_content key.
   # oai_s.txt has inline <think>…</think> in delta.content.
   # Both paths continue to lift think text into reasoning_content correctly.
+
+  # ── g_oai_ns: Non-stream tool_calls passthrough (AC1/AC5) ─────────────────
+  describe "#normalize — g_oai_ns tool_calls passthrough" do
+    let(:upstream) { llamacpp_fixture_json("oai_ns_toolcall_real.json") }
+    let(:result)   { normalizer.normalize(upstream) }
+
+    it "preserves tool_calls array verbatim" do
+      tc = result.dig("choices", 0, "message", "tool_calls")
+      expect(tc).to be_an(Array)
+      expect(tc.first["id"]).to be_a(String)
+      expect(tc.first.dig("function", "name")).to eq("get_weather")
+      expect(JSON.parse(tc.first.dig("function", "arguments"))).to eq("city" => "Denver")
+    end
+
+    it "preserves finish_reason: tool_calls" do
+      expect(result.dig("choices", 0, "finish_reason")).to eq("tool_calls")
+    end
+
+    it "validates OAI_COMPLETION schema" do
+      r = SpaceInferenceGateway::Schemas::OAI_COMPLETION.call(result)
+      expect(r).to be_success, r.errors.to_h.inspect
+    end
+  end
+
+  # ── g_oai_s: Stream tool_call deltas passthrough (AC2/AC5) ────────────────
+  describe "#normalize_stream_chunks — g_oai_s tool_call stream passthrough" do
+    let(:fixture_text) { llamacpp_fixture("oai_s_toolcall_real.txt") }
+    let(:chunks)       { normalizer.normalize_stream_chunks(fixture_text) }
+
+    let(:tool_call_deltas) do
+      chunks.flat_map { |c| c["choices"] }.filter_map { |ch| ch["delta"]["tool_calls"] }.flatten
+    end
+
+    it "emits tool_call deltas" do
+      expect(tool_call_deltas).not_to be_empty
+    end
+
+    it "first tool_call delta carries function.name get_weather" do
+      expect(tool_call_deltas.first.dig("function", "name")).to eq("get_weather")
+    end
+
+    it "concatenated function.arguments parse to city Denver" do
+      args = tool_call_deltas.filter_map { |t| t.dig("function", "arguments") }.join
+      expect(JSON.parse(args)).to eq("city" => "Denver")
+    end
+
+    it "emits no empty-delta chunks for tool_calls (no loss)" do
+      bad = chunks.flat_map { |c| c["choices"] }.select { |ch| ch["delta"] == {} && ch["finish_reason"].nil? }
+      expect(bad).to be_empty
+    end
+
+    it "all chunks validate OAI_CHUNK schema" do
+      chunks.each do |chunk|
+        r = SpaceInferenceGateway::Schemas::OAI_CHUNK.call(chunk)
+        expect(r).to be_success, "chunk failed schema: #{r.errors.to_h.inspect}\nchunk=#{chunk.inspect}"
+      end
+    end
+
+    it "emits no usage-bearing chunk when the client did not ask for usage" do
+      expect(chunks.any? { |c| c.key?("usage") }).to be(false)
+    end
+  end
+
+  # ── g_usage: Stream usage passthrough when client asked (include_usage) ───
+  describe "#normalize_stream_chunks — g_usage usage passthrough" do
+    let(:fixture_text) { llamacpp_fixture("oai_s_toolcall_usage_real.txt") }
+    let(:chunks)       { normalizer.normalize_stream_chunks(fixture_text) }
+    let(:usage_chunks) { chunks.select { |c| c.key?("usage") } }
+
+    it "emits exactly one chunk carrying usage" do
+      expect(usage_chunks.size).to eq(1)
+    end
+
+    it "the usage chunk is the last emitted chunk" do
+      expect(chunks.last).to eq(usage_chunks.first)
+    end
+
+    it "the usage chunk has empty choices" do
+      expect(usage_chunks.first["choices"]).to eq([])
+    end
+
+    it "usage is sanitized to the three integer keys" do
+      expect(usage_chunks.first["usage"]).to eq(
+        "prompt_tokens" => 281, "completion_tokens" => 175, "total_tokens" => 456,
+      )
+    end
+
+    it "no emitted chunk carries timings" do
+      chunks.each { |c| expect(c.keys).not_to include("timings") }
+    end
+
+    it "every chunk uses the advertised model" do
+      expect(chunks.map { |c| c["model"] }.uniq).to eq(["test-model"])
+    end
+
+    it "every emitted chunk validates OAI_CHUNK schema" do
+      chunks.each do |chunk|
+        r = SpaceInferenceGateway::Schemas::OAI_CHUNK.call(chunk)
+        expect(r).to be_success, "chunk failed schema: #{r.errors.to_h.inspect}\nchunk=#{chunk.inspect}"
+      end
+    end
+
+    it "tool_calls deltas still concatenate to the tool arguments" do
+      args = chunks.flat_map { |c| c["choices"] }
+                   .compact
+                   .filter_map { |ch| ch.dig("delta", "tool_calls") }
+                   .flatten
+                   .filter_map { |t| t.dig("function", "arguments") }
+                   .join
+      expect(JSON.parse(args)).to eq("city" => "Denver")
+    end
+  end
 end
