@@ -33,6 +33,23 @@ RSpec.describe SpaceInferenceGateway::Schemas do
     it "rejects missing required fields" do
       expect(schema.call(valid_payload.except("id"))).not_to be_success
     end
+
+    it "accepts message with tool_calls array" do
+      payload = valid_payload.merge("choices" => [{
+                                      "index" => 0,
+                                      "message" => {
+                                        "role" => "assistant",
+                                        "content" => nil,
+                                        "tool_calls" => [{
+                                          "id" => "call_abc",
+                                          "type" => "function",
+                                          "function" => { "name" => "get_weather", "arguments" => '{"city":"Denver"}' },
+                                        }],
+                                      },
+                                      "finish_reason" => "tool_calls",
+                                    }])
+      expect(schema.call(payload)).to be_success
+    end
   end
 
   describe "OAI_CHUNK" do
@@ -70,6 +87,25 @@ RSpec.describe SpaceInferenceGateway::Schemas do
                                   }])
       expect(schema.call(payload)).not_to be_success
     end
+
+    it "accepts delta with tool_calls array" do
+      payload = valid_chunk.merge("choices" => [{
+                                    "index" => 0,
+                                    "delta" => {
+                                      "tool_calls" => [{ "index" => 0, "id" => "call_abc", "type" => "function",
+                                                         "function" => { "name" => "get_weather", "arguments" => "{" }, }],
+                                    },
+                                  }])
+      expect(schema.call(payload)).to be_success
+    end
+
+    it "accepts incremental tool_calls delta with only index and arguments" do
+      payload = valid_chunk.merge("choices" => [{
+                                    "index" => 0,
+                                    "delta" => { "tool_calls" => [{ "index" => 0, "function" => { "arguments" => "more" } }] },
+                                  }])
+      expect(schema.call(payload)).to be_success
+    end
   end
 
   describe "ANT_MESSAGE" do
@@ -103,6 +139,15 @@ RSpec.describe SpaceInferenceGateway::Schemas do
     it "AC2 — genuinely rejects payload with unexpected top-level keys" do
       payload = valid_payload.merge("unexpected_key" => "bad")
       expect(schema.call(payload)).not_to be_success
+    end
+
+    it "accepts tool_use content block" do
+      payload = valid_payload.merge(
+        "content" => [{ "type" => "tool_use", "id" => "tu_abc", "name" => "get_weather",
+                        "input" => { "city" => "Denver" }, }],
+        "stop_reason" => "tool_use",
+      )
+      expect(schema.call(payload)).to be_success
     end
   end
 end

@@ -3,9 +3,9 @@
 require "dry-schema"
 
 module SpaceInferenceGateway
-  module Schemas
+  module Schemas # rubocop:disable Metrics/ModuleLength
     # OpenAI non-stream chat.completion
-    OAI_COMPLETION = Dry::Schema.JSON do
+    OAI_COMPLETION = Dry::Schema.JSON do # rubocop:disable Metrics/BlockLength
       config.validate_keys = true
 
       required(:id).filled(:string)
@@ -19,6 +19,14 @@ module SpaceInferenceGateway
           required(:content).maybe(:string)
           optional(:reasoning_content).maybe(:string)
           optional(:refusal).maybe(:string)
+          optional(:tool_calls).array(:hash) do
+            required(:id).filled(:string)
+            required(:type).filled(:string)
+            required(:function).hash do
+              required(:name).filled(:string)
+              required(:arguments).filled(:string)
+            end
+          end
         end
         required(:finish_reason).maybe(:string)
         optional(:logprobs)
@@ -46,13 +54,22 @@ module SpaceInferenceGateway
           optional(:content).maybe(:string)
           optional(:reasoning_content).maybe(:string)
           optional(:refusal).maybe(:string)
+          optional(:tool_calls).array(:hash) do
+            required(:index).filled(:integer)
+            optional(:id).maybe(:string)
+            optional(:type).maybe(:string)
+            optional(:function).hash do
+              optional(:name).maybe(:string)
+              optional(:arguments).maybe(:string)
+            end
+          end
         end
         optional(:finish_reason).maybe(:string)
       end
     end
 
     # Anthropic non-stream message
-    ANT_MESSAGE = Dry::Schema.JSON do
+    ANT_MESSAGE = Dry::Schema.JSON do # rubocop:disable Metrics/BlockLength
       config.validate_keys = true
 
       required(:id).filled(:string)
@@ -62,6 +79,9 @@ module SpaceInferenceGateway
         required(:type).filled(:string)
         optional(:text).maybe(:string)
         optional(:thinking).maybe(:string)
+        optional(:id).maybe(:string)
+        optional(:name).maybe(:string)
+        optional(:input)
       end
       required(:model).filled(:string)
       required(:stop_reason).maybe(:string)
@@ -71,6 +91,16 @@ module SpaceInferenceGateway
         required(:output_tokens).filled(:integer)
         optional(:cache_creation_input_tokens).maybe(:integer)
         optional(:cache_read_input_tokens).maybe(:integer)
+      end
+
+      # tool_use `input` is user-defined: strip it before key validation so
+      # validate_keys does not reject arbitrary argument keys.
+      before(:key_validator) do |result|
+        h = result.to_h
+        next result unless h["content"].is_a?(Array)
+
+        stripped = h["content"].map { |b| b.key?("input") ? b.except("input") : b }
+        result.update("content" => stripped)
       end
     end
 
