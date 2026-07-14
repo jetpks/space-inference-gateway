@@ -66,6 +66,7 @@ module SpaceInferenceGateway
       case [method, path]
       when ["POST", "/v1/chat/completions"] then handle_oai(env)
       when ["POST", "/v1/messages"]         then handle_ant(env)
+      when ["POST", "/v1/messages/count_tokens"] then handle_count_tokens(env)
       when ["GET",  "/v1/models"]           then handle_models
       when ["POST", "/v1/load"]             then handle_load(env)
       when ["POST", "/v1/unload"]           then handle_unload(env)
@@ -183,6 +184,27 @@ module SpaceInferenceGateway
       data = @controller.models_list
       body = JSON.generate({ "object" => "list", "data" => data })
       [200, JSON_HEADERS.dup, [body]]
+    end
+
+    # Anthropic count_tokens — mlx_lm.server has no native count_tokens, and CC
+    # hits this before sending to size the prompt (a 404 makes CC refuse the
+    # model as "may not exist"). Return a rough char-based estimate (~4 chars/token);
+    # it is for the client's context-window accounting, not billing, so an
+    # approximation is fine. Accepts the ANT request shape (system + messages +
+    # tools), with content as a string or an array of content blocks.
+    def handle_count_tokens(env)
+      request = JSON.parse(read_body(env))
+      chars = 0
+      collect = lambda do |content|
+        case content
+        when String then chars += content.length
+        when Array  then content.each { |blk| collect.call(blk["text"] || blk["content"] || "") }
+        end
+      end
+      collect.call(request["system"]) if request["system"]
+      (request["messages"] || []).each { |m| collect.call(m["content"]) }
+      (request["tools"] || []).each { |t| collect.call(t.to_s) }
+      [200, JSON_HEADERS.dup, [JSON.generate({ "input_tokens" => (chars / 4.0).ceil })]]
     end
 
     def handle_load(env)

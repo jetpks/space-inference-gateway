@@ -91,6 +91,28 @@ RSpec.describe SpaceInferenceGateway::App do
     end
   end
 
+  describe "POST /v1/messages/count_tokens" do
+    it "returns 200 with an integer input_tokens estimate" do
+      body = JSON.generate({ model: "any", messages: [{ role: "user", content: "a" * 40 }] })
+      post "/v1/messages/count_tokens", body, "CONTENT_TYPE" => "application/json"
+      expect(last_response.status).to eq(200)
+      parsed = JSON.parse(last_response.body)
+      expect(parsed["input_tokens"]).to be_an(Integer)
+      expect(parsed["input_tokens"]).to eq(10) # 40 chars / 4
+    end
+
+    it "handles string and array content shapes" do
+      body = JSON.generate({
+                             model: "any",
+        system: "eight chars",
+        messages: [{ role: "user", content: [{ type: "text", text: "eight more" }] }],
+                           })
+      post "/v1/messages/count_tokens", body, "CONTENT_TYPE" => "application/json"
+      expect(last_response.status).to eq(200)
+      expect(JSON.parse(last_response.body)["input_tokens"]).to eq(6) # 21 chars / 4 = 5.25 -> ceil 6
+    end
+  end
+
   describe "POST /v1/messages (non-stream)" do
     let(:request_body) { JSON.generate({ model: "any", messages: [{ role: "user", content: "hi" }], max_tokens: 100 }) }
 
