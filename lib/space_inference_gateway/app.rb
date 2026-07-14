@@ -324,12 +324,16 @@ module SpaceInferenceGateway
 
     # Rewrite the "model" field in an OAI request body to the mlx child's loaded
     # model id (the HF repo id). No-op for non-mlx engines (a future llama-server
-    # return ignores the field, so the alias passes through).
+    # return ignores the field, so the alias passes through). Also normalizes the
+    # OpenAI "developer" message role to "system" — mlx_lm.server accepts only
+    # system/user/assistant and 404s on "developer" (which pi's openai-completions
+    # client emits in place of system).
     def rewrite_model_for_mlx(body_str, model_alias)
       return body_str unless mlx_engine?(model_alias)
 
       parsed = JSON.parse(body_str)
       parsed["model"] = mlx_model_id(model_alias)
+      (parsed["messages"] || []).each { |m| m["role"] = "system" if m["role"] == "developer" }
       JSON.generate(parsed)
     end
 

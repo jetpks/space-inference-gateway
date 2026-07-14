@@ -89,6 +89,20 @@ RSpec.describe SpaceInferenceGateway::App do
       sent = JSON.parse(forwarded.first[:body])
       expect(sent["model"]).to eq("mlx-community/Qwen3.5-122B-A10B-4bit")
     end
+
+    it "normalizes the OpenAI 'developer' role to 'system' (mlx rejects developer)" do
+      body = JSON.generate({
+                             model: "qwen3-35b-a3b",
+        messages: [
+          { role: "developer", content: "you are helpful" },
+          { role: "user", content: "hi" },
+        ],
+                           })
+      post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
+      sent = JSON.parse(forwarded.first[:body])
+      roles = sent["messages"].map { |m| m["role"] }
+      expect(roles).to eq(%w[system user])
+    end
   end
 
   describe "POST /v1/messages/count_tokens" do
