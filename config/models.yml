@@ -24,6 +24,19 @@ models:
     # bug (string-based stop detection is unaffected).
     stop_tokens:
       - <|eot_id|>
+  deepseek-r1-70b:
+    engine: mlx
+    model: mlx-community/DeepSeek-R1-Distill-Llama-70B-6bit
+    port: 8080
+    venv: ~/.venv-vllm-metal/bin/python
+    decode_concurrency: 8
+    prompt_concurrency: 4
+    # Reasoning model — emits <think>...</think> tags. The proxy's reasoning
+    # parser (Phase-1 <think> path) lifts these into the reasoning channel.
+    supports_reasoning: true
+    # Same mlx_lm eos-stop bug precaution as hermes-4-70b (Llama-3.3 tokenizer).
+    stop_tokens:
+      - <|eot_id|>
   qwen3-122b-a10b:
     engine: mlx
     model: mlx-community/Qwen3.5-122B-A10B-4bit
