@@ -13,7 +13,9 @@ module SpaceInferenceGateway
 
     # Path-valued entry keys get `~` expanded (and made absolute) so config can
     # use `~/...` — argv goes straight to exec, which never expands a shell `~`.
-    PATH_KEYS = %i[model_dir venv gguf binary].freeze
+    # `model` is NOT a path key: it is the HF repo id (or local path) mlx_lm.server
+    # loads via --model, and must be passed through verbatim (no ~ expansion).
+    PATH_KEYS = %i[venv gguf binary].freeze
 
     def initialize(config)
       @default = config["default"]

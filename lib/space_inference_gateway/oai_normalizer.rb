@@ -5,7 +5,7 @@ require_relative "reasoning_parser"
 require_relative "schemas"
 
 module SpaceInferenceGateway
-  class OaiNormalizer
+  class OaiNormalizer # rubocop:disable Metrics/ClassLength
     # reasoning_field: the upstream key that carries the reasoning text.
     # mlx uses "reasoning"; a true-OAI upstream (llama-server) uses "reasoning_content".
     def initialize(advertised_model:, supports_reasoning: true, reasoning_field: "reasoning")
@@ -127,6 +127,7 @@ module SpaceInferenceGateway
         "refusal" => msg["refusal"],
       }
       message["reasoning_content"] = thinking unless thinking.empty?
+      message["tool_calls"] = msg["tool_calls"] if msg.key?("tool_calls")
 
       out = {
         "index" => choice["index"],
@@ -200,6 +201,12 @@ module SpaceInferenceGateway
         result << base.merge("choices" => [{ "index" => choice["index"], "delta" => delta.slice("role") }])
       end
 
+      # mlx emits tool_calls in their own chunk (alongside content or
+      # finish_reason); pass them through verbatim so the client can execute.
+      if delta.key?("tool_calls")
+        result << base.merge("choices" => [{ "index" => choice["index"],
+                                             "delta" => { "tool_calls" => delta["tool_calls"] }, }])
+      end
       result
     end
 
@@ -236,8 +243,13 @@ module SpaceInferenceGateway
     end
 
     def finish_chunk(base, choice)
-      base.merge("choices" => [{ "index" => choice["index"], "delta" => {},
-                                 "finish_reason" => choice["finish_reason"], }])
+      chunk = base.merge("choices" => [{ "index" => choice["index"], "delta" => {},
+                                         "finish_reason" => choice["finish_reason"], }])
+      # Carry tool_calls onto the finish chunk when present (some clients read
+      # them from the finish chunk rather than a separate delta).
+      delta = choice["delta"] || {}
+      chunk["choices"][0]["delta"]["tool_calls"] = delta["tool_calls"] if delta.key?("tool_calls")
+      chunk
     end
 
     def flush_chunks(r, canonical, created, index = 0)

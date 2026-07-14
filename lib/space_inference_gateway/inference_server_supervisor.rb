@@ -101,15 +101,42 @@ module SpaceInferenceGateway
     end
 
     def build_argv(entry)
+      case entry[:engine].to_s
+      when "optiq" then build_optiq_argv(entry)
+      else              build_mlx_argv(entry)
+      end
+    end
+
+    def build_mlx_argv(entry)
       argv = [
         entry[:venv].to_s, "-m", "mlx_lm.server",
-        "--model", entry[:model_dir].to_s,
+        "--model", entry[:model].to_s,
         "--host", "127.0.0.1",
         "--port", entry[:port].to_s,
       ]
       argv += ["--decode-concurrency", entry[:decode_concurrency].to_s] if entry[:decode_concurrency]
       argv += ["--prompt-concurrency",  entry[:prompt_concurrency].to_s]  if entry[:prompt_concurrency]
       argv += ["--prompt-cache-size",   entry[:prompt_cache_size].to_s]   if entry[:prompt_cache_size]
+      argv += Array(entry[:extra_args])
+      argv
+    end
+
+    # `venv` for optiq is the optiq binary path (e.g. ~/.venv-optiq/bin/optiq),
+    # not a python interpreter — the registry expands `~` the same way it does
+    # for the mlx venv key.
+    def build_optiq_argv(entry)
+      argv = [
+        entry[:venv].to_s, "serve",
+        "--model", entry[:model].to_s,
+        "--host", "127.0.0.1",
+        "--port", entry[:port].to_s,
+      ]
+      if entry[:mtp]
+        argv << "--mtp"
+        argv += ["--mtp-depth", entry[:mtp_depth].to_s] if entry[:mtp_depth]
+      end
+      argv << "--no-auth"
+      argv += ["--max-concurrent", entry[:max_concurrent].to_s] if entry[:max_concurrent]
       argv += Array(entry[:extra_args])
       argv
     end

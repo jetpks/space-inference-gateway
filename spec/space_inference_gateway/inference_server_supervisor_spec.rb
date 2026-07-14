@@ -30,7 +30,7 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
         "test-model" => {
           "engine" => "mlx",
           "venv" => FAKE_INF_BINARY,
-          "model_dir" => "/fake/model",
+          "model" => "/fake/model",
           "port" => port,
         },
       },
@@ -56,13 +56,13 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
     Async { supervisor.stop }
   end
 
-  # ── AC2 — exact mlx argv ───────────────────────────────────────────────────
+  # ── AC1 — exact mlx argv (frozen I08) ────────────────────────────────────
 
-  describe "#build_argv (AC2)" do
+  describe "#build_argv — mlx engine (AC1)" do
     let(:entry) do
       {
         venv:               "/home/user/.venv/bin/python",
-        model_dir:          "/models/Qwen3.5-35B-A3B-4bit",
+        model:              "/models/Qwen3.5-35B-A3B-4bit",
         port:               8080,
         decode_concurrency: 32,
         prompt_concurrency: 8,
@@ -108,6 +108,75 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
       expect(argv).not_to include("--jinja")
       expect(argv).not_to include("--fit")
     end
+
+    it "entry without :engine key defaults to mlx path" do
+      argv = supervisor.send(:build_argv, entry)
+      expect(argv).to include("-m", "mlx_lm.server")
+    end
+  end
+
+  # ── AC1 — exact optiq argv ────────────────────────────────────────────────
+
+  describe "#build_argv — optiq engine (AC1)" do
+    let(:optiq_entry) do
+      {
+        engine:         "optiq",
+        venv:           "/home/user/.venv-optiq/bin/optiq",
+        model:          "mlx-community/Qwen3.6-27B-OptiQ-4bit",
+        port:           8080,
+        mtp:            true,
+        mtp_depth:      2,
+        max_concurrent: 8,
+      }
+    end
+
+    it "builds exact optiq serve argv for qwen3-27b-optiq entry" do
+      expect(supervisor.send(:build_argv, optiq_entry)).to eq([
+                                                                "/home/user/.venv-optiq/bin/optiq", "serve",
+                                                                "--model", "mlx-community/Qwen3.6-27B-OptiQ-4bit",
+                                                                "--host", "127.0.0.1",
+                                                                "--port", "8080",
+                                                                "--mtp",
+                                                                "--mtp-depth", "2",
+                                                                "--no-auth",
+                                                                "--max-concurrent", "8",
+                                                              ])
+    end
+
+    it "omits --mtp and --mtp-depth when mtp is absent/false" do
+      argv = supervisor.send(:build_argv, optiq_entry.except(:mtp, :mtp_depth))
+      expect(argv).not_to include("--mtp")
+      expect(argv).not_to include("--mtp-depth")
+    end
+
+    it "includes --mtp but omits --mtp-depth when mtp_depth is absent" do
+      argv = supervisor.send(:build_argv, optiq_entry.except(:mtp_depth))
+      expect(argv).to include("--mtp")
+      expect(argv).not_to include("--mtp-depth")
+    end
+
+    it "always includes --no-auth" do
+      argv = supervisor.send(:build_argv, optiq_entry)
+      expect(argv).to include("--no-auth")
+    end
+
+    it "omits --max-concurrent when absent" do
+      argv = supervisor.send(:build_argv, optiq_entry.except(:max_concurrent))
+      expect(argv).not_to include("--max-concurrent")
+    end
+
+    it "appends extra_args at end of argv" do
+      argv = supervisor.send(:build_argv, optiq_entry.merge(extra_args: ["--context-scale", "2"]))
+      expect(argv.last(2)).to eq(["--context-scale", "2"])
+    end
+
+    it "does not include mlx_lm.server flags" do
+      argv = supervisor.send(:build_argv, optiq_entry)
+      expect(argv).not_to include("-m")
+      expect(argv).not_to include("mlx_lm.server")
+      expect(argv).not_to include("--decode-concurrency")
+      expect(argv).not_to include("--prompt-concurrency")
+    end
   end
 
   # ── ModelRegistry — mlx fields ─────────────────────────────────────────────
@@ -116,7 +185,7 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
     it "resolve returns the entry Hash for a known alias" do
       entry = registry.resolve("test-model")
       expect(entry).to be_a(Hash)
-      expect(entry[:model_dir]).to eq("/fake/model")
+      expect(entry[:model]).to eq("/fake/model")
       expect(entry[:port]).to eq(port)
     end
 
@@ -124,23 +193,83 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
       expect(registry.resolve("no-such-model")).to be_nil
     end
 
-    it "config/models.yml carries mlx engine fields and has mlx default" do
+    it "config/models.yml has optiq default and carries mlx + optiq aliases" do
       loaded = SpaceInferenceGateway::ModelRegistry.load
-      expect(loaded.default_alias).to eq("qwen3-122b-a10b")
-      expect(loaded.aliases).to include("qwen3-122b-a10b", "qwen3-35b-a3b")
+      expect(loaded.default_alias).to eq("qwen3-27b-optiq")
+      expect(loaded.aliases).to include("qwen3-27b-optiq", "hermes-4-70b", "qwen3-122b-a10b", "qwen3-35b-a3b")
 
-      entry = loaded.resolve("qwen3-122b-a10b")
-      expect(entry).to be_a(Hash)
-      expect(entry[:engine]).to eq("mlx")
-      expect(entry[:model_dir]).to be_a(String)
-      expect(entry[:port]).to be_a(Integer)
-      expect(entry[:venv]).to be_a(String)
+      optiq_entry = loaded.resolve("qwen3-27b-optiq")
+      expect(optiq_entry[:engine]).to eq("optiq")
+      expect(optiq_entry[:model]).to eq("mlx-community/Qwen3.6-27B-OptiQ-4bit")
+      expect(optiq_entry[:port]).to be_a(Integer)
+      expect(optiq_entry[:mtp]).to eq(true)
+      expect(optiq_entry[:mtp_depth]).to eq(2)
+      expect(optiq_entry[:max_concurrent]).to eq(8)
+
+      mlx_entry = loaded.resolve("qwen3-122b-a10b")
+      expect(mlx_entry[:engine]).to eq("mlx")
+      expect(mlx_entry[:model]).to be_a(String)
     end
 
-    it "model_dir and venv have ~ expanded" do
+    it "venv has ~ expanded; model is the repo id (not path-expanded)" do
       entry = SpaceInferenceGateway::ModelRegistry.load.resolve("qwen3-122b-a10b")
-      expect(entry[:model_dir]).to start_with("/")
+      expect(entry[:model]).to eq("mlx-community/Qwen3.5-122B-A10B-4bit")
       expect(entry[:venv]).to start_with("/")
+    end
+
+    it "optiq venv has ~ expanded; model is the HF repo id (not path-expanded)" do
+      entry = SpaceInferenceGateway::ModelRegistry.load.resolve("qwen3-27b-optiq")
+      expect(entry[:venv]).to start_with("/")
+      expect(entry[:model]).to eq("mlx-community/Qwen3.6-27B-OptiQ-4bit")
+    end
+  end
+
+  # ── AC1 — Optiq spawn + readiness gate ────────────────────────────────────
+  # The fake_llama_server binary is engine-agnostic: it parses --port from
+  # any argv (ignoring leading subcommands like "serve") and responds to GET
+  # /health with 200 after N unready polls. Register an optiq entry pointing
+  # at the fake binary to verify the supervisor's spawn + health loop works.
+
+  describe "#start — optiq engine (AC1)" do
+    let(:optiq_registry) do
+      build_registry(
+        {
+          "fake-optiq" => {
+            "engine" => "optiq",
+            "venv" => FAKE_INF_BINARY,
+            "model" => "mlx-community/Fake-OptiQ",
+            "port" => port,
+          },
+        },
+        "fake-optiq",
+      )
+    end
+
+    let(:optiq_supervisor) do
+      SpaceInferenceGateway::InferenceServerSupervisor.new(
+        registry: optiq_registry,
+        timeouts: SpaceInferenceGateway::InferenceServerSupervisor::Timeouts.new(
+          readiness: 10, stop_grace: 0.5, poll_interval: 0.05,
+        ),
+        log_dir: Dir.tmpdir,
+      )
+    end
+
+    around do |ex|
+      ex.run
+    ensure
+      Async { optiq_supervisor.stop }
+    end
+
+    it "spawns the fake optiq child, passes health gate, returns Success" do
+      Async do |task|
+        task.with_timeout(10) do
+          result = optiq_supervisor.start("fake-optiq")
+          expect(result).to be_success
+          expect(optiq_supervisor.running?).to be true
+          expect(optiq_supervisor.active_alias).to eq("fake-optiq")
+        end
+      end
     end
   end
 
@@ -235,8 +364,8 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
     let(:registry) do
       build_registry(
         {
-          "model-a" => { "engine" => "mlx", "venv" => FAKE_INF_BINARY, "model_dir" => "/fake/a", "port" => port },
-          "model-b" => { "engine" => "mlx", "venv" => FAKE_INF_BINARY, "model_dir" => "/fake/b", "port" => port2 },
+          "model-a" => { "engine" => "mlx", "venv" => FAKE_INF_BINARY, "model" => "/fake/a", "port" => port },
+          "model-b" => { "engine" => "mlx", "venv" => FAKE_INF_BINARY, "model" => "/fake/b", "port" => port2 },
         },
         "model-a",
       )

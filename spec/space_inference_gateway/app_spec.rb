@@ -59,6 +59,164 @@ RSpec.describe SpaceInferenceGateway::App do
     end
   end
 
+  # mlx_lm.server validates the request "model" field against its loaded model id
+  # (the HF repo id) and 404s unknown names to HuggingFace. The proxy rewrites the
+  # client's alias to the registry entry's repo id before forwarding.
+  describe "mlx model-field rewrite (OAI)" do
+    let(:forwarded) { [] }
+    let(:upstream_fn) do
+      lambda do |path, body|
+        forwarded << { path: path, body: body }
+        [fixture("oai_ns.json"), 200, {}]
+      end
+    end
+
+    it "rewrites the alias to the mlx repo id for the default mlx engine" do
+      body = JSON.generate({ model: "qwen3-35b-a3b", messages: [{ role: "user", content: "hi" }] })
+      post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
+      expect(last_response.status).to eq(200)
+      expect(forwarded.length).to eq(1)
+      sent = JSON.parse(forwarded.first[:body])
+      expect(sent["model"]).to eq("mlx-community/Qwen3.5-35B-A3B-4bit")
+    end
+
+    it "passes model field through unchanged for unknown alias on optiq default (single-model)" do
+      # The default alias (qwen3-27b-optiq, engine: optiq) does not rewrite the
+      # "model" field — optiq's single-model mode accepts any label value.
+      body = JSON.generate({ model: "no-such-alias", messages: [{ role: "user", content: "hi" }] })
+      post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
+      sent = JSON.parse(forwarded.first[:body])
+      expect(sent["model"]).to eq("no-such-alias")
+    end
+
+    it "normalizes the OpenAI 'developer' role to 'system' (mlx rejects developer)" do
+      body = JSON.generate({
+                             model: "qwen3-35b-a3b",
+        messages: [
+          { role: "developer", content: "you are helpful" },
+          { role: "user", content: "hi" },
+        ],
+                           })
+      post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
+      sent = JSON.parse(forwarded.first[:body])
+      roles = sent["messages"].map { |m| m["role"] }
+      expect(roles).to eq(%w[system user])
+    end
+
+    it "injects the registry stop_tokens for the default mlx model (hermes-4)" do
+      body = JSON.generate({ model: "hermes-4-70b", messages: [{ role: "user", content: "hi" }] })
+      post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
+      sent = JSON.parse(forwarded.first[:body])
+      expect(sent["stop"]).to include("<|eot_id|>")
+    end
+
+    it "merges client stop sequences with the registry stop_tokens" do
+      body = JSON.generate({ model: "hermes-4-70b", messages: [{ role: "user", content: "hi" }], stop: ["END"] })
+      post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
+      sent = JSON.parse(forwarded.first[:body])
+      expect(sent["stop"]).to include("END", "<|eot_id|>")
+    end
+
+    it "does not inject stop_tokens for models without the config (qwen3)" do
+      body = JSON.generate({ model: "qwen3-35b-a3b", messages: [{ role: "user", content: "hi" }] })
+      post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
+      sent = JSON.parse(forwarded.first[:body])
+      expect(sent.key?("stop")).to be false
+    end
+  end
+
+  # ── AC3: optiq engine path ────────────────────────────────────────────────
+  describe "optiq engine — OAI path (AC3)" do
+    let(:forwarded) { [] }
+    let(:upstream_fn) do
+      lambda do |path, body|
+        forwarded << { path: path, body: body }
+        [fixture("oai_ns.json"), 200, {}]
+      end
+    end
+
+    it "does not rewrite model field for optiq engine (single-model accepts any label)" do
+      body = JSON.generate({ model: "qwen3-27b-optiq", messages: [{ role: "user", content: "hi" }] })
+      post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
+      expect(last_response.status).to eq(200)
+      sent = JSON.parse(forwarded.first[:body])
+      expect(sent["model"]).to eq("qwen3-27b-optiq")
+    end
+
+    it "applies developer→system role normalization for optiq engine" do
+      body = JSON.generate({
+                             model: "qwen3-27b-optiq",
+        messages: [
+          { role: "developer", content: "be helpful" },
+          { role: "user",      content: "hi" },
+        ],
+                           })
+      post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
+      sent = JSON.parse(forwarded.first[:body])
+      expect(sent["messages"].map { |m| m["role"] }).to eq(%w[system user])
+    end
+  end
+
+  describe "optiq engine — ANT path synthesizes from OAI upstream (AC3)" do
+    let(:forwarded) { [] }
+    let(:upstream_fn) do
+      lambda do |path, body|
+        forwarded << { path: path, body: body }
+        [fixture("oai_ns.json"), 200, {}]
+      end
+    end
+
+    it "routes /v1/messages for optiq to /v1/chat/completions (OAI synthesis)" do
+      body = JSON.generate({
+                             model: "qwen3-27b-optiq",
+        messages: [{ role: "user", content: "hi" }],
+        max_tokens: 100,
+                           })
+      post "/v1/messages", body, "CONTENT_TYPE" => "application/json"
+      expect(last_response.status).to eq(200)
+      expect(forwarded.first[:path]).to eq("/v1/chat/completions")
+    end
+  end
+
+  describe "optiq string-error relay (AC3 + AC6)" do
+    let(:upstream_fn) { ->(_path, _body) { ['{"error":"bad json body"}', 400, {}] } }
+
+    before do
+      post "/v1/chat/completions",
+           JSON.generate({ model: "qwen3-27b-optiq", messages: [] }),
+           "CONTENT_TYPE" => "application/json"
+    end
+
+    it "reshapes optiq string error to conformant OAI envelope" do
+      expect(last_response.status).to eq(400)
+      parsed = JSON.parse(last_response.body)
+      expect(parsed.dig("error", "message")).to eq("bad json body")
+      expect(parsed["error"]).to be_a(Hash)
+    end
+  end
+
+  describe "POST /v1/messages/count_tokens" do
+    it "returns 200 with an integer input_tokens estimate" do
+      body = JSON.generate({ model: "any", messages: [{ role: "user", content: "a" * 40 }] })
+      post "/v1/messages/count_tokens", body, "CONTENT_TYPE" => "application/json"
+      expect(last_response.status).to eq(200)
+      parsed = JSON.parse(last_response.body)
+      expect(parsed["input_tokens"]).to be_an(Integer)
+      expect(parsed["input_tokens"]).to eq(10) # 40 chars / 4
+    end
+
+    it "handles string and array content shapes" do
+      body = JSON.generate({
+                             model: "any",
+        system: "eight chars",
+        messages: [{ role: "user", content: [{ type: "text", text: "eight more" }] }],
+                           })
+      post "/v1/messages/count_tokens", body, "CONTENT_TYPE" => "application/json"
+      expect(last_response.status).to eq(200)
+      expect(JSON.parse(last_response.body)["input_tokens"]).to eq(6) # 21 chars / 4 = 5.25 -> ceil 6
+    end
+  end
+
   describe "POST /v1/messages (non-stream)" do
     let(:request_body) { JSON.generate({ model: "any", messages: [{ role: "user", content: "hi" }], max_tokens: 100 }) }
 

@@ -1,18 +1,66 @@
-# Model registry — alias → mlx_lm.server launch args.
-# `model_dir` and `venv` may start with `~` (expanded to HOME by the registry).
-default: qwen3-122b-a10b
+# Model registry — alias → inference engine launch args.
+# `model` is the HF repo id (or a local path) passed to the engine via --model.
+# For the mlx engine, it is also the value the proxy rewrites the request "model"
+# field to (mlx validates this field). For the optiq engine, the model field is a
+# label — optiq's single-model mode serves any value, so no rewrite is needed.
+# `venv` for mlx is the python interpreter; for optiq it is the optiq binary path.
+# Both may start with `~` (expanded to HOME by the registry).
+default: qwen3-27b-optiq
 
 models:
+  # Qwen3.6 27B OptiQ-4bit with MTP depth 2 (optiq engine).
+  # optiq's single-model mode: the request "model" field is a label — any value
+  # is accepted, so the proxy does not rewrite it for this engine.
+  qwen3-27b-optiq:
+    engine: optiq
+    model: mlx-community/Qwen3.6-27B-OptiQ-4bit
+    port: 8080
+    # venv is the optiq binary, not a python interpreter.
+    venv: ~/.venv-optiq/bin/optiq
+    mtp: true
+    mtp_depth: 2
+    max_concurrent: 8
+  # Dense 70B (Llama-3.3 base, Nous instruct finetune). No native reasoning —
+  # the chat template emits content only, so supports_reasoning: false keeps
+  # the normalizer in passthrough (no <think>/reasoning-field extraction).
+  hermes-4-70b:
+    engine: mlx
+    model: mlx-community/Hermes-4-70B-6bit
+    port: 8080
+    venv: ~/.venv-vllm-metal/bin/python
+    decode_concurrency: 8
+    prompt_concurrency: 4
+    supports_reasoning: false
+    # mlx_lm 0.31.3 bug: the eos_token_id-based stop (via
+    # tokenizer.eos_token_ids in the SequenceStateMachine) does not fire for
+    # this model — the server generates past <|eot_id|> (128009) without
+    # stopping. Injecting it as an explicit stop sequence works around the
+    # bug (string-based stop detection is unaffected).
+    stop_tokens:
+      - <|eot_id|>
+  deepseek-r1-70b:
+    engine: mlx
+    model: mlx-community/DeepSeek-R1-Distill-Llama-70B-6bit
+    port: 8080
+    venv: ~/.venv-vllm-metal/bin/python
+    decode_concurrency: 8
+    prompt_concurrency: 4
+    # Reasoning model — emits <think>...</think> tags. The proxy's reasoning
+    # parser (Phase-1 <think> path) lifts these into the reasoning channel.
+    supports_reasoning: true
+    # Same mlx_lm eos-stop bug precaution as hermes-4-70b (Llama-3.3 tokenizer).
+    stop_tokens:
+      - <|eot_id|>
   qwen3-122b-a10b:
     engine: mlx
-    model_dir: ~/models/Qwen3.5-122B-A10B-4bit
+    model: mlx-community/Qwen3.5-122B-A10B-4bit
     port: 8080
     venv: ~/.venv-vllm-metal/bin/python
     decode_concurrency: 32
     prompt_concurrency: 8
   qwen3-35b-a3b:
     engine: mlx
-    model_dir: ~/models/Qwen3.5-35B-A3B-4bit
+    model: mlx-community/Qwen3.5-35B-A3B-4bit
     port: 8080
     venv: ~/.venv-vllm-metal/bin/python
     decode_concurrency: 32

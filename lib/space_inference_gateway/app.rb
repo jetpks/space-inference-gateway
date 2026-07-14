@@ -66,6 +66,7 @@ module SpaceInferenceGateway
       case [method, path]
       when ["POST", "/v1/chat/completions"] then handle_oai(env)
       when ["POST", "/v1/messages"]         then handle_ant(env)
+      when ["POST", "/v1/messages/count_tokens"] then handle_count_tokens(env)
       when ["GET",  "/v1/models"]           then handle_models
       when ["POST", "/v1/load"]             then handle_load(env)
       when ["POST", "/v1/unload"]           then handle_unload(env)
@@ -96,6 +97,8 @@ module SpaceInferenceGateway
         advertised_model:   effective_model(model_alias),
         supports_reasoning: mode[:supports_reasoning],
       )
+
+      body_str = rewrite_model_for_mlx(body_str, model_alias)
 
       return open_stream("/v1/chat/completions", body_str, normalizer, flavor: :oai) if streaming && @upstream_fn.nil?
 
@@ -153,7 +156,8 @@ module SpaceInferenceGateway
     end
 
     def handle_ant_mlx(body_str, model_alias, normalizer, streaming)
-      oai_body = ant_to_oai(body_str, effective_model(model_alias))
+      oai_body = ant_to_oai(body_str, mlx_model_id(model_alias),
+                            stop_tokens: mlx_stop_tokens(model_alias),)
 
       if streaming && @upstream_fn.nil?
         return open_stream("/v1/chat/completions", oai_body, OaiToAntAdapter.new(normalizer), flavor: :ant)
@@ -183,6 +187,27 @@ module SpaceInferenceGateway
       [200, JSON_HEADERS.dup, [body]]
     end
 
+    # Anthropic count_tokens — mlx_lm.server has no native count_tokens, and CC
+    # hits this before sending to size the prompt (a 404 makes CC refuse the
+    # model as "may not exist"). Return a rough char-based estimate (~4 chars/token);
+    # it is for the client's context-window accounting, not billing, so an
+    # approximation is fine. Accepts the ANT request shape (system + messages +
+    # tools), with content as a string or an array of content blocks.
+    def handle_count_tokens(env)
+      request = JSON.parse(read_body(env))
+      chars = 0
+      collect = lambda do |content|
+        case content
+        when String then chars += content.length
+        when Array  then content.each { |blk| collect.call(blk["text"] || blk["content"] || "") }
+        end
+      end
+      collect.call(request["system"]) if request["system"]
+      (request["messages"] || []).each { |m| collect.call(m["content"]) }
+      (request["tools"] || []).each { |t| collect.call(t.to_s) }
+      [200, JSON_HEADERS.dup, [JSON.generate({ "input_tokens" => (chars / 4.0).ceil })]]
+    end
+
     def handle_load(env)
       body_str    = read_body(env)
       request     = JSON.parse(body_str)
@@ -191,7 +216,7 @@ module SpaceInferenceGateway
       result = @controller.ensure_active(model_alias.to_s)
       if result.success?
         entry      = @controller.registry.resolve(model_alias.to_s)
-        model_path = entry[:model_dir] || entry[:gguf] || entry[:model_path]
+        model_path = entry[:model] || entry[:gguf] || entry[:model_path]
         body       = JSON.generate({ "status" => "loaded", "model_path" => model_path.to_s })
         [200, JSON_HEADERS.dup, [body]]
       else
@@ -279,17 +304,67 @@ module SpaceInferenceGateway
       @controller.registry.resolve(alias_name) ? alias_name : @advertised_model
     end
 
-    # True when the registry entry for alias_name (or the default alias when
-    # alias_name is unknown/nil) declares engine: "mlx".
+    # True when the entry for alias_name (or the default) uses an OAI-upstream
+    # engine that the proxy synthesizes ANT from: currently "mlx" and "optiq".
+    # Both engines speak OpenAI HTTP; the proxy never forwards /v1/messages to them.
     def mlx_engine?(alias_name)
       entry = @controller.registry.resolve(alias_name) ||
               @controller.registry.resolve(@controller.registry.default_alias)
-      entry&.fetch(:engine, nil) == "mlx"
+      %w[mlx optiq].include?(entry&.fetch(:engine, nil))
+    end
+
+    # The model id the mlx child expects in the request body's "model" field —
+    # the HF repo id mlx_lm.server loaded via --model. mlx_lm.server validates
+    # this field against its loaded model and tries to fetch unknown names from
+    # HuggingFace, so the alias cannot be forwarded as-is (unlike llama-server,
+    # which ignores it).
+    def mlx_model_id(alias_name)
+      entry = @controller.registry.resolve(alias_name) ||
+              @controller.registry.resolve(@controller.registry.default_alias)
+      entry[:model]
+    end
+
+    # Stop tokens from the registry entry (optional). Workaround for the
+    # mlx_lm 0.31.3 eos-token-id stop bug — see models.yml comment.
+    def mlx_stop_tokens(alias_name)
+      entry = @controller.registry.resolve(alias_name) ||
+              @controller.registry.resolve(@controller.registry.default_alias)
+      entry[:stop_tokens]
+    end
+
+    # Merge registry stop_tokens into the request's existing "stop" field,
+    # de-duplicated. Mutates `parsed` in place.
+    def inject_mlx_stop_tokens(parsed, model_alias)
+      stop_tokens = mlx_stop_tokens(model_alias)
+      return unless stop_tokens
+
+      merge_stop_tokens(parsed, stop_tokens)
+    end
+
+    def merge_stop_tokens(body, stop_tokens)
+      existing = Array(body["stop"])
+      body["stop"] = (existing + Array(stop_tokens)).uniq
+    end
+
+    # Applies OAI-upstream request rewrites for mlx/optiq engines:
+    # - mlx only: rewrites the "model" field to the HF repo id (mlx validates
+    #   this field against its loaded model; optiq single-model mode accepts any value).
+    # - both engines: normalizes "developer" role to "system" and injects stop_tokens.
+    def rewrite_model_for_mlx(body_str, model_alias)
+      return body_str unless mlx_engine?(model_alias)
+
+      parsed = JSON.parse(body_str)
+      entry  = @controller.registry.resolve(model_alias) ||
+               @controller.registry.resolve(@controller.registry.default_alias)
+      parsed["model"] = mlx_model_id(model_alias) if entry&.fetch(:engine, nil) == "mlx"
+      (parsed["messages"] || []).each { |m| m["role"] = "system" if m["role"] == "developer" }
+      inject_mlx_stop_tokens(parsed, model_alias)
+      JSON.generate(parsed)
     end
 
     # Minimal ANT→OAI request translation for the mlx engine path.
     # mlx speaks OAI only; system becomes messages[0]; fields mapped.
-    def ant_to_oai(body_str, model_name)
+    def ant_to_oai(body_str, model_name, stop_tokens: nil)
       ant  = JSON.parse(body_str)
       msgs = []
       msgs << { "role" => "system", "content" => ant["system"] } if ant["system"]
@@ -301,6 +376,7 @@ module SpaceInferenceGateway
       oai["temperature"] = ant["temperature"] if ant.key?("temperature")
       oai["top_p"]       = ant["top_p"]       if ant.key?("top_p")
       oai["stop"]        = ant["stop_sequences"] if ant.key?("stop_sequences")
+      merge_stop_tokens(oai, stop_tokens) if stop_tokens
       JSON.generate(oai)
     end
 
@@ -313,7 +389,7 @@ module SpaceInferenceGateway
 
     def default_error_relay
       entry = @controller.registry.resolve(@controller.registry.default_alias)
-      entry&.fetch(:engine, nil) == "mlx" ? ErrorRelay::Mlx.new : ErrorRelay::Oai.new
+      %w[mlx optiq].include?(entry&.fetch(:engine, nil)) ? ErrorRelay::Mlx.new : ErrorRelay::Oai.new
     end
   end
 end
