@@ -103,6 +103,27 @@ RSpec.describe SpaceInferenceGateway::App do
       roles = sent["messages"].map { |m| m["role"] }
       expect(roles).to eq(%w[system user])
     end
+
+    it "injects the registry stop_tokens for the default mlx model (hermes-4)" do
+      body = JSON.generate({ model: "hermes-4-70b", messages: [{ role: "user", content: "hi" }] })
+      post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
+      sent = JSON.parse(forwarded.first[:body])
+      expect(sent["stop"]).to include("<|eot_id|>")
+    end
+
+    it "merges client stop sequences with the registry stop_tokens" do
+      body = JSON.generate({ model: "hermes-4-70b", messages: [{ role: "user", content: "hi" }], stop: ["END"] })
+      post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
+      sent = JSON.parse(forwarded.first[:body])
+      expect(sent["stop"]).to include("END", "<|eot_id|>")
+    end
+
+    it "does not inject stop_tokens for models without the config (qwen3)" do
+      body = JSON.generate({ model: "qwen3-35b-a3b", messages: [{ role: "user", content: "hi" }] })
+      post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
+      sent = JSON.parse(forwarded.first[:body])
+      expect(sent.key?("stop")).to be false
+    end
   end
 
   describe "POST /v1/messages/count_tokens" do

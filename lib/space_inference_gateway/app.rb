@@ -156,7 +156,8 @@ module SpaceInferenceGateway
     end
 
     def handle_ant_mlx(body_str, model_alias, normalizer, streaming)
-      oai_body = ant_to_oai(body_str, mlx_model_id(model_alias))
+      oai_body = ant_to_oai(body_str, mlx_model_id(model_alias),
+                            stop_tokens: mlx_stop_tokens(model_alias),)
 
       if streaming && @upstream_fn.nil?
         return open_stream("/v1/chat/completions", oai_body, OaiToAntAdapter.new(normalizer), flavor: :ant)
@@ -322,6 +323,28 @@ module SpaceInferenceGateway
       entry[:model]
     end
 
+    # Stop tokens from the registry entry (optional). Workaround for the
+    # mlx_lm 0.31.3 eos-token-id stop bug — see models.yml comment.
+    def mlx_stop_tokens(alias_name)
+      entry = @controller.registry.resolve(alias_name) ||
+              @controller.registry.resolve(@controller.registry.default_alias)
+      entry[:stop_tokens]
+    end
+
+    # Merge registry stop_tokens into the request's existing "stop" field,
+    # de-duplicated. Mutates `parsed` in place.
+    def inject_mlx_stop_tokens(parsed, model_alias)
+      stop_tokens = mlx_stop_tokens(model_alias)
+      return unless stop_tokens
+
+      merge_stop_tokens(parsed, stop_tokens)
+    end
+
+    def merge_stop_tokens(body, stop_tokens)
+      existing = Array(body["stop"])
+      body["stop"] = (existing + Array(stop_tokens)).uniq
+    end
+
     # Rewrite the "model" field in an OAI request body to the mlx child's loaded
     # model id (the HF repo id). No-op for non-mlx engines (a future llama-server
     # return ignores the field, so the alias passes through). Also normalizes the
@@ -334,12 +357,13 @@ module SpaceInferenceGateway
       parsed = JSON.parse(body_str)
       parsed["model"] = mlx_model_id(model_alias)
       (parsed["messages"] || []).each { |m| m["role"] = "system" if m["role"] == "developer" }
+      inject_mlx_stop_tokens(parsed, model_alias)
       JSON.generate(parsed)
     end
 
     # Minimal ANT→OAI request translation for the mlx engine path.
     # mlx speaks OAI only; system becomes messages[0]; fields mapped.
-    def ant_to_oai(body_str, model_name)
+    def ant_to_oai(body_str, model_name, stop_tokens: nil)
       ant  = JSON.parse(body_str)
       msgs = []
       msgs << { "role" => "system", "content" => ant["system"] } if ant["system"]
@@ -351,6 +375,7 @@ module SpaceInferenceGateway
       oai["temperature"] = ant["temperature"] if ant.key?("temperature")
       oai["top_p"]       = ant["top_p"]       if ant.key?("top_p")
       oai["stop"]        = ant["stop_sequences"] if ant.key?("stop_sequences")
+      merge_stop_tokens(oai, stop_tokens) if stop_tokens
       JSON.generate(oai)
     end
 

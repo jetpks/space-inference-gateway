@@ -17,6 +17,13 @@ models:
     decode_concurrency: 8
     prompt_concurrency: 4
     supports_reasoning: false
+    # mlx_lm 0.31.3 bug: the eos_token_id-based stop (via
+    # tokenizer.eos_token_ids in the SequenceStateMachine) does not fire for
+    # this model — the server generates past <|eot_id|> (128009) without
+    # stopping. Injecting it as an explicit stop sequence works around the
+    # bug (string-based stop detection is unaffected).
+    stop_tokens:
+      - <|eot_id|>
   qwen3-122b-a10b:
     engine: mlx
     model: mlx-community/Qwen3.5-122B-A10B-4bit
