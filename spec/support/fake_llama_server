@@ -1,7 +1,7 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# Fake llama-server for testing LlamaServerSupervisor.
+# Fake inference server (engine-agnostic HTTP child) for testing InferenceServerSupervisor.
 #
 # Usage: fake_llama_server --port PORT [other-llama-server-flags-ignored]
 #

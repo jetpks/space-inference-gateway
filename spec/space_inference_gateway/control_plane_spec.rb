@@ -7,7 +7,7 @@ require "async/http/endpoint"
 require "falcon"
 require "uri"
 
-CP_FAKE_BINARY = File.expand_path("../support/fake_llama_server", __dir__)
+CP_FAKE_BINARY = File.expand_path("../support/fake_llama_server", __dir__) unless defined?(CP_FAKE_BINARY)
 
 RSpec.describe "Model Control Plane (I05 — Supervisor Backend)" do
   include Rack::Test::Methods
@@ -55,31 +55,29 @@ RSpec.describe "Model Control Plane (I05 — Supervisor Backend)" do
       "default" => "model-a",
       "models"  => {
         "model-a" => {
-          "gguf" => "/fake/a.gguf",
+          "engine" => "mlx",
+          "venv" => CP_FAKE_BINARY,
+          "model_dir" => "/fake/a",
           "port" => port_a,
-          "ctx" => 0,
-          "parallel" => 1,
-          "binary" => CP_FAKE_BINARY,
         },
         "model-b" => {
-          "gguf" => "/fake/b.gguf",
+          "engine" => "mlx",
+          "venv" => CP_FAKE_BINARY,
+          "model_dir" => "/fake/b",
           "port" => port_b,
-          "ctx" => 0,
-          "parallel" => 1,
-          "binary" => CP_FAKE_BINARY,
         },
       },
     )
   end
 
   let(:timeouts) do
-    SpaceInferenceGateway::LlamaServerSupervisor::Timeouts.new(
+    SpaceInferenceGateway::InferenceServerSupervisor::Timeouts.new(
       readiness: 10, stop_grace: 0.5, poll_interval: 0.05,
     )
   end
 
   let(:supervisor) do
-    SpaceInferenceGateway::LlamaServerSupervisor.new(
+    SpaceInferenceGateway::InferenceServerSupervisor.new(
       registry: registry, timeouts: timeouts, log_dir: Dir.tmpdir,
     )
   end
@@ -356,7 +354,7 @@ RSpec.describe "Model Control Plane (I05 — Supervisor Backend)" do
 
           parsed = JSON.parse(resp.body)
           expect(parsed["status"]).to eq("loaded")
-          expect(parsed["model_path"]).to eq("/fake/a.gguf")
+          expect(parsed["model_path"]).to eq("/fake/a")
           expect(SpaceInferenceGateway::Schemas::LOAD_RESPONSE.call(parsed)).to be_success
         end
       end
@@ -405,13 +403,13 @@ RSpec.describe "Model Control Plane (I05 — Supervisor Backend)" do
 
   describe "AC7 — readiness timeout is clean (no hang)" do
     let(:timeout_timeouts) do
-      SpaceInferenceGateway::LlamaServerSupervisor::Timeouts.new(
+      SpaceInferenceGateway::InferenceServerSupervisor::Timeouts.new(
         readiness: 0.5, stop_grace: 0.5, poll_interval: 0.05,
       )
     end
 
     let(:timeout_supervisor) do
-      SpaceInferenceGateway::LlamaServerSupervisor.new(
+      SpaceInferenceGateway::InferenceServerSupervisor.new(
         registry: registry, timeouts: timeout_timeouts, log_dir: Dir.tmpdir,
       )
     end

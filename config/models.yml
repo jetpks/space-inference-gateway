@@ -1,12 +1,19 @@
-# Model registry — alias → concrete gguf + llama-server launch args.
-# `gguf` and `binary` may start with `~` (expanded to HOME by the registry).
-default: qwen3-35b-a3b
+# Model registry — alias → mlx_lm.server launch args.
+# `model_dir` and `venv` may start with `~` (expanded to HOME by the registry).
+default: qwen3-122b-a10b
 
 models:
-  qwen3-35b-a3b:
-    gguf: ~/.cache/huggingface/hub/models--unsloth--Qwen3.6-35B-A3B-MTP-GGUF/snapshots/5bc3e238d916f48a861bac2f8a1990a0e9b7e98d/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
+  qwen3-122b-a10b:
+    engine: mlx
+    model_dir: ~/models/Qwen3.5-122B-A10B-4bit
     port: 8080
-    ctx: 524288
-    parallel: 2
-    offload: fit
-    binary: /opt/homebrew/bin/llama-server
+    venv: ~/.venv-vllm-metal/bin/python
+    decode_concurrency: 32
+    prompt_concurrency: 8
+  qwen3-35b-a3b:
+    engine: mlx
+    model_dir: ~/models/Qwen3.5-35B-A3B-4bit
+    port: 8080
+    venv: ~/.venv-vllm-metal/bin/python
+    decode_concurrency: 32
+    prompt_concurrency: 8

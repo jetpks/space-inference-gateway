@@ -6,55 +6,11 @@ require_relative "ant_normalizer"
 require_relative "model_registry"
 require_relative "model_controller"
 require_relative "upstream_client"
-require_relative "llama_server_supervisor"
+require_relative "inference_server_supervisor"
+require_relative "error_relay"
 
 module SpaceInferenceGateway
-  # Relays a non-200 upstream response back to the caller in the correct API
-  # flavor. Extracted from App to keep Metrics/ClassLength in bounds.
-  module UpstreamErrorRelay
-    private
-
-    # Returns a Rack triple [status, headers, [body]] that mirrors the upstream
-    # error in the client's API flavor (:oai or :ant).
-    def relay_upstream_error(status, body, flavor:)
-      case flavor
-      when :oai
-        [status, { "content-type" => "application/json" }, [oai_error_body(body)]]
-      when :ant
-        msg = safe_error_message(body) || body
-        out = JSON.generate({ type: "error", error: { type: ant_error_type(status), message: msg } })
-        [status, { "content-type" => "application/json" }, [out]]
-      end
-    end
-
-    def oai_error_body(body)
-      JSON.parse(body)
-      body
-    rescue JSON::ParserError
-      JSON.generate({ error: { message: body, type: "upstream_error" } })
-    end
-
-    def safe_error_message(body)
-      JSON.parse(body).dig("error", "message")
-    rescue JSON::ParserError
-      nil
-    end
-
-    def ant_error_type(status)
-      case status
-      when 401      then "authentication_error"
-      when 403      then "permission_error"
-      when 429      then "rate_limit_error"
-      when 529      then "overloaded_error"
-      when 500..599 then "api_error"
-      else               "invalid_request_error"
-      end
-    end
-  end
-
-  class App
-    include UpstreamErrorRelay
-
+  class App # rubocop:disable Metrics/ClassLength
     ADVERTISED_MODEL = ENV.fetch("ADVERTISED_MODEL", "local-inference")
 
     JSON_HEADERS = { "content-type" => "application/json" }.freeze
@@ -82,13 +38,24 @@ module SpaceInferenceGateway
     end
     private_constant :StreamBody
 
+    # Adapter: makes AntNormalizer#stream_to_sse_from_oai duck-type as stream_to_sse
+    # so it can be dropped into StreamBody for the mlx ANT streaming path.
+    OaiToAntAdapter = Struct.new(:normalizer) do
+      def stream_to_sse(body, &block)
+        normalizer.stream_to_sse_from_oai(body, &block)
+      end
+    end
+    private_constant :OaiToAntAdapter
+
     # upstream_fn:     optional (path, body) => [body, status, headers] — legacy test seam.
     # upstream_client: optional UpstreamClient — injected test seam; wins over default.
     # controller:      optional ModelController — built from config/models.yml when omitted.
-    def initialize(upstream_fn: nil, upstream_client: nil, controller: nil)
+    # error_relay:     optional ErrorRelay::Oai/Mlx instance — injected for testing.
+    def initialize(upstream_fn: nil, upstream_client: nil, controller: nil, error_relay: nil)
       @upstream_fn     = upstream_fn
       @controller      = controller || build_default_controller
       @upstream_client = upstream_client || UpstreamClient.new(base_url: -> { @controller.base_url })
+      @error_relay     = error_relay || default_error_relay
       @advertised_model = ADVERTISED_MODEL
     end
 
@@ -142,7 +109,7 @@ module SpaceInferenceGateway
                      [200, JSON_HEADERS.dup, [JSON.generate(normalizer.normalize(JSON.parse(body_up)))]]
                    end
                  else
-                   relay_upstream_error(status, body_up, flavor: :oai)
+                   @error_relay.relay(status, body_up, flavor: :oai)
                  end
       end
       result
@@ -165,6 +132,8 @@ module SpaceInferenceGateway
         supports_reasoning: mode[:supports_reasoning],
       )
 
+      return handle_ant_mlx(body_str, model_alias, normalizer, streaming) if mlx_engine?(model_alias)
+
       return open_stream("/v1/messages", body_str, normalizer, flavor: :ant) if streaming && @upstream_fn.nil?
 
       result = nil
@@ -177,7 +146,32 @@ module SpaceInferenceGateway
                      [200, JSON_HEADERS.dup, [JSON.generate(normalizer.normalize(JSON.parse(body_up)))]]
                    end
                  else
-                   relay_upstream_error(status, body_up, flavor: :ant)
+                   @error_relay.relay(status, body_up, flavor: :ant)
+                 end
+      end
+      result
+    end
+
+    def handle_ant_mlx(body_str, model_alias, normalizer, streaming)
+      oai_body = ant_to_oai(body_str, effective_model(model_alias))
+
+      if streaming && @upstream_fn.nil?
+        return open_stream("/v1/chat/completions", oai_body, OaiToAntAdapter.new(normalizer), flavor: :ant)
+      end
+
+      result = nil
+      @controller.with_generation do
+        body_up, status, = call_upstream("/v1/chat/completions", oai_body)
+        result = if status == 200
+                   if streaming
+                     sse = +""
+                     normalizer.stream_to_sse_from_oai(Enumerator.new { |y| y << body_up }) { |s| sse << s }
+                     [200, SSE_HEADERS.dup, [sse]]
+                   else
+                     [200, JSON_HEADERS.dup, [JSON.generate(normalizer.normalize_oai(JSON.parse(body_up)))]]
+                   end
+                 else
+                   @error_relay.relay(status, body_up, flavor: :ant)
                  end
       end
       result
@@ -197,7 +191,7 @@ module SpaceInferenceGateway
       result = @controller.ensure_active(model_alias.to_s)
       if result.success?
         entry      = @controller.registry.resolve(model_alias.to_s)
-        model_path = entry[:gguf] || entry[:model_path]
+        model_path = entry[:model_dir] || entry[:gguf] || entry[:model_path]
         body       = JSON.generate({ "status" => "loaded", "model_path" => model_path.to_s })
         [200, JSON_HEADERS.dup, [body]]
       else
@@ -236,7 +230,7 @@ module SpaceInferenceGateway
         succeeded = true
         [200, SSE_HEADERS.dup, StreamBody.new(response, client, normalizer, on_close)]
       else
-        relay_upstream_error(response.status, response.read.tap { client.close }, flavor: flavor)
+        @error_relay.relay(response.status, response.read.tap { client.close }, flavor: flavor)
       end
     rescue StandardError
       upstream_error(502)
@@ -285,11 +279,41 @@ module SpaceInferenceGateway
       @controller.registry.resolve(alias_name) ? alias_name : @advertised_model
     end
 
+    # True when the registry entry for alias_name (or the default alias when
+    # alias_name is unknown/nil) declares engine: "mlx".
+    def mlx_engine?(alias_name)
+      entry = @controller.registry.resolve(alias_name) ||
+              @controller.registry.resolve(@controller.registry.default_alias)
+      entry&.fetch(:engine, nil) == "mlx"
+    end
+
+    # Minimal ANT→OAI request translation for the mlx engine path.
+    # mlx speaks OAI only; system becomes messages[0]; fields mapped.
+    def ant_to_oai(body_str, model_name)
+      ant  = JSON.parse(body_str)
+      msgs = []
+      msgs << { "role" => "system", "content" => ant["system"] } if ant["system"]
+      msgs.concat(ant["messages"] || [])
+
+      oai = { "model" => model_name, "messages" => msgs }
+      oai["max_tokens"]  = ant["max_tokens"]  if ant.key?("max_tokens")
+      oai["stream"]      = ant["stream"]      if ant.key?("stream")
+      oai["temperature"] = ant["temperature"] if ant.key?("temperature")
+      oai["top_p"]       = ant["top_p"]       if ant.key?("top_p")
+      oai["stop"]        = ant["stop_sequences"] if ant.key?("stop_sequences")
+      JSON.generate(oai)
+    end
+
     def build_default_controller
       registry   = ModelRegistry.load
-      binary     = ENV.fetch("LLAMA_SERVER_BINARY", LlamaServerSupervisor::DEFAULT_BINARY)
-      supervisor = LlamaServerSupervisor.new(registry: registry, binary: binary)
+      supervisor = InferenceServerSupervisor.new(registry: registry)
+      @default_registry = registry
       ModelController.new(registry: registry, supervisor: supervisor)
+    end
+
+    def default_error_relay
+      entry = @controller.registry.resolve(@controller.registry.default_alias)
+      entry&.fetch(:engine, nil) == "mlx" ? ErrorRelay::Mlx.new : ErrorRelay::Oai.new
     end
   end
 end

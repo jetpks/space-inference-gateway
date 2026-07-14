@@ -9,27 +9,23 @@ require "async/process/child"
 require "dry/monads"
 
 module SpaceInferenceGateway
-  class LlamaServerSupervisor
+  class InferenceServerSupervisor
     include Dry::Monads[:result]
-
-    DEFAULT_BINARY = "llama-server"
 
     Timeouts = Data.define(:readiness, :stop_grace, :poll_interval) do
       def self.default = new(readiness: 120, stop_grace: 5, poll_interval: 0.5)
     end
 
     def initialize(registry:,
-                   binary: DEFAULT_BINARY,
                    log_dir: File.join(Dir.tmpdir, "space-inference-gateway"),
                    timeouts: Timeouts.default)
-      @registry  = registry
-      @binary    = binary
-      @log_dir   = log_dir
-      @timeouts  = timeouts
-      @swap_sem  = Async::Semaphore.new(1)
-      @child             = nil
-      @active_alias      = nil
-      @active_port       = nil
+      @registry      = registry
+      @log_dir       = log_dir
+      @timeouts      = timeouts
+      @swap_sem      = Async::Semaphore.new(1)
+      @child         = nil
+      @active_alias  = nil
+      @active_port   = nil
     end
 
     def start(alias_name)
@@ -105,20 +101,15 @@ module SpaceInferenceGateway
     end
 
     def build_argv(entry)
-      binary = entry[:binary] || @binary
-      argv   = [binary, "-m", entry[:gguf].to_s]
-      argv  += ["--port", entry[:port].to_s]
-      argv  += ["-c", (entry[:ctx] || 0).to_s]
-      argv  += ["--parallel", (entry[:parallel] || 1).to_s]
-      argv  += ["--flash-attn", "on"]
-      argv  += ["--no-context-shift"]
-      argv  += ["--jinja"] # chat template → native reasoning_content / thinking separation (BRIEF §3.2.1)
-
-      case entry[:offload].to_s
-      when "fit" then argv += ["--fit", "on"]
-      when "ngl" then argv += ["-ngl", "-1"]
-      end
-
+      argv = [
+        entry[:venv].to_s, "-m", "mlx_lm.server",
+        "--model", entry[:model_dir].to_s,
+        "--host", "127.0.0.1",
+        "--port", entry[:port].to_s,
+      ]
+      argv += ["--decode-concurrency", entry[:decode_concurrency].to_s] if entry[:decode_concurrency]
+      argv += ["--prompt-concurrency",  entry[:prompt_concurrency].to_s]  if entry[:prompt_concurrency]
+      argv += ["--prompt-cache-size",   entry[:prompt_cache_size].to_s]   if entry[:prompt_cache_size]
       argv += Array(entry[:extra_args])
       argv
     end
