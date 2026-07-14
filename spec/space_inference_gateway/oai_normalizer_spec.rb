@@ -437,4 +437,96 @@ RSpec.describe SpaceInferenceGateway::OaiNormalizer do
       expect(tool_call_deltas.first.first["function"]["name"]).to eq("get_weather")
     end
   end
+
+  # ── AC4: OAI normalizer against optiq fixtures (no code change) ──────────
+
+  OPTIQ_OAI_FIXTURE_PATH = File.expand_path("../fixtures/optiq", __dir__) unless defined?(OPTIQ_OAI_FIXTURE_PATH)
+
+  def optiq_oai_fixture(name)
+    File.read(File.join(OPTIQ_OAI_FIXTURE_PATH, name))
+  end
+
+  def optiq_oai_fixture_json(name)
+    JSON.parse(optiq_oai_fixture(name))
+  end
+
+  describe "#normalize — optiq nonstream (AC4)" do
+    let(:result) { normalizer.normalize(optiq_oai_fixture_json("nonstream.json")) }
+
+    it "separates reasoning into reasoning_content" do
+      rc = result.dig("choices", 0, "message", "reasoning_content")
+      expect(rc).to be_a(String)
+      expect(rc).not_to be_empty
+    end
+
+    it "content field is clean (no reasoning text)" do
+      content = result.dig("choices", 0, "message", "content")
+      expect(content).to be_a(String)
+      expect(content).not_to be_empty
+      expect(content).not_to include("thinking process")
+    end
+
+    it "system_fingerprint stripped" do
+      expect(result.keys).not_to include("system_fingerprint")
+    end
+
+    it "prompt_tokens_details dropped from usage" do
+      expect(result.dig("usage", "prompt_tokens_details")).to be_nil
+    end
+
+    it "usage has exactly prompt_tokens/completion_tokens/total_tokens" do
+      expect(result["usage"].keys.sort).to eq(%w[completion_tokens prompt_tokens total_tokens])
+    end
+
+    it "model is advertised alias, not HF repo id" do
+      expect(result["model"]).to eq("test-model")
+      expect(result["model"]).not_to include("/")
+    end
+
+    it "no timings key" do
+      expect(result.keys).not_to include("timings")
+    end
+
+    it "validates against OAI_COMPLETION schema" do
+      expect(SpaceInferenceGateway::Schemas::OAI_COMPLETION.call(result)).to be_success
+    end
+  end
+
+  describe "#normalize_stream_chunks — optiq stream (AC4)" do
+    let(:chunks) { normalizer.normalize_stream_chunks(optiq_oai_fixture("stream.txt")) }
+
+    it "does not raise on SSE keepalive comment lines" do
+      expect { chunks }.not_to raise_error
+    end
+
+    it "reasoning text appears in delta.reasoning_content" do
+      rc_chunks = chunks.select { |c| c.dig("choices", 0, "delta", "reasoning_content") }
+      expect(rc_chunks).not_to be_empty
+    end
+
+    it "content text appears in delta.content" do
+      content_chunks = chunks.select { |c| c.dig("choices", 0, "delta", "content") }
+      expect(content_chunks).not_to be_empty
+    end
+
+    it "model alias used across all chunks" do
+      expect(chunks.map { |c| c["model"] }.uniq).to eq(["test-model"])
+    end
+
+    it "no system_fingerprint on any chunk" do
+      chunks.each { |c| expect(c.keys).not_to include("system_fingerprint") }
+    end
+
+    it "SSE output ends with data: [DONE]" do
+      sse = normalizer.normalize_stream_to_sse(optiq_oai_fixture("stream.txt"))
+      expect(sse.strip).to end_with("data: [DONE]")
+    end
+
+    it "all chunks validate OAI_CHUNK schema" do
+      chunks.each do |chunk|
+        result = SpaceInferenceGateway::Schemas::OAI_CHUNK.call(chunk)
+        expect(result).to be_success, "failed: #{result.errors.to_h.inspect}"
+      end
+    end
+  end
 end

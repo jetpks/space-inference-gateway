@@ -126,4 +126,28 @@ RSpec.describe SpaceInferenceGateway::ErrorRelay::Mlx do
       expect(r[:body]).to eq(hash_error)
     end
   end
+
+  # ── AC6: optiq error fixture (same {"error":"<string>"} shape) ───────────
+  describe "#relay — optiq error400 fixture (AC6)" do
+    let(:optiq_error) do
+      File.read(File.join(File.expand_path("../fixtures/optiq", __dir__), "error400.json"))
+    end
+
+    it "reshapes optiq string error to conformant OAI envelope for :oai" do
+      r = do_relay(400, optiq_error, flavor: :oai)
+      expect(r[:status]).to eq(400)
+      parsed = JSON.parse(r[:body])
+      expect(parsed["error"]).to be_a(Hash)
+      expect(parsed.dig("error", "message")).to include("Invalid JSON")
+      expect(parsed.dig("error", "type")).to be_a(String)
+    end
+
+    it "reshapes optiq string error to ANT envelope for :ant" do
+      r = do_relay(400, optiq_error, flavor: :ant)
+      expect(r[:status]).to eq(400)
+      parsed = JSON.parse(r[:body])
+      expect(parsed["type"]).to eq("error")
+      expect(parsed.dig("error", "message")).to include("Invalid JSON")
+    end
+  end
 end

@@ -304,12 +304,13 @@ module SpaceInferenceGateway
       @controller.registry.resolve(alias_name) ? alias_name : @advertised_model
     end
 
-    # True when the registry entry for alias_name (or the default alias when
-    # alias_name is unknown/nil) declares engine: "mlx".
+    # True when the entry for alias_name (or the default) uses an OAI-upstream
+    # engine that the proxy synthesizes ANT from: currently "mlx" and "optiq".
+    # Both engines speak OpenAI HTTP; the proxy never forwards /v1/messages to them.
     def mlx_engine?(alias_name)
       entry = @controller.registry.resolve(alias_name) ||
               @controller.registry.resolve(@controller.registry.default_alias)
-      entry&.fetch(:engine, nil) == "mlx"
+      %w[mlx optiq].include?(entry&.fetch(:engine, nil))
     end
 
     # The model id the mlx child expects in the request body's "model" field —
@@ -345,17 +346,17 @@ module SpaceInferenceGateway
       body["stop"] = (existing + Array(stop_tokens)).uniq
     end
 
-    # Rewrite the "model" field in an OAI request body to the mlx child's loaded
-    # model id (the HF repo id). No-op for non-mlx engines (a future llama-server
-    # return ignores the field, so the alias passes through). Also normalizes the
-    # OpenAI "developer" message role to "system" — mlx_lm.server accepts only
-    # system/user/assistant and 404s on "developer" (which pi's openai-completions
-    # client emits in place of system).
+    # Applies OAI-upstream request rewrites for mlx/optiq engines:
+    # - mlx only: rewrites the "model" field to the HF repo id (mlx validates
+    #   this field against its loaded model; optiq single-model mode accepts any value).
+    # - both engines: normalizes "developer" role to "system" and injects stop_tokens.
     def rewrite_model_for_mlx(body_str, model_alias)
       return body_str unless mlx_engine?(model_alias)
 
       parsed = JSON.parse(body_str)
-      parsed["model"] = mlx_model_id(model_alias)
+      entry  = @controller.registry.resolve(model_alias) ||
+               @controller.registry.resolve(@controller.registry.default_alias)
+      parsed["model"] = mlx_model_id(model_alias) if entry&.fetch(:engine, nil) == "mlx"
       (parsed["messages"] || []).each { |m| m["role"] = "system" if m["role"] == "developer" }
       inject_mlx_stop_tokens(parsed, model_alias)
       JSON.generate(parsed)
@@ -388,7 +389,7 @@ module SpaceInferenceGateway
 
     def default_error_relay
       entry = @controller.registry.resolve(@controller.registry.default_alias)
-      entry&.fetch(:engine, nil) == "mlx" ? ErrorRelay::Mlx.new : ErrorRelay::Oai.new
+      %w[mlx optiq].include?(entry&.fetch(:engine, nil)) ? ErrorRelay::Mlx.new : ErrorRelay::Oai.new
     end
   end
 end
