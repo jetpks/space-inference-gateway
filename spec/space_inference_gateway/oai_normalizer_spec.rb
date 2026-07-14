@@ -389,4 +389,52 @@ RSpec.describe SpaceInferenceGateway::OaiNormalizer do
       expect(sse.strip).to end_with("data: [DONE]")
     end
   end
+
+  # mlx emits tool_calls (OpenAI function-calling shape) in both non-stream
+  # messages and stream deltas. The proxy must pass them through so clients can
+  # execute the call — dropping them strands the turn (finish_reason=tool_calls
+  # but no tool_calls array).
+  describe "tool_calls passthrough (non-stream)" do
+    let(:tool_call) do
+      { "type" => "function", "id" => "call_1",
+        "function" => { "name" => "get_weather", "arguments" => "{\"city\":\"Tokyo\"}" }, }
+    end
+    let(:input) do
+      { "choices" => [{ "index" => 0, "finish_reason" => "tool_calls",
+                        "message" => { "role" => "assistant", "content" => "\n\n",
+                                       "reasoning" => "thinking...",
+                                       "tool_calls" => [tool_call], }, }] }
+    end
+
+    it "preserves tool_calls on the normalized message" do
+      msg = normalizer.normalize(input).dig("choices", 0, "message")
+      expect(msg["tool_calls"]).to eq([tool_call])
+    end
+
+    it "keeps finish_reason tool_calls" do
+      expect(normalizer.normalize(input).dig("choices", 0, "finish_reason")).to eq("tool_calls")
+    end
+  end
+
+  describe "tool_calls passthrough (stream)" do
+    let(:stream_text) do
+      [
+        'data: {"choices":[{"index":0,"delta":{"role":"assistant","reasoning":"thinking"}}]}',
+        'data: {"choices":[{"index":0,"delta":{"role":"assistant","content":"\n\n"}}]}',
+        'data: {"choices":[{"index":0,"finish_reason":"tool_calls","delta":{"role":"assistant","tool_calls":[{"type":"function","id":"call_1","index":0,"function":{"name":"get_weather","arguments":"{\"city\":\"Tokyo\"}"}}]}}]}',
+        "data: [DONE]",
+      ].join("\n\n")
+    end
+
+    it "emits a tool_calls delta the client can read" do
+      sse = normalizer.normalize_stream_to_sse(stream_text)
+      chunks = sse.lines.map { |l| l.sub(/^data: /, "").strip }
+                        .reject { |l| l.empty? || l == "[DONE]" }
+                        .map { |l| JSON.parse(l) }
+      tool_call_deltas = chunks.flat_map { |c| c["choices"] }
+                               .filter_map { |c| c["delta"]["tool_calls"] }
+      expect(tool_call_deltas).not_to be_empty
+      expect(tool_call_deltas.first.first["function"]["name"]).to eq("get_weather")
+    end
+  end
 end
