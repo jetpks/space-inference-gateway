@@ -191,6 +191,7 @@ module SpaceInferenceGateway
       result = []
 
       if delta.key?(@reasoning_field)
+        flush_into(result, parser, canonical, created, choice["index"])
         result.concat(emit_reasoning_delta(choice, base))
       elsif delta.key?("content")
         result.concat(emit_content_delta(choice, base, canonical, created, parser))
@@ -204,6 +205,7 @@ module SpaceInferenceGateway
       # mlx emits tool_calls in their own chunk (alongside content or
       # finish_reason); pass them through verbatim so the client can execute.
       if delta.key?("tool_calls")
+        flush_into(result, parser, canonical, created, choice["index"])
         result << base.merge("choices" => [{ "index" => choice["index"],
                                              "delta" => { "tool_calls" => delta["tool_calls"] }, }])
       end
