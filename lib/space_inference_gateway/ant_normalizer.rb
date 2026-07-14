@@ -5,10 +5,12 @@ require_relative "reasoning_parser"
 require_relative "schemas"
 
 module SpaceInferenceGateway
-  class AntNormalizer
-    def initialize(advertised_model:, supports_reasoning: true)
+  class AntNormalizer # rubocop:disable Metrics/ClassLength
+    # reasoning_field: the upstream OAI key that carries reasoning text (mlx: "reasoning").
+    def initialize(advertised_model:, supports_reasoning: true, reasoning_field: "reasoning")
       @advertised_model   = advertised_model
       @supports_reasoning = supports_reasoning
+      @reasoning_field    = reasoning_field
     end
 
     # Normalize a non-stream Anthropic message hash.
@@ -41,6 +43,70 @@ module SpaceInferenceGateway
     def normalize_stream_to_sse(sse_text)
       events = normalize_stream_events(sse_text)
       events.map { |ev| "event: #{ev[:event]}\ndata: #{JSON.generate(ev[:data])}\n\n" }.join
+    end
+
+    # Normalize an OAI chat.completion (from mlx) into an Anthropic message hash.
+    # Reads @reasoning_field from the OAI message; emits thinking + text blocks.
+    def normalize_oai(oai_response)
+      choice = (oai_response["choices"] || []).first || {}
+      msg    = choice["message"] || {}
+
+      thinking, visible = extract_oai_reasoning(msg)
+
+      blocks = []
+      blocks << { "type" => "thinking", "thinking" => thinking } unless thinking.empty?
+      blocks << { "type" => "text",     "text"     => visible  } if !visible.empty? || thinking.empty?
+
+      {
+        "id" => oai_response["id"],
+        "type" => "message",
+        "role" => "assistant",
+        "content" => blocks,
+        "model" => @advertised_model,
+        "stop_reason" => oai_finish_to_ant(choice["finish_reason"]),
+        "stop_sequence" => nil,
+        "usage" => oai_usage_to_ant(oai_response["usage"]),
+      }
+    end
+
+    # Collect OAI SSE text into normalized Anthropic event hashes (batch mode).
+    def normalize_stream_events_from_oai(sse_text)
+      events = []
+      fake_body = Enumerator.new { |y| y << sse_text }
+      stream_to_sse_from_oai(fake_body) do |ev_str|
+        lines      = ev_str.strip.lines.map(&:strip)
+        event_name = lines.find { |l| l.start_with?("event:") }&.sub(/\Aevent:\s*/, "")
+        data_line  = lines.find { |l| l.start_with?("data:") }&.sub(/\Adata:\s*/, "")
+        events << { event: event_name, data: JSON.parse(data_line) } if data_line
+      end
+      events
+    end
+
+    # Incremental OAI SSE → Anthropic SSE conversion (mlx engine path).
+    # Reads delta[@reasoning_field] for reasoning, delta["content"] for text.
+    # Yields ANT-format "event: ...\ndata: ...\n\n" strings.
+    def stream_to_sse_from_oai(upstream_body, &block)
+      state = init_oai_to_ant_state
+      buf   = +""
+
+      upstream_body.each do |raw_chunk|
+        buf << raw_chunk
+        while (idx = buf.index("\n\n"))
+          line_block = buf.slice!(0, idx + 2)
+          line_block.each_line do |line|
+            line = line.strip
+            next unless line.start_with?("data:")
+
+            raw = line.sub(/\Adata:\s*/, "")
+            next if raw == "[DONE]"
+
+            data = JSON.parse(raw)
+            next if data["type"] == "diffusion_frame"
+
+            process_oai_chunk(data, state, &block)
+          end
+        end
+      end
     end
 
     # Incremental streaming entry — pulls raw SSE bytes from upstream_body chunk-by-chunk
@@ -241,6 +307,148 @@ module SpaceInferenceGateway
 
     def deep_dup(obj)
       JSON.parse(JSON.generate(obj))
+    end
+
+    # ── OAI→ANT helpers ──────────────────────────────────────────────────────
+
+    def extract_oai_reasoning(msg)
+      content = msg["content"].to_s
+      if @supports_reasoning && msg.key?(@reasoning_field) && !msg[@reasoning_field].to_s.empty?
+        [msg[@reasoning_field].to_s, content]
+      elsif @supports_reasoning
+        parser = ReasoningParser.new
+        r      = parser.push(content)
+        r2     = parser.flush
+        [r[:thinking] + r2[:thinking], r[:visible] + r2[:visible]]
+      else
+        ["", content]
+      end
+    end
+
+    def oai_finish_to_ant(finish_reason)
+      case finish_reason
+      when "stop"       then "end_turn"
+      when "length"     then "max_tokens"
+      when "tool_calls" then "tool_use"
+      else finish_reason
+      end
+    end
+
+    def oai_usage_to_ant(usage)
+      return { "input_tokens" => 0, "output_tokens" => 0 } unless usage.is_a?(Hash)
+
+      {
+        "input_tokens" => usage["prompt_tokens"].to_i,
+        "output_tokens" => usage["completion_tokens"].to_i,
+      }
+    end
+
+    def init_oai_to_ant_state
+      {
+        started:       false,
+        in_reasoning:  false,
+        in_text:       false,
+        next_index:    0,
+        reasoning_idx: nil,
+        text_idx:      nil,
+        id:            nil,
+      }
+    end
+
+    def process_oai_chunk(data, state, &block)
+      state[:id] ||= data["id"]
+
+      choice = (data["choices"] || []).first
+      return unless choice
+
+      delta = choice["delta"] || {}
+      emit_oai_message_start(state, block) unless state[:started]
+
+      reasoning_text = delta.key?(@reasoning_field) ? delta[@reasoning_field] : nil
+      content_text   = delta.key?("content") ? delta["content"] : nil
+
+      if !reasoning_text.nil?
+        emit_oai_reasoning_delta(state, reasoning_text, block)
+      elsif !content_text.nil?
+        emit_oai_content_delta(state, content_text, block)
+      end
+
+      emit_oai_finish(state, choice["finish_reason"], block) if choice["finish_reason"]
+    end
+
+    def emit_oai_message_start(state, block)
+      state[:started] = true
+      emit_ant(block, "message_start", {
+                 "type" => "message_start",
+        "message" => {
+          "id" => state[:id], "type" => "message", "role" => "assistant",
+          "content" => [], "model" => @advertised_model,
+          "stop_reason" => nil, "stop_sequence" => nil,
+          "usage" => { "input_tokens" => 0, "output_tokens" => 0 },
+        },
+               })
+    end
+
+    def emit_oai_reasoning_delta(state, text, block)
+      unless state[:in_reasoning]
+        state[:in_reasoning]  = true
+        state[:reasoning_idx] = state[:next_index]
+        state[:next_index]   += 1
+        emit_ant(block, "content_block_start", {
+                   "type" => "content_block_start", "index" => state[:reasoning_idx],
+          "content_block" => { "type" => "thinking", "thinking" => "" },
+                 })
+      end
+      emit_ant(block, "content_block_delta", {
+                 "type" => "content_block_delta", "index" => state[:reasoning_idx],
+        "delta" => { "type" => "thinking_delta", "thinking" => text.to_s },
+               })
+    end
+
+    def emit_oai_content_delta(state, text, block)
+      if state[:in_reasoning]
+        state[:in_reasoning] = false
+        emit_ant(block, "content_block_stop", {
+                   "type" => "content_block_stop", "index" => state[:reasoning_idx],
+                 })
+      end
+      unless state[:in_text]
+        state[:in_text]    = true
+        state[:text_idx]   = state[:next_index]
+        state[:next_index] += 1
+        emit_ant(block, "content_block_start", {
+                   "type" => "content_block_start", "index" => state[:text_idx],
+          "content_block" => { "type" => "text", "text" => "" },
+                 })
+      end
+      emit_ant(block, "content_block_delta", {
+                 "type" => "content_block_delta", "index" => state[:text_idx],
+        "delta" => { "type" => "text_delta", "text" => text.to_s },
+               })
+    end
+
+    def emit_oai_finish(state, finish_reason, block)
+      stop_reason = oai_finish_to_ant(finish_reason)
+      if state[:in_reasoning]
+        emit_ant(block, "content_block_stop", {
+                   "type" => "content_block_stop", "index" => state[:reasoning_idx],
+                 })
+      end
+      if state[:in_text]
+        emit_ant(block, "content_block_stop", {
+                   "type" => "content_block_stop", "index" => state[:text_idx],
+                 })
+      end
+      emit_ant(block, "message_delta", {
+                 "type" => "message_delta",
+        "delta" => { "stop_reason" => stop_reason, "stop_sequence" => nil },
+        "usage" => { "output_tokens" => 0 },
+               })
+      emit_ant(block, "message_stop", { "type" => "message_stop" })
+    end
+
+    def emit_ant(block, event, data)
+      block.call("event: #{event}\ndata: #{JSON.generate(data)}\n\n")
     end
   end
 end

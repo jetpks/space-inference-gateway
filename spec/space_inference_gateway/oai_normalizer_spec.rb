@@ -188,7 +188,8 @@ RSpec.describe SpaceInferenceGateway::OaiNormalizer do
   # ── AC-O1: Non-stream real llama.cpp fixture — upstream reasoning_content consumed ─
   describe "#normalize — AC-O1 real llama.cpp non-stream" do
     let(:upstream) { llamacpp_fixture_json("oai_ns_complete_real.json") }
-    let(:result)   { normalizer.normalize(upstream) }
+    let(:llama_normalizer) { described_class.new(advertised_model: "test-model", reasoning_field: "reasoning_content") }
+    let(:result) { llama_normalizer.normalize(upstream) }
 
     it "validates OAI_COMPLETION schema" do
       expect(SpaceInferenceGateway::Schemas::OAI_COMPLETION.call(result)).to be_success
@@ -220,8 +221,9 @@ RSpec.describe SpaceInferenceGateway::OaiNormalizer do
 
   # ── AC-O2: Stream real llama.cpp fixture — reasoning_content relayed losslessly ─
   describe "#normalize_stream_chunks — AC-O2 real llama.cpp stream" do
-    let(:fixture_text) { llamacpp_fixture("oai_s_complete_real.txt") }
-    let(:chunks)       { normalizer.normalize_stream_chunks(fixture_text) }
+    let(:fixture_text)     { llamacpp_fixture("oai_s_complete_real.txt") }
+    let(:llama_normalizer) { described_class.new(advertised_model: "test-model", reasoning_field: "reasoning_content") }
+    let(:chunks)           { llama_normalizer.normalize_stream_chunks(fixture_text) }
 
     let(:upstream_reasoning) do
       fixture_text.lines.filter_map do |line|
@@ -274,7 +276,7 @@ RSpec.describe SpaceInferenceGateway::OaiNormalizer do
     end
 
     it "SSE output ends with data: [DONE]" do
-      sse = normalizer.normalize_stream_to_sse(fixture_text)
+      sse = llama_normalizer.normalize_stream_to_sse(fixture_text)
       expect(sse.strip).to end_with("data: [DONE]")
     end
   end
@@ -284,4 +286,107 @@ RSpec.describe SpaceInferenceGateway::OaiNormalizer do
   # oai_ns.json has inline <think>…</think> in content, no upstream reasoning_content key.
   # oai_s.txt has inline <think>…</think> in delta.content.
   # Both paths continue to lift think text into reasoning_content correctly.
+
+  # ── AC3 (mlx): non-stream fixtures from spec/fixtures/mlx/ ───────────────
+
+  MLX_OAI_FIXTURE_PATH = File.expand_path("../fixtures/mlx", __dir__) unless defined?(MLX_OAI_FIXTURE_PATH)
+
+  def mlx_oai_fixture_json(name)
+    JSON.parse(File.read(File.join(MLX_OAI_FIXTURE_PATH, name)))
+  end
+
+  def mlx_oai_fixture(name)
+    File.read(File.join(MLX_OAI_FIXTURE_PATH, name))
+  end
+
+  describe "#normalize — mlx nonstream2 (AC3 conformance)" do
+    let(:result) { normalizer.normalize(mlx_oai_fixture_json("nonstream2.json")) }
+
+    it "separates reasoning into reasoning_content" do
+      rc = result.dig("choices", 0, "message", "reasoning_content")
+      expect(rc).to be_a(String)
+      expect(rc).not_to be_empty
+    end
+
+    it "content field is present and non-empty" do
+      content = result.dig("choices", 0, "message", "content")
+      expect(content).to be_a(String)
+      expect(content).not_to be_empty
+    end
+
+    it "content contains no reasoning text bleed" do
+      content = result.dig("choices", 0, "message", "content")
+      expect(content).not_to include("Thinking Process")
+    end
+
+    it "model is alias, not full path" do
+      expect(result["model"]).to eq("test-model")
+      expect(result["model"]).not_to include("/")
+    end
+
+    it "system_fingerprint stripped" do
+      expect(result.keys).not_to include("system_fingerprint")
+    end
+
+    it "prompt_tokens_details dropped from usage" do
+      expect(result.dig("usage", "prompt_tokens_details")).to be_nil
+    end
+
+    it "usage has exactly prompt_tokens/completion_tokens/total_tokens" do
+      expect(result["usage"].keys.sort).to eq(%w[completion_tokens prompt_tokens total_tokens])
+    end
+
+    it "validates against OAI_COMPLETION schema" do
+      expect(SpaceInferenceGateway::Schemas::OAI_COMPLETION.call(result)).to be_success
+    end
+  end
+
+  describe "#normalize — mlx nothink (AC3 conformance, reasoning-only truncated)" do
+    let(:raw)    { mlx_oai_fixture_json("nothink.json") }
+    let(:result) { normalizer.normalize(raw) }
+
+    it "reasoning_content present from upstream reasoning field" do
+      expect(result.dig("choices", 0, "message", "reasoning_content")).not_to be_empty
+    end
+
+    it "model alias used" do
+      expect(result["model"]).to eq("test-model")
+    end
+
+    it "no system_fingerprint" do
+      expect(result.keys).not_to include("system_fingerprint")
+    end
+  end
+
+  describe "#normalize_stream_chunks — mlx stream.txt (AC3 + AC6)" do
+    let(:sse_text) { mlx_oai_fixture("stream.txt") }
+    let(:chunks)   { normalizer.normalize_stream_chunks(sse_text) }
+
+    it "does not raise on SSE keepalive comment lines" do
+      expect { chunks }.not_to raise_error
+    end
+
+    it "produces chunks (keepalive lines silently dropped)" do
+      expect(chunks).not_to be_empty
+    end
+
+    it "reasoning text appears in delta.reasoning_content" do
+      rc_chunks = chunks.select { |c| c.dig("choices", 0, "delta", "reasoning_content") }
+      expect(rc_chunks).not_to be_empty
+    end
+
+    it "content text appears in delta.content" do
+      content_chunks = chunks.select { |c| c.dig("choices", 0, "delta", "content") }
+      expect(content_chunks).not_to be_empty
+    end
+
+    it "model alias used across all chunks" do
+      expect(chunks.map { |c| c["model"] }.uniq).to eq(["test-model"])
+    end
+
+    it "SSE output ends with data: [DONE]" do
+      sse = normalizer.normalize_stream_to_sse(sse_text)
+      expect(sse.strip).to end_with("data: [DONE]")
+    end
+  end
 end
