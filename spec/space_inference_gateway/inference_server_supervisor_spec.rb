@@ -30,7 +30,7 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
         "test-model" => {
           "engine" => "mlx",
           "venv" => FAKE_INF_BINARY,
-          "model_dir" => "/fake/model",
+          "model" => "/fake/model",
           "port" => port,
         },
       },
@@ -62,7 +62,7 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
     let(:entry) do
       {
         venv:               "/home/user/.venv/bin/python",
-        model_dir:          "/models/Qwen3.5-35B-A3B-4bit",
+        model:              "/models/Qwen3.5-35B-A3B-4bit",
         port:               8080,
         decode_concurrency: 32,
         prompt_concurrency: 8,
@@ -116,7 +116,7 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
     it "resolve returns the entry Hash for a known alias" do
       entry = registry.resolve("test-model")
       expect(entry).to be_a(Hash)
-      expect(entry[:model_dir]).to eq("/fake/model")
+      expect(entry[:model]).to eq("/fake/model")
       expect(entry[:port]).to eq(port)
     end
 
@@ -132,14 +132,14 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
       entry = loaded.resolve("qwen3-122b-a10b")
       expect(entry).to be_a(Hash)
       expect(entry[:engine]).to eq("mlx")
-      expect(entry[:model_dir]).to be_a(String)
+      expect(entry[:model]).to be_a(String)
       expect(entry[:port]).to be_a(Integer)
       expect(entry[:venv]).to be_a(String)
     end
 
-    it "model_dir and venv have ~ expanded" do
+    it "venv has ~ expanded; model is the repo id (not path-expanded)" do
       entry = SpaceInferenceGateway::ModelRegistry.load.resolve("qwen3-122b-a10b")
-      expect(entry[:model_dir]).to start_with("/")
+      expect(entry[:model]).to eq("mlx-community/Qwen3.5-122B-A10B-4bit")
       expect(entry[:venv]).to start_with("/")
     end
   end
@@ -235,8 +235,8 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
     let(:registry) do
       build_registry(
         {
-          "model-a" => { "engine" => "mlx", "venv" => FAKE_INF_BINARY, "model_dir" => "/fake/a", "port" => port },
-          "model-b" => { "engine" => "mlx", "venv" => FAKE_INF_BINARY, "model_dir" => "/fake/b", "port" => port2 },
+          "model-a" => { "engine" => "mlx", "venv" => FAKE_INF_BINARY, "model" => "/fake/a", "port" => port },
+          "model-b" => { "engine" => "mlx", "venv" => FAKE_INF_BINARY, "model" => "/fake/b", "port" => port2 },
         },
         "model-a",
       )

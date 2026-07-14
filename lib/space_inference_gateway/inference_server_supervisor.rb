@@ -103,7 +103,7 @@ module SpaceInferenceGateway
     def build_argv(entry)
       argv = [
         entry[:venv].to_s, "-m", "mlx_lm.server",
-        "--model", entry[:model_dir].to_s,
+        "--model", entry[:model].to_s,
         "--host", "127.0.0.1",
         "--port", entry[:port].to_s,
       ]

@@ -97,6 +97,8 @@ module SpaceInferenceGateway
         supports_reasoning: mode[:supports_reasoning],
       )
 
+      body_str = rewrite_model_for_mlx(body_str, model_alias)
+
       return open_stream("/v1/chat/completions", body_str, normalizer, flavor: :oai) if streaming && @upstream_fn.nil?
 
       result = nil
@@ -153,7 +155,7 @@ module SpaceInferenceGateway
     end
 
     def handle_ant_mlx(body_str, model_alias, normalizer, streaming)
-      oai_body = ant_to_oai(body_str, effective_model(model_alias))
+      oai_body = ant_to_oai(body_str, mlx_model_id(model_alias))
 
       if streaming && @upstream_fn.nil?
         return open_stream("/v1/chat/completions", oai_body, OaiToAntAdapter.new(normalizer), flavor: :ant)
@@ -191,7 +193,7 @@ module SpaceInferenceGateway
       result = @controller.ensure_active(model_alias.to_s)
       if result.success?
         entry      = @controller.registry.resolve(model_alias.to_s)
-        model_path = entry[:model_dir] || entry[:gguf] || entry[:model_path]
+        model_path = entry[:model] || entry[:gguf] || entry[:model_path]
         body       = JSON.generate({ "status" => "loaded", "model_path" => model_path.to_s })
         [200, JSON_HEADERS.dup, [body]]
       else
@@ -285,6 +287,28 @@ module SpaceInferenceGateway
       entry = @controller.registry.resolve(alias_name) ||
               @controller.registry.resolve(@controller.registry.default_alias)
       entry&.fetch(:engine, nil) == "mlx"
+    end
+
+    # The model id the mlx child expects in the request body's "model" field —
+    # the HF repo id mlx_lm.server loaded via --model. mlx_lm.server validates
+    # this field against its loaded model and tries to fetch unknown names from
+    # HuggingFace, so the alias cannot be forwarded as-is (unlike llama-server,
+    # which ignores it).
+    def mlx_model_id(alias_name)
+      entry = @controller.registry.resolve(alias_name) ||
+              @controller.registry.resolve(@controller.registry.default_alias)
+      entry[:model]
+    end
+
+    # Rewrite the "model" field in an OAI request body to the mlx child's loaded
+    # model id (the HF repo id). No-op for non-mlx engines (a future llama-server
+    # return ignores the field, so the alias passes through).
+    def rewrite_model_for_mlx(body_str, model_alias)
+      return body_str unless mlx_engine?(model_alias)
+
+      parsed = JSON.parse(body_str)
+      parsed["model"] = mlx_model_id(model_alias)
+      JSON.generate(parsed)
     end
 
     # Minimal ANT→OAI request translation for the mlx engine path.

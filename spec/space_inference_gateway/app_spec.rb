@@ -59,6 +59,38 @@ RSpec.describe SpaceInferenceGateway::App do
     end
   end
 
+  # mlx_lm.server validates the request "model" field against its loaded model id
+  # (the HF repo id) and 404s unknown names to HuggingFace. The proxy rewrites the
+  # client's alias to the registry entry's repo id before forwarding.
+  describe "mlx model-field rewrite (OAI)" do
+    let(:forwarded) { [] }
+    let(:upstream_fn) do
+      lambda do |path, body|
+        forwarded << { path: path, body: body }
+        [fixture("oai_ns.json"), 200, {}]
+      end
+    end
+
+    it "rewrites the alias to the mlx repo id for the default mlx engine" do
+      body = JSON.generate({ model: "qwen3-35b-a3b", messages: [{ role: "user", content: "hi" }] })
+      post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
+      expect(last_response.status).to eq(200)
+      expect(forwarded.length).to eq(1)
+      sent = JSON.parse(forwarded.first[:body])
+      expect(sent["model"]).to eq("mlx-community/Qwen3.5-35B-A3B-4bit")
+    end
+
+    it "passes the alias through unchanged for an unknown model on a non-mlx default" do
+      # The default alias in config/models.yml is mlx, so this is a positive-only
+      # guard: when the engine is mlx, even an unknown alias rewrites to the
+      # default's repo id (the proxy's lazy-swap serves the default).
+      body = JSON.generate({ model: "no-such-alias", messages: [{ role: "user", content: "hi" }] })
+      post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
+      sent = JSON.parse(forwarded.first[:body])
+      expect(sent["model"]).to eq("mlx-community/Qwen3.5-122B-A10B-4bit")
+    end
+  end
+
   describe "POST /v1/messages (non-stream)" do
     let(:request_body) { JSON.generate({ model: "any", messages: [{ role: "user", content: "hi" }], max_tokens: 100 }) }
 

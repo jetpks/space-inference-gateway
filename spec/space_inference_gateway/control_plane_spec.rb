@@ -57,13 +57,13 @@ RSpec.describe "Model Control Plane (I05 — Supervisor Backend)" do
         "model-a" => {
           "engine" => "mlx",
           "venv" => CP_FAKE_BINARY,
-          "model_dir" => "/fake/a",
+          "model" => "/fake/a",
           "port" => port_a,
         },
         "model-b" => {
           "engine" => "mlx",
           "venv" => CP_FAKE_BINARY,
-          "model_dir" => "/fake/b",
+          "model" => "/fake/b",
           "port" => port_b,
         },
       },
