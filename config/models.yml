@@ -3,9 +3,20 @@
 # it is also the value the proxy rewrites the request "model" field to, since
 # mlx validates that field against its loaded model id. `venv` may start with
 # `~` (expanded to HOME by the registry).
-default: qwen3-122b-a10b
+default: hermes-4-70b
 
 models:
+  # Dense 70B (Llama-3.3 base, Nous instruct finetune). No native reasoning —
+  # the chat template emits content only, so supports_reasoning: false keeps
+  # the normalizer in passthrough (no <think>/reasoning-field extraction).
+  hermes-4-70b:
+    engine: mlx
+    model: mlx-community/Hermes-4-70B-6bit
+    port: 8080
+    venv: ~/.venv-vllm-metal/bin/python
+    decode_concurrency: 8
+    prompt_concurrency: 4
+    supports_reasoning: false
   qwen3-122b-a10b:
     engine: mlx
     model: mlx-community/Qwen3.5-122B-A10B-4bit

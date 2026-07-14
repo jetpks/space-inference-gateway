@@ -126,8 +126,8 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
 
     it "config/models.yml carries mlx engine fields and has mlx default" do
       loaded = SpaceInferenceGateway::ModelRegistry.load
-      expect(loaded.default_alias).to eq("qwen3-122b-a10b")
-      expect(loaded.aliases).to include("qwen3-122b-a10b", "qwen3-35b-a3b")
+      expect(loaded.default_alias).to eq("hermes-4-70b")
+      expect(loaded.aliases).to include("hermes-4-70b", "qwen3-122b-a10b", "qwen3-35b-a3b")
 
       entry = loaded.resolve("qwen3-122b-a10b")
       expect(entry).to be_a(Hash)
