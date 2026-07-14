@@ -1,11 +1,25 @@
-# Model registry — alias → mlx_lm.server launch args.
-# `model` is the HF repo id (or a local path) mlx_lm.server loads via --model;
-# it is also the value the proxy rewrites the request "model" field to, since
-# mlx validates that field against its loaded model id. `venv` may start with
-# `~` (expanded to HOME by the registry).
-default: hermes-4-70b
+# Model registry — alias → inference engine launch args.
+# `model` is the HF repo id (or a local path) passed to the engine via --model.
+# For the mlx engine, it is also the value the proxy rewrites the request "model"
+# field to (mlx validates this field). For the optiq engine, the model field is a
+# label — optiq's single-model mode serves any value, so no rewrite is needed.
+# `venv` for mlx is the python interpreter; for optiq it is the optiq binary path.
+# Both may start with `~` (expanded to HOME by the registry).
+default: qwen3-27b-optiq
 
 models:
+  # Qwen3.6 27B OptiQ-4bit with MTP depth 2 (optiq engine).
+  # optiq's single-model mode: the request "model" field is a label — any value
+  # is accepted, so the proxy does not rewrite it for this engine.
+  qwen3-27b-optiq:
+    engine: optiq
+    model: mlx-community/Qwen3.6-27B-OptiQ-4bit
+    port: 8080
+    # venv is the optiq binary, not a python interpreter.
+    venv: ~/.venv-optiq/bin/optiq
+    mtp: true
+    mtp_depth: 2
+    max_concurrent: 8
   # Dense 70B (Llama-3.3 base, Nous instruct finetune). No native reasoning —
   # the chat template emits content only, so supports_reasoning: false keeps
   # the normalizer in passthrough (no <think>/reasoning-field extraction).

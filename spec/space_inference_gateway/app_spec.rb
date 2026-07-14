@@ -80,14 +80,13 @@ RSpec.describe SpaceInferenceGateway::App do
       expect(sent["model"]).to eq("mlx-community/Qwen3.5-35B-A3B-4bit")
     end
 
-    it "passes the alias through unchanged for an unknown model on a non-mlx default" do
-      # The default alias in config/models.yml is mlx, so this is a positive-only
-      # guard: when the engine is mlx, even an unknown alias rewrites to the
-      # default's repo id (the proxy's lazy-swap serves the default).
+    it "passes model field through unchanged for unknown alias on optiq default (single-model)" do
+      # The default alias (qwen3-27b-optiq, engine: optiq) does not rewrite the
+      # "model" field — optiq's single-model mode accepts any label value.
       body = JSON.generate({ model: "no-such-alias", messages: [{ role: "user", content: "hi" }] })
       post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
       sent = JSON.parse(forwarded.first[:body])
-      expect(sent["model"]).to eq("mlx-community/Hermes-4-70B-6bit")
+      expect(sent["model"]).to eq("no-such-alias")
     end
 
     it "normalizes the OpenAI 'developer' role to 'system' (mlx rejects developer)" do
@@ -123,6 +122,76 @@ RSpec.describe SpaceInferenceGateway::App do
       post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
       sent = JSON.parse(forwarded.first[:body])
       expect(sent.key?("stop")).to be false
+    end
+  end
+
+  # ── AC3: optiq engine path ────────────────────────────────────────────────
+  describe "optiq engine — OAI path (AC3)" do
+    let(:forwarded) { [] }
+    let(:upstream_fn) do
+      lambda do |path, body|
+        forwarded << { path: path, body: body }
+        [fixture("oai_ns.json"), 200, {}]
+      end
+    end
+
+    it "does not rewrite model field for optiq engine (single-model accepts any label)" do
+      body = JSON.generate({ model: "qwen3-27b-optiq", messages: [{ role: "user", content: "hi" }] })
+      post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
+      expect(last_response.status).to eq(200)
+      sent = JSON.parse(forwarded.first[:body])
+      expect(sent["model"]).to eq("qwen3-27b-optiq")
+    end
+
+    it "applies developer→system role normalization for optiq engine" do
+      body = JSON.generate({
+                             model: "qwen3-27b-optiq",
+        messages: [
+          { role: "developer", content: "be helpful" },
+          { role: "user",      content: "hi" },
+        ],
+                           })
+      post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
+      sent = JSON.parse(forwarded.first[:body])
+      expect(sent["messages"].map { |m| m["role"] }).to eq(%w[system user])
+    end
+  end
+
+  describe "optiq engine — ANT path synthesizes from OAI upstream (AC3)" do
+    let(:forwarded) { [] }
+    let(:upstream_fn) do
+      lambda do |path, body|
+        forwarded << { path: path, body: body }
+        [fixture("oai_ns.json"), 200, {}]
+      end
+    end
+
+    it "routes /v1/messages for optiq to /v1/chat/completions (OAI synthesis)" do
+      body = JSON.generate({
+                             model: "qwen3-27b-optiq",
+        messages: [{ role: "user", content: "hi" }],
+        max_tokens: 100,
+                           })
+      post "/v1/messages", body, "CONTENT_TYPE" => "application/json"
+      expect(last_response.status).to eq(200)
+      expect(forwarded.first[:path]).to eq("/v1/chat/completions")
+    end
+  end
+
+  describe "optiq string-error relay (AC3 + AC6)" do
+    let(:upstream_fn) { ->(_path, _body) { ['{"error":"bad json body"}', 400, {}] } }
+
+    before do
+      post "/v1/chat/completions",
+           JSON.generate({ model: "qwen3-27b-optiq", messages: [] }),
+           "CONTENT_TYPE" => "application/json"
+    end
+
+    it "reshapes optiq string error to conformant OAI envelope" do
+      expect(last_response.status).to eq(400)
+      parsed = JSON.parse(last_response.body)
+      expect(parsed.dig("error", "message")).to eq("bad json body")
+      expect(parsed["error"]).to be_a(Hash)
     end
   end
 

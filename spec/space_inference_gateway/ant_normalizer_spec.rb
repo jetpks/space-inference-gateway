@@ -430,4 +430,87 @@ RSpec.describe SpaceInferenceGateway::AntNormalizer do
       expect(events.last[:event]).to eq("message_stop")
     end
   end
+
+  # ── AC5: ANT normalizer against optiq OAI fixtures (no code change) ──────
+  # The ANT synthesis path is: optiq upstream → OAI response → normalize_oai
+  # (same path as mlx). The optiq fixtures are OAI-shaped, so mlx fixture
+  # helpers suffice — we add a parallel set for optiq to prove no regression.
+
+  OPTIQ_ANT_FIXTURE_PATH = File.expand_path("../fixtures/optiq", __dir__) unless defined?(OPTIQ_ANT_FIXTURE_PATH)
+
+  def optiq_ant_fixture(name)
+    File.read(File.join(OPTIQ_ANT_FIXTURE_PATH, name))
+  end
+
+  def optiq_ant_fixture_json(name)
+    JSON.parse(optiq_ant_fixture(name))
+  end
+
+  describe "#normalize_oai — optiq nonstream (AC5)" do
+    let(:result) { normalizer.normalize_oai(optiq_ant_fixture_json("nonstream.json")) }
+
+    it "produces a thinking content block" do
+      expect(result["content"].map { |b| b["type"] }).to include("thinking")
+    end
+
+    it "produces a text content block" do
+      expect(result["content"].map { |b| b["type"] }).to include("text")
+    end
+
+    it "thinking block is non-empty" do
+      thinking = result["content"].find { |b| b["type"] == "thinking" }
+      expect(thinking["thinking"]).not_to be_empty
+    end
+
+    it "model is the advertised alias" do
+      expect(result["model"]).to eq("test-model")
+      expect(result["model"]).not_to include("/")
+    end
+
+    it "validates against ANT_MESSAGE schema" do
+      schema_result = SpaceInferenceGateway::Schemas::ANT_MESSAGE.call(result)
+      expect(schema_result).to be_success, "schema errors: #{schema_result.errors.to_h.inspect}"
+    end
+  end
+
+  describe "#stream_to_sse_from_oai — optiq stream.txt (AC5)" do
+    let(:sse_text) { optiq_ant_fixture("stream.txt") }
+    let(:events)   { normalizer.normalize_stream_events_from_oai(sse_text) }
+
+    it "does not raise on keepalive SSE comment lines" do
+      expect { events }.not_to raise_error
+    end
+
+    it "begins with message_start" do
+      expect(events.first[:event]).to eq("message_start")
+    end
+
+    it "includes thinking content_block_start" do
+      thinking_starts = events.select do |e|
+        e[:event] == "content_block_start" &&
+          e[:data].dig("content_block", "type") == "thinking"
+      end
+      expect(thinking_starts).not_to be_empty
+    end
+
+    it "thinking_delta events carry reasoning text" do
+      thinking_text = events
+                      .select { |e| e[:event] == "content_block_delta" && e[:data].dig("delta", "type") == "thinking_delta" }
+                      .map { |e| e[:data].dig("delta", "thinking").to_s }
+                      .join
+      expect(thinking_text).not_to be_empty
+    end
+
+    it "text_delta events carry content text" do
+      text = events
+             .select { |e| e[:event] == "content_block_delta" && e[:data].dig("delta", "type") == "text_delta" }
+             .map { |e| e[:data].dig("delta", "text").to_s }
+             .join
+      expect(text).not_to be_empty
+    end
+
+    it "ends with message_stop" do
+      expect(events.last[:event]).to eq("message_stop")
+    end
+  end
 end
