@@ -217,6 +217,149 @@ RSpec.describe SpaceInferenceGateway::AntNormalizer do
     end
   end
 
+  # ── AC3/AC4/AC6 (mlx): normalize_oai + stream_to_sse_from_oai ────────────
+
+  MLX_ANT_FIXTURE_PATH = File.expand_path("../fixtures/mlx", __dir__) unless defined?(MLX_ANT_FIXTURE_PATH)
+
+  def mlx_ant_fixture_json(name)
+    JSON.parse(File.read(File.join(MLX_ANT_FIXTURE_PATH, name)))
+  end
+
+  def mlx_ant_fixture(name)
+    File.read(File.join(MLX_ANT_FIXTURE_PATH, name))
+  end
+
+  describe "#normalize_oai — mlx nonstream2 (AC3 + AC4)" do
+    let(:oai_input) { mlx_ant_fixture_json("nonstream2.json") }
+    let(:result)    { normalizer.normalize_oai(oai_input) }
+
+    it "produces a thinking content block" do
+      types = result["content"].map { |b| b["type"] }
+      expect(types).to include("thinking")
+    end
+
+    it "produces a text content block" do
+      types = result["content"].map { |b| b["type"] }
+      expect(types).to include("text")
+    end
+
+    it "thinking block is non-empty" do
+      thinking = result["content"].find { |b| b["type"] == "thinking" }
+      expect(thinking["thinking"]).not_to be_empty
+    end
+
+    it "text block is non-empty" do
+      text = result["content"].find { |b| b["type"] == "text" }
+      expect(text["text"]).not_to be_empty
+    end
+
+    it "model is the advertised alias" do
+      expect(result["model"]).to eq("test-model")
+      expect(result["model"]).not_to include("/")
+    end
+
+    it "no system_fingerprint in output" do
+      expect(result.keys).not_to include("system_fingerprint")
+    end
+
+    it "no prompt_tokens_details in usage" do
+      expect(result.dig("usage", "prompt_tokens_details")).to be_nil
+    end
+
+    it "stop_reason is end_turn (finish_reason: stop)" do
+      expect(result["stop_reason"]).to eq("end_turn")
+    end
+
+    it "validates against ANT_MESSAGE schema" do
+      schema_result = SpaceInferenceGateway::Schemas::ANT_MESSAGE.call(result)
+      expect(schema_result).to be_success, "schema errors: #{schema_result.errors.to_h.inspect}"
+    end
+  end
+
+  describe "#normalize_oai — mlx nothink (reasoning present, content truncated)" do
+    let(:result) { normalizer.normalize_oai(mlx_ant_fixture_json("nothink.json")) }
+
+    it "produces thinking block from reasoning field" do
+      expect(result["content"].map { |b| b["type"] }).to include("thinking")
+    end
+
+    it "validates ANT_MESSAGE schema" do
+      expect(SpaceInferenceGateway::Schemas::ANT_MESSAGE.call(result)).to be_success
+    end
+  end
+
+  describe "#stream_to_sse_from_oai — mlx stream.txt (AC3 + AC6)" do
+    let(:sse_text) { mlx_ant_fixture("stream.txt") }
+
+    def collect_events(sse_text)
+      normalizer.normalize_stream_events_from_oai(sse_text)
+    end
+
+    let(:events) { collect_events(sse_text) }
+
+    it "does not raise on keepalive SSE comment lines (AC6)" do
+      expect { events }.not_to raise_error
+    end
+
+    it "begins with message_start" do
+      expect(events.first[:event]).to eq("message_start")
+    end
+
+    it "message_start model is the advertised alias" do
+      msg = events.find { |e| e[:event] == "message_start" }
+      expect(msg[:data].dig("message", "model")).to eq("test-model")
+      expect(msg[:data].dig("message", "model")).not_to include("/")
+    end
+
+    it "includes thinking content_block_start" do
+      thinking_starts = events.select do |e|
+        e[:event] == "content_block_start" &&
+          e[:data].dig("content_block", "type") == "thinking"
+      end
+      expect(thinking_starts).not_to be_empty
+    end
+
+    it "includes text content_block_start" do
+      text_starts = events.select do |e|
+        e[:event] == "content_block_start" &&
+          e[:data].dig("content_block", "type") == "text"
+      end
+      expect(text_starts).not_to be_empty
+    end
+
+    it "thinking_delta events carry reasoning text" do
+      thinking_text = events
+                      .select { |e| e[:event] == "content_block_delta" && e[:data].dig("delta", "type") == "thinking_delta" }
+                      .map { |e| e[:data].dig("delta", "thinking").to_s }
+                      .join
+      expect(thinking_text).not_to be_empty
+    end
+
+    it "text_delta events carry content text" do
+      text = events
+             .select { |e| e[:event] == "content_block_delta" && e[:data].dig("delta", "type") == "text_delta" }
+             .map { |e| e[:data].dig("delta", "text").to_s }
+             .join
+      expect(text).not_to be_empty
+    end
+
+    it "ends with message_stop" do
+      expect(events.last[:event]).to eq("message_stop")
+    end
+
+    it "includes message_delta before message_stop" do
+      names = events.map { |e| e[:event] }
+      expect(names.rindex("message_delta")).to be < names.rindex("message_stop")
+    end
+
+    it "keepalive lines do not produce extra events (AC6)" do
+      keepalive_count = sse_text.lines.count { |l| l.start_with?(": keepalive") }
+      expect(keepalive_count).to be > 0, "fixture should have keepalive lines"
+      start_events = events.count { |e| e[:event] == "message_start" }
+      expect(start_events).to eq(1)
+    end
+  end
+
   # ── AC-A2: Stream native thinking relayed losslessly (llama.cpp real fixture)
   describe "#normalize_stream_events — AC-A2 native thinking stream" do
     let(:raw_sse) { fixture_llamacpp("ant_s_real.txt") }

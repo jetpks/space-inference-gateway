@@ -6,9 +6,12 @@ require_relative "schemas"
 
 module SpaceInferenceGateway
   class OaiNormalizer
-    def initialize(advertised_model:, supports_reasoning: true)
+    # reasoning_field: the upstream key that carries the reasoning text.
+    # mlx uses "reasoning"; a true-OAI upstream (llama-server) uses "reasoning_content".
+    def initialize(advertised_model:, supports_reasoning: true, reasoning_field: "reasoning")
       @advertised_model   = advertised_model
       @supports_reasoning = supports_reasoning
+      @reasoning_field    = reasoning_field
     end
 
     # Normalize a non-stream OpenAI chat.completion hash.
@@ -16,7 +19,7 @@ module SpaceInferenceGateway
     def normalize(input)
       choices = (input["choices"] || []).map { |c| normalize_choice(c) }
 
-      out = {
+      {
         "id" => input["id"],
         "object" => input["object"],
         "created" => input["created"],
@@ -24,8 +27,6 @@ module SpaceInferenceGateway
         "choices" => choices,
         "usage" => sanitize_usage(input["usage"]),
       }
-      out["system_fingerprint"] = input["system_fingerprint"] if input.key?("system_fingerprint")
-      out
     end
 
     # Feed raw SSE text from the upstream; returns array of normalized chunk hashes.
@@ -105,8 +106,8 @@ module SpaceInferenceGateway
       content = msg["content"].to_s
 
       if @supports_reasoning
-        if msg.key?("reasoning_content")
-          thinking = msg["reasoning_content"].to_s
+        if msg.key?(@reasoning_field)
+          thinking = msg[@reasoning_field].to_s
           visible  = content
         else
           parser   = ReasoningParser.new
@@ -188,7 +189,7 @@ module SpaceInferenceGateway
       delta  = choice["delta"] || {}
       result = []
 
-      if delta.key?("reasoning_content")
+      if delta.key?(@reasoning_field)
         result.concat(emit_reasoning_delta(choice, base))
       elsif delta.key?("content")
         result.concat(emit_content_delta(choice, base, canonical, created, parser))
@@ -204,7 +205,7 @@ module SpaceInferenceGateway
 
     def emit_reasoning_delta(choice, base)
       delta = choice["delta"] || {}
-      rc    = delta["reasoning_content"]
+      rc    = delta[@reasoning_field]
       result = [base.merge("choices" => [{ "index" => choice["index"], "delta" => { "reasoning_content" => rc } }])]
       result << finish_chunk(base, choice) if choice["finish_reason"]
       result

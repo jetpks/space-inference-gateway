@@ -13,7 +13,7 @@ module SpaceInferenceGateway
 
     # Path-valued entry keys get `~` expanded (and made absolute) so config can
     # use `~/...` — argv goes straight to exec, which never expands a shell `~`.
-    PATH_KEYS = %i[gguf binary].freeze
+    PATH_KEYS = %i[model_dir venv gguf binary].freeze
 
     def initialize(config)
       @default = config["default"]
