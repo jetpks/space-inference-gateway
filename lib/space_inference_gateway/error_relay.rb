@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "json"
+require_relative "metrics"
 
 module SpaceInferenceGateway
   module ErrorRelay
@@ -13,6 +14,7 @@ module SpaceInferenceGateway
       # Returns a Rack triple [status, headers, [body]] that mirrors the upstream
       # error in the client's API flavor (:oai or :ant).
       def relay(status, body, flavor:)
+        Metrics::UPSTREAM_ERRORS.increment(labels: { status: status.to_s, flavor: flavor.to_s })
         case flavor
         when :oai
           [status, JSON_HEADERS.dup, [oai_error_body(body)]]
@@ -59,6 +61,7 @@ module SpaceInferenceGateway
         error_str = parse_mlx_error_string(body)
         return super unless error_str
 
+        Metrics::UPSTREAM_ERRORS.increment(labels: { status: status.to_s, flavor: flavor.to_s })
         case flavor
         when :oai
           out = JSON.generate({ error: { message: error_str, type: ant_error_type(status) } })

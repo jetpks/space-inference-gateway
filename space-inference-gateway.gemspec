@@ -21,6 +21,7 @@ Gem::Specification.new do |spec|
   spec.add_dependency "dry-monads",  "~> 1.10"
   spec.add_dependency "dry-schema",  "~> 1.16"
   spec.add_dependency "falcon",      "~> 0.55"
+  spec.add_dependency "prometheus-client", "~> 4.2"
 
   spec.files         = Dir.glob("lib/**/*.rb") + %w[Gemfile config.ru]
   spec.require_paths = ["lib"]

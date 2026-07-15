@@ -10,6 +10,8 @@ gem "falcon",        "~> 0.55"
 gem "dry-monads",  "~> 1.10"
 gem "dry-schema",  "~> 1.16"
 
+gem "prometheus-client", "~> 4.2"
+
 group :development, :test do
   gem "rack",       "~> 3.0"
   gem "rack-test",  "~> 2.1"

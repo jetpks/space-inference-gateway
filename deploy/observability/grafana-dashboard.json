@@ -1,0 +1,261 @@
+{
+  "__inputs": [],
+  "__requires": [
+    {
+      "type": "grafana",
+      "id": "grafana",
+      "name": "Grafana",
+      "version": "10.0.0"
+    },
+    {
+      "type": "datasource",
+      "id": "prometheus",
+      "name": "Prometheus",
+      "version": "1.0.0"
+    }
+  ],
+  "annotations": {
+    "list": []
+  },
+  "description": "Space Inference Gateway — observability dashboard for the local inference proxy",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 1,
+      "title": "Request Traffic",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "id": 2,
+      "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" } },
+      "targets": [
+        {
+          "expr": "rate(sig_requests_total[1m])",
+          "legendFormat": "{{flavor}} stream={{stream}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Request rate by flavor + stream",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "s" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "id": 3,
+      "options": { "legend": { "calcs": ["mean", "p95"], "displayMode": "table", "placement": "bottom" } },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, rate(sig_request_duration_seconds_bucket[5m]))",
+          "legendFormat": "p95 {{flavor}} stream={{stream}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.50, rate(sig_request_duration_seconds_bucket[5m]))",
+          "legendFormat": "p50 {{flavor}} stream={{stream}}",
+          "refId": "B"
+        }
+      ],
+      "title": "Request duration p50/p95",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+      "id": 10,
+      "title": "Child Process",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "mappings": [{ "options": { "0": { "text": "DOWN" }, "1": { "text": "UP" } }, "type": "value" }], "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] } },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 10 },
+      "id": 11,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "background" },
+      "targets": [
+        {
+          "expr": "sig_child_up",
+          "legendFormat": "child",
+          "refId": "A"
+        }
+      ],
+      "title": "Child UP",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "bytes" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 10, "x": 4, "y": 10 },
+      "id": 12,
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        {
+          "expr": "sig_child_rss_bytes",
+          "legendFormat": "RSS",
+          "refId": "A"
+        }
+      ],
+      "title": "Child RSS",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "short" },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 10, "x": 14, "y": 10 },
+      "id": 13,
+      "options": { "reduceOptions": { "calcs": ["sum"] }, "orientation": "auto", "textMode": "auto", "colorMode": "value" },
+      "targets": [
+        {
+          "expr": "increase(sig_child_starts_total[24h])",
+          "legendFormat": "starts/24h",
+          "refId": "A"
+        }
+      ],
+      "title": "Child restarts (24h)",
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 },
+      "id": 20,
+      "title": "Control Plane",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "short" },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 19 },
+      "id": 21,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "value" },
+      "targets": [
+        {
+          "expr": "sig_active_generations",
+          "legendFormat": "active",
+          "refId": "A"
+        }
+      ],
+      "title": "Active generations",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "short" },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 18, "x": 6, "y": 19 },
+      "id": 22,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "value" },
+      "targets": [
+        {
+          "expr": "sig_active_model_info",
+          "legendFormat": "{{alias}} ({{engine}})",
+          "refId": "A"
+        }
+      ],
+      "title": "Active model",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" },
+        "overrides": []
+      },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 23 },
+      "id": 23,
+      "options": { "legend": { "calcs": ["sum"], "displayMode": "table", "placement": "bottom" } },
+      "targets": [
+        {
+          "expr": "rate(sig_model_operation_results_total[5m])",
+          "legendFormat": "{{operation}} {{result}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Model operations",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 29 },
+      "id": 30,
+      "title": "Errors & Keepalives",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 30 },
+      "id": 31,
+      "options": { "legend": { "calcs": ["sum"], "displayMode": "table", "placement": "bottom" } },
+      "targets": [
+        {
+          "expr": "rate(sig_upstream_errors_total[5m])",
+          "legendFormat": "{{status}} {{flavor}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Upstream errors by status + flavor",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus" },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 30 },
+      "id": 32,
+      "options": { "legend": { "calcs": ["sum"], "displayMode": "table", "placement": "bottom" } },
+      "targets": [
+        {
+          "expr": "rate(sig_keepalive_comments_total[5m])",
+          "legendFormat": "keepalives/s {{flavor}}",
+          "refId": "A"
+        }
+      ],
+      "title": "SSE keepalive rate (upstream silence signal)",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "15s",
+  "schemaVersion": 38,
+  "tags": ["inference", "llm", "local"],
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Space Inference Gateway",
+  "uid": "space-inference-gateway",
+  "version": 1,
+  "weekStart": ""
+}

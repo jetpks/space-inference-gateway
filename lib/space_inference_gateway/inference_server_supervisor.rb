@@ -7,6 +7,7 @@ require "uri"
 require "async/semaphore"
 require "async/process/child"
 require "dry/monads"
+require_relative "metrics"
 
 module SpaceInferenceGateway
   class InferenceServerSupervisor
@@ -78,6 +79,7 @@ module SpaceInferenceGateway
         @child        = child
         @active_alias = alias_name
         @active_port  = port
+        Metrics::CHILD_STARTS.increment
         Success(base_url: base_url, alias: alias_name)
       else
         stop_child(child)
