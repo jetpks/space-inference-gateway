@@ -1,0 +1,18 @@
+# Prometheus scrape-config snippet for the space-inference-gateway metrics endpoint.
+# Operator-applied: merge this into the scrape_configs section of prometheus.yml,
+# then reload Prometheus (kill -HUP <pid> or POST /-/reload).
+#
+# The gateway exposes GET /metrics in Prometheus text exposition format 0.0.4.
+# No auth is required on /metrics (it is local-studio only, behind Caddy TLS).
+
+scrape_configs:
+  - job_name: space_inference_gateway
+    scheme: https
+    metrics_path: /metrics
+    tls_config:
+      insecure_skip_verify: false
+    static_configs:
+      - targets:
+          - studio.slush.systems:443
+    scrape_interval: 15s
+    scrape_timeout: 10s

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "dry/monads"
+require_relative "metrics"
 
 module SpaceInferenceGateway
   class ModelController
@@ -13,6 +14,10 @@ module SpaceInferenceGateway
       @supervisor         = supervisor
       @active_generations = 0
     end
+
+    def active_alias   = @supervisor.active_alias
+    def child_pid      = @supervisor.pid
+    def child_running? = @supervisor.running?
 
     def models_list
       @registry.aliases.map do |a|
@@ -47,7 +52,10 @@ module SpaceInferenceGateway
       return Success() if @supervisor.active_alias == alias_name && @supervisor.running?
       return Failure(:busy) if @active_generations.positive?
 
-      map_supervisor_result(@supervisor.swap(to: alias_name))
+      result = map_supervisor_result(@supervisor.swap(to: alias_name))
+      r_label = result.success? ? "success" : result.failure.to_s
+      Metrics::SWAP_RESULTS.increment(labels: { operation: "load", result: r_label })
+      result
     end
 
     # Stop the supervisor; return UNLOAD_RESPONSE-shaped Success.
@@ -55,6 +63,7 @@ module SpaceInferenceGateway
       entry = @registry.resolve(@supervisor.active_alias)
       path  = entry&.fetch(:gguf, nil) || entry&.fetch(:model_path, nil) || provided_path.to_s
       @supervisor.stop
+      Metrics::SWAP_RESULTS.increment(labels: { operation: "unload", result: "success" })
       Success({ "status" => "unloaded", "model_path" => path })
     end
 
@@ -69,10 +78,12 @@ module SpaceInferenceGateway
 
     def begin_generation
       @active_generations += 1
+      Metrics::ACTIVE_GENERATIONS.increment
     end
 
     def end_generation
       @active_generations -= 1
+      Metrics::ACTIVE_GENERATIONS.decrement
     end
 
     def with_generation

@@ -36,6 +36,7 @@ GEM
     bake (0.25.0)
       bigdecimal
       samovar (~> 2.1)
+    base64 (0.3.0)
     bigdecimal (4.1.2)
     concurrent-ruby (1.3.7)
     console (1.36.0)
@@ -109,6 +110,8 @@ GEM
       ast (~> 2.4.1)
       racc
     prism (1.9.0)
+    prometheus-client (4.2.5)
+      base64
     protocol-hpack (1.5.1)
     protocol-http (0.62.2)
     protocol-http1 (0.39.0)
@@ -180,6 +183,7 @@ DEPENDENCIES
   dry-monads (~> 1.10)
   dry-schema (~> 1.16)
   falcon (~> 0.55)
+  prometheus-client (~> 4.2)
   rack (~> 3.0)
   rack-test (~> 2.1)
   rspec (~> 3.13)
@@ -198,6 +202,7 @@ CHECKSUMS
   async-service (0.24.1) sha256=3ee313fa2d6c1427ffac68f42f272889c496fa1088cf1432b1e7a5f5bff56b06
   async-utilization (0.4.0) sha256=4da53cb1733a12c9cf70ff22bd37d29c10fa9162a03ddb10f34e12acd171fe32
   bake (0.25.0) sha256=a47bdc6a26addc048827debc36fe27bb4d5d71ac2958ad910b5386e9baf49869
+  base64 (0.3.0) sha256=27337aeabad6ffae05c265c450490628ef3ebd4b67be58257393227588f5a97b
   bigdecimal (4.1.2) sha256=53d217666027eab4280346fba98e7d5b66baaae1b9c3c1c0ffe89d48188a3fbd
   bundler (4.0.15) sha256=a4ceb882fe94a0e0ac63cd0813932bbfd631a14e5ac0b7975189b19a4d28d9e7
   concurrent-ruby (1.3.7) sha256=4412caec3a5ea2e5fdc52076724c071a81f2c0593d83b2ac8cbb8ca63b3151b0
@@ -228,6 +233,7 @@ CHECKSUMS
   parallel (2.1.0) sha256=b35258865c2e31134c5ecb708beaaf6772adf9d5efae28e93e99260877b09356
   parser (3.3.11.1) sha256=d17ace7aabe3e72c3cc94043714be27cc6f852f104d81aa284c2281aecc65d54
   prism (1.9.0) sha256=7b530c6a9f92c24300014919c9dcbc055bf4cdf51ec30aed099b06cd6674ef85
+  prometheus-client (4.2.5) sha256=807bebc3e92ccd9f4d814d90be15e85338f3708d227badf80924ef3f6e7d5225
   protocol-hpack (1.5.1) sha256=6feca238b8078da1cd295677d6f306c6001af92d75fe0643d33e6956cbc3ad91
   protocol-http (0.62.2) sha256=e1c1f2f56029c1af8c4e2b8a67d0d096c76620f3afd8d99d1dcd2f6b8ffa773b
   protocol-http1 (0.39.0) sha256=e49b3f4cda6f5d94c76a323d2b7f6977cba3ebd082d2da437039594da77ad8eb

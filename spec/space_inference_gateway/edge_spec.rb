@@ -287,6 +287,8 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
   # ── Keepalive — SSE comment emitted during upstream silence ─────────────
 
   describe "Keepalive — SSE comment emitted during upstream silence" do
+    before { SpaceInferenceGateway::Metrics.reset_all }
+
     it "delivers a `: keepalive` comment within the keepalive interval while upstream holds" do
       # Shorten the keepalive interval for the test so it runs fast.
       stub_const("SpaceInferenceGateway::App::KEEPALIVE_INTERVAL", 1)
@@ -342,6 +344,10 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
           full = chunks.join
           expect(full).to include(": keepalive")
           expect(full).to include("data:")
+
+          # AC6: keepalive counter wired to the real emission path (IO.pipe + wait_readable).
+          # Flavor is :oai — the request is POST /v1/chat/completions via handle_oai → open_stream(flavor: :oai).
+          expect(SpaceInferenceGateway::Metrics::KEEPALIVE_COMMENTS.get(labels: { flavor: "oai" })).to be >= 1
         ensure
           begin
             response&.body&.close
