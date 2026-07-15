@@ -513,4 +513,106 @@ RSpec.describe SpaceInferenceGateway::AntNormalizer do
       expect(events.last[:event]).to eq("message_stop")
     end
   end
+
+  # ── I10: tool_calls (request-side translation is app_spec/app.rb; these
+  # cover the OAI tool_calls -> ANT tool_use response synthesis). optiq's real
+  # tool_calls SSE shape could not be captured live (the optiq binary is not
+  # installed in this environment — see build report); tool-stream.txt /
+  # tool-nonstream.json are synthesized from the one-shot OAI tool_calls
+  # fixture already in oai_normalizer_spec.rb (id/index/type/function present)
+  # plus a synthetic fragmented-arguments variant, since the proxy must handle
+  # both shapes regardless of which one optiq actually emits. ──────────────
+
+  describe "#normalize_oai — tool_calls non-stream (AC5)", :tool_calls do
+    let(:result) { normalizer.normalize_oai(optiq_ant_fixture_json("tool-nonstream.json")) }
+
+    it "produces a tool_use content block" do
+      expect(result["content"].map { |b| b["type"] }).to include("tool_use")
+    end
+
+    it "tool_use block carries a toolu_-prefixed id round-tripped from the OAI call id" do
+      block = result["content"].find { |b| b["type"] == "tool_use" }
+      expect(block["id"]).to eq("toolu_call_9f8a2b")
+    end
+
+    it "tool_use block carries the function name" do
+      block = result["content"].find { |b| b["type"] == "tool_use" }
+      expect(block["name"]).to eq("get_weather")
+    end
+
+    it "tool_use input is the parsed JSON arguments object" do
+      block = result["content"].find { |b| b["type"] == "tool_use" }
+      expect(block["input"]).to eq({ "location" => "Tokyo" })
+    end
+
+    it "stop_reason is tool_use" do
+      expect(result["stop_reason"]).to eq("tool_use")
+    end
+
+    it "validates against ANT_MESSAGE schema (AC6)" do
+      schema_result = SpaceInferenceGateway::Schemas::ANT_MESSAGE.call(result)
+      expect(schema_result).to be_success, "schema errors: #{schema_result.errors.to_h.inspect}"
+    end
+
+    it "falls back to an empty input object on unparseable arguments" do
+      malformed = optiq_ant_fixture_json("tool-nonstream.json")
+      malformed["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"] = "{not json"
+      block = normalizer.normalize_oai(malformed)["content"].find { |b| b["type"] == "tool_use" }
+      expect(block["input"]).to eq({})
+    end
+  end
+
+  describe "#stream_to_sse_from_oai — tool_calls streaming (AC4)", :tool_calls do
+    let(:sse_text) { optiq_ant_fixture("tool-stream.txt") }
+    let(:events)   { normalizer.normalize_stream_events_from_oai(sse_text) }
+
+    def block_starts(events, type)
+      events.select { |e| e[:event] == "content_block_start" && e[:data].dig("content_block", "type") == type }
+    end
+
+    it "closes the open text block before starting the tool_use block" do
+      names       = events.map { |e| e[:event] }
+      text_start  = names.index { |n| n == "content_block_start" }
+      tool_start  = events.index { |e| e[:data].dig("content_block", "type") == "tool_use" }
+      text_stop   = events[text_start...tool_start].rindex { |e| e[:event] == "content_block_stop" }
+      expect(text_stop).not_to be_nil
+    end
+
+    it "emits exactly one tool_use content_block_start" do
+      expect(block_starts(events, "tool_use").length).to eq(1)
+    end
+
+    it "tool_use content_block_start carries a toolu_-prefixed id and the function name" do
+      start = block_starts(events, "tool_use").first
+      expect(start[:data].dig("content_block", "id")).to eq("toolu_call_9f8a2b")
+      expect(start[:data].dig("content_block", "name")).to eq("get_weather")
+      expect(start[:data].dig("content_block", "input")).to eq({})
+    end
+
+    it "accumulates fragmented arguments into input_json_delta events at the same index" do
+      tool_index = block_starts(events, "tool_use").first[:data]["index"]
+      deltas = events.select do |e|
+        e[:event] == "content_block_delta" && e[:data]["index"] == tool_index &&
+          e[:data].dig("delta", "type") == "input_json_delta"
+      end
+      expect(deltas.length).to be > 1
+      joined = deltas.map { |e| e[:data].dig("delta", "partial_json") }.join
+      expect(JSON.parse(joined)).to eq({ "location" => "Tokyo" })
+    end
+
+    it "closes the tool_use content block" do
+      tool_index = block_starts(events, "tool_use").first[:data]["index"]
+      stops = events.select { |e| e[:event] == "content_block_stop" && e[:data]["index"] == tool_index }
+      expect(stops.length).to eq(1)
+    end
+
+    it "stop_reason is tool_use" do
+      delta_event = events.reverse.find { |e| e[:event] == "message_delta" }
+      expect(delta_event[:data].dig("delta", "stop_reason")).to eq("tool_use")
+    end
+
+    it "ends with message_stop" do
+      expect(events.last[:event]).to eq("message_stop")
+    end
+  end
 end

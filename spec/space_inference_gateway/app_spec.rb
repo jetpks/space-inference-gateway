@@ -178,6 +178,140 @@ RSpec.describe SpaceInferenceGateway::App do
     end
   end
 
+  # ── I10: ANT request translation (tools/tool_result/tool_use -> OAI) ─────
+  describe "ANT request translation for the optiq engine (I10 AC1-AC3)" do
+    let(:forwarded) { [] }
+    let(:upstream_fn) do
+      lambda do |path, body|
+        forwarded << { path: path, body: body }
+        [fixture("oai_ns.json"), 200, {}]
+      end
+    end
+
+    it "translates ANT tools into OAI tools (AC1)", :tool_calls do
+      body = JSON.generate({
+                             model: "qwen3-27b-optiq",
+        messages: [{ role: "user", content: "weather?" }],
+        max_tokens: 100,
+        tools: [{
+          name: "get_weather", description: "Get the weather for a city",
+          input_schema: { type: "object", properties: { city: { type: "string" } }, required: ["city"] },
+        }],
+                           })
+      post "/v1/messages", body, "CONTENT_TYPE" => "application/json"
+      expect(last_response.status).to eq(200)
+      sent = JSON.parse(forwarded.first[:body])
+      expect(sent["tools"]).to eq([{
+                                    "type" => "function",
+                                    "function" => {
+                                      "name" => "get_weather", "description" => "Get the weather for a city",
+          "parameters" => { "type" => "object", "properties" => { "city" => { "type" => "string" } },
+                             "required" => ["city"], },
+                                    },
+                                  }])
+    end
+
+    it "translates a tool_result block into a separate OAI tool message (AC2)", :tool_calls do
+      body = JSON.generate({
+                             model: "qwen3-27b-optiq",
+        messages: [
+          { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "sunny, 25C" }] },
+        ],
+        max_tokens: 100,
+                           })
+      post "/v1/messages", body, "CONTENT_TYPE" => "application/json"
+      sent = JSON.parse(forwarded.first[:body])
+      expect(sent["messages"]).to eq([{ "role" => "tool", "tool_call_id" => "toolu_1", "content" => "sunny, 25C" }])
+    end
+
+    it "flattens array-of-text-block tool_result content (AC2)", :tool_calls do
+      body = JSON.generate({
+                             model: "qwen3-27b-optiq",
+        messages: [
+          { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1",
+                                      content: [{ type: "text", text: "sunny, 25C" }], }], },
+        ],
+        max_tokens: 100,
+                           })
+      post "/v1/messages", body, "CONTENT_TYPE" => "application/json"
+      sent = JSON.parse(forwarded.first[:body])
+      expect(sent.dig("messages", 0, "content")).to eq("sunny, 25C")
+    end
+
+    it "translates assistant tool_use + text into OAI content + tool_calls (AC3)", :tool_calls do
+      body = JSON.generate({
+                             model: "qwen3-27b-optiq",
+        messages: [
+          { role: "user", content: "weather?" },
+          { role: "assistant", content: [
+            { type: "text", text: "Let me check." },
+            { type: "tool_use", id: "toolu_1", name: "get_weather", input: { city: "Tokyo" } },
+          ], },
+          { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "sunny" }] },
+        ],
+        max_tokens: 100,
+                           })
+      post "/v1/messages", body, "CONTENT_TYPE" => "application/json"
+      sent      = JSON.parse(forwarded.first[:body])
+      assistant = sent["messages"].find { |m| m["role"] == "assistant" }
+      expect(assistant["content"]).to eq("Let me check.")
+      expect(assistant["tool_calls"]).to eq([{
+                                              "id" => "toolu_1", "type" => "function",
+        "function" => { "name" => "get_weather", "arguments" => JSON.generate({ "city" => "Tokyo" }) },
+                                            }])
+    end
+  end
+
+  # ── I10: end-to-end streaming tool_use synthesis (AC7) ───────────────────
+  describe "ANT streaming tool_use synthesis from an optiq tool_calls SSE stream (I10 AC7)" do
+    OPTIQ_TOOL_FIXTURE_PATH = File.expand_path("../fixtures/optiq", __dir__) unless defined?(OPTIQ_TOOL_FIXTURE_PATH)
+
+    let(:tool_stream_sse) { File.read(File.join(OPTIQ_TOOL_FIXTURE_PATH, "tool-stream.txt")) }
+    let(:upstream_fn) { ->(_path, _body) { [tool_stream_sse, 200, {}] } }
+
+    let(:events) do
+      last_response.body.split("\n\n").reject(&:empty?).map do |blk|
+        lines = blk.lines.map(&:strip)
+        { event: lines.find { |l| l.start_with?("event:") }.sub(/\Aevent:\s*/, ""),
+          data:  JSON.parse(lines.find { |l| l.start_with?("data:") }.sub(/\Adata:\s*/, "")), }
+      end
+    end
+
+    before do
+      body = JSON.generate({
+                             model: "qwen3-27b-optiq",
+        messages: [{ role: "user", content: "what's the weather in Tokyo?" }],
+        max_tokens: 100,
+        stream: true,
+                           })
+      post "/v1/messages", body, "CONTENT_TYPE" => "application/json"
+    end
+
+    it "returns 200 text/event-stream", :tool_calls do
+      expect(last_response.status).to eq(200)
+      expect(last_response.headers["content-type"]).to include("text/event-stream")
+    end
+
+    it "yields an ANT tool_use content_block_start", :tool_calls do
+      starts = events.select do |e|
+        e[:event] == "content_block_start" && e[:data].dig("content_block", "type") == "tool_use"
+      end
+      expect(starts.length).to eq(1)
+      expect(starts.first[:data].dig("content_block", "name")).to eq("get_weather")
+      expect(starts.first[:data].dig("content_block", "id")).to eq("toolu_call_9f8a2b")
+    end
+
+    it "yields input_json_delta events for the tool_use block", :tool_calls do
+      deltas = events.select { |e| e[:event] == "content_block_delta" && e[:data].dig("delta", "type") == "input_json_delta" }
+      expect(deltas).not_to be_empty
+    end
+
+    it "message_delta stop_reason is tool_use", :tool_calls do
+      delta = events.reverse.find { |e| e[:event] == "message_delta" }
+      expect(delta[:data].dig("delta", "stop_reason")).to eq("tool_use")
+    end
+  end
+
   describe "optiq string-error relay (AC3 + AC6)" do
     let(:upstream_fn) { ->(_path, _body) { ['{"error":"bad json body"}', 400, {}] } }
 
