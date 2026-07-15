@@ -284,6 +284,80 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
     end
   end
 
+  # ── Keepalive — SSE comment emitted during upstream silence ─────────────
+
+  describe "Keepalive — SSE comment emitted during upstream silence" do
+    it "delivers a `: keepalive` comment within the keepalive interval while upstream holds" do
+      # Shorten the keepalive interval for the test so it runs fast.
+      stub_const("SpaceInferenceGateway::App::KEEPALIVE_INTERVAL", 1)
+
+      Async do |task|
+        barrier = Async::Condition.new
+
+        stub_handler = lambda do |req|
+          case req.path
+          when "/v1/chat/completions"
+            body = Protocol::HTTP::Body::Writable.new
+            task.async do
+              # Hold silence until we signal — simulates optiq prefill.
+              barrier.wait
+              body.write("data: {\"choices\":[]}\n\n")
+              body.close_write
+            end
+            Protocol::HTTP::Response[200, { "content-type" => "text/event-stream" }, body]
+          else
+            Protocol::HTTP::Response[404, {}, []]
+          end
+        end
+
+        stub_port, stub_task, stub_bound = boot_stub(stub_handler)
+        upstream = SpaceInferenceGateway::UpstreamClient.new(base_url: "http://localhost:#{stub_port}")
+        app      = make_app(upstream_client: upstream)
+        proxy_port, proxy_task, proxy_bound = boot_proxy(app)
+        client = client_for(proxy_port)
+
+        request_body = JSON.generate({ model: "diffusiongemma", messages: [], stream: true })
+
+        begin
+          response = client.post(
+            "/v1/chat/completions",
+            [["content-type", "application/json"]],
+            request_body,
+          )
+          expect(response.status).to eq(200)
+
+          # The first chunk should be a keepalive comment, arriving within ~2s
+          # (KEEPALIVE_INTERVAL=1 + slack), NOT the 30s+ the upstream holds.
+          first = nil
+          task.with_timeout(5) { first = response.body.read }
+          expect(first).to include(": keepalive")
+
+          # Release the upstream; read the rest.
+          barrier.signal
+          chunks = [first]
+          while (chunk = response.body.read)
+            chunks << chunk
+          end
+
+          full = chunks.join
+          expect(full).to include(": keepalive")
+          expect(full).to include("data:")
+        ensure
+          begin
+            response&.body&.close
+          rescue StandardError
+            nil
+          end
+          client.close
+          proxy_task.stop
+          proxy_bound.close
+          stub_task.stop
+          stub_bound.close
+        end
+      end
+    end
+  end
+
   # ── AC5 — Swap refused 409 while streaming generation is in flight ─────────
 
   describe "AC5 — swap refused 409 while streaming generation is in flight" do

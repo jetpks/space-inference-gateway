@@ -20,12 +20,57 @@ module SpaceInferenceGateway
       "x-accel-buffering" => "no",
     }.freeze
 
+    KEEPALIVE_INTERVAL = 45 # seconds — well under pi's 300s HTTP idle timeout
+    KEEPALIVE_COMMENT = ": keepalive\n\n"
+
     # Streaming Rack body for SSE generation paths.
     # Owns the upstream HTTP client and closes it when the body is done.
     # on_close is called once on first close (generation lifetime hook).
+    #
+    # The upstream normalizer is drained in a fiber-scheduler fiber and its
+    # chunks are written to an IO pipe. #each reads from the pipe with a
+    # KEEPALIVE_INTERVAL timeout via IO.select, yielding an SSE comment
+    # (`: keepalive\n\n`) on timeout. This keeps the client's HTTP idle timer
+    # from tripping while the upstream is silent — e.g. optiq spends minutes in
+    # prompt prefill emitting zero bytes, which would otherwise abort the stream
+    # (pi defaults to a 300s idle timeout). Comment lines are SSE-spec-legal and
+    # ignored by the OpenAI + Anthropic SDK decoders (verified:
+    # openai/core/streaming.js SSEDecoder returns null on `line.startsWith(':')`).
+    #
+    # The pipe + IO.select approach (rather than Async::Notification) is
+    # required because Protocol::Rack::Body::Enumerable drives this body via
+    # `to_enum(:each).next`, which runs #each in a separate Enumerator fiber
+    # where Async::Task.current is unavailable. IO.select and Fiber.scheduler
+    # work in any fiber on the scheduler's thread.
     StreamBody = Struct.new(:response, :client, :normalizer, :on_close) do
-      def each(&block)
-        normalizer.stream_to_sse(response.body, &block)
+      def each
+        read_io, write_io = IO.pipe
+
+        # Drain the upstream normalizer in a scheduled fiber. Chunks are
+        # written to the pipe; closing the write end on exit signals EOF.
+        Fiber.scheduler.fiber do
+          normalizer.stream_to_sse(response.body) { |chunk| write_io.write(chunk) }
+        ensure
+          write_io.close
+        end
+
+        # Read from the pipe with a keepalive timeout. IO.select is
+        # fiber-scheduler-aware and does not block the reactor.
+        loop do
+          if read_io.wait_readable(App::KEEPALIVE_INTERVAL).nil?
+            yield App::KEEPALIVE_COMMENT
+          else
+            data = read_io.read_nonblock(65_536, exception: false)
+            break if data.nil? # EOF — upstream finished
+            next if data == :wait_readable # spurious wakeup
+
+            yield data unless data.empty?
+          end
+        end
+      rescue StandardError
+        nil
+      ensure
+        read_io.close
       end
 
       def close
