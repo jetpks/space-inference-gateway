@@ -104,5 +104,38 @@ RSpec.describe SpaceInferenceGateway::Schemas do
       payload = valid_payload.merge("unexpected_key" => "bad")
       expect(schema.call(payload)).not_to be_success
     end
+
+    # ── AC6: tool_use content blocks ──────────────────────────────────────
+    it "accepts a tool_use block with id/name/input", :tool_calls do
+      payload = valid_payload.merge("content" => [
+                                      { "type" => "tool_use", "id" => "toolu_1",
+                                        "name" => "get_weather", "input" => { "city" => "Tokyo" }, },
+                                    ])
+      result = schema.call(payload)
+      expect(result).to be_success, "schema errors: #{result.errors.to_h.inspect}"
+    end
+
+    it "accepts a tool_use block with a nested-object input", :tool_calls do
+      payload = valid_payload.merge("content" => [
+                                      { "type" => "tool_use", "id" => "toolu_1", "name" => "search",
+                                        "input" => { "filters" => { "region" => "jp" }, "limit" => 5 }, },
+                                    ])
+      expect(schema.call(payload)).to be_success
+    end
+
+    it "accepts a tool_use block with an empty input", :tool_calls do
+      payload = valid_payload.merge("content" => [
+                                      { "type" => "tool_use", "id" => "toolu_1", "name" => "ping", "input" => {} },
+                                    ])
+      expect(schema.call(payload)).to be_success
+    end
+
+    it "still rejects an unexpected key on a tool_use block", :tool_calls do
+      payload = valid_payload.merge("content" => [
+                                      { "type" => "tool_use", "id" => "toolu_1", "name" => "ping",
+                                        "input" => {}, "bogus" => "nope", },
+                                    ])
+      expect(schema.call(payload)).not_to be_success
+    end
   end
 end

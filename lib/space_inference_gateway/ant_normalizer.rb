@@ -56,6 +56,7 @@ module SpaceInferenceGateway
       blocks = []
       blocks << { "type" => "thinking", "thinking" => thinking } unless thinking.empty?
       blocks << { "type" => "text",     "text"     => visible  } if !visible.empty? || thinking.empty?
+      blocks.concat(oai_tool_calls_to_ant(msg["tool_calls"])) if msg["tool_calls"]
 
       {
         "id" => oai_response["id"],
@@ -325,6 +326,30 @@ module SpaceInferenceGateway
       end
     end
 
+    # OAI message.tool_calls -> ANT tool_use blocks (AC5). function.arguments is a
+    # JSON string; parsed to an object, falling back to {} on parse failure or a
+    # non-object result (the schema requires input to be an object).
+    def oai_tool_calls_to_ant(tool_calls)
+      tool_calls.map do |tc|
+        fn = tc["function"] || {}
+        { "type" => "tool_use", "id" => ant_tool_id(tc["id"]), "name" => fn["name"],
+          "input" => parse_tool_arguments(fn["arguments"]), }
+      end
+    end
+
+    def parse_tool_arguments(arguments)
+      parsed = JSON.parse(arguments.to_s)
+      parsed.is_a?(Hash) ? parsed : {}
+    rescue JSON::ParserError
+      {}
+    end
+
+    # Anthropic tool_use ids are expected to carry the "toolu_" prefix; CC sends
+    # the id back verbatim as tool_result.tool_use_id, so it must round-trip.
+    def ant_tool_id(oai_id)
+      "toolu_#{oai_id}"
+    end
+
     def oai_finish_to_ant(finish_reason)
       case finish_reason
       when "stop"       then "end_turn"
@@ -352,6 +377,7 @@ module SpaceInferenceGateway
         reasoning_idx: nil,
         text_idx:      nil,
         id:            nil,
+        tool_calls:    {}, # oai tool_calls[].index => { ant_index:, started: }
       }
     end
 
@@ -364,6 +390,12 @@ module SpaceInferenceGateway
       delta = choice["delta"] || {}
       emit_oai_message_start(state, block) unless state[:started]
 
+      emit_oai_reasoning_or_content_delta(state, delta, block)
+      emit_oai_tool_call_deltas(state, delta["tool_calls"], block) if delta["tool_calls"]
+      emit_oai_finish(state, choice["finish_reason"], block) if choice["finish_reason"]
+    end
+
+    def emit_oai_reasoning_or_content_delta(state, delta, block)
       reasoning_text = delta.key?(@reasoning_field) ? delta[@reasoning_field] : nil
       content_text   = delta.key?("content") ? delta["content"] : nil
 
@@ -372,8 +404,6 @@ module SpaceInferenceGateway
       elsif !content_text.nil?
         emit_oai_content_delta(state, content_text, block)
       end
-
-      emit_oai_finish(state, choice["finish_reason"], block) if choice["finish_reason"]
     end
 
     def emit_oai_message_start(state, block)
@@ -427,17 +457,60 @@ module SpaceInferenceGateway
                })
     end
 
-    def emit_oai_finish(state, finish_reason, block)
-      stop_reason = oai_finish_to_ant(finish_reason)
+    # AC4: each OAI tool_calls[] entry (keyed by its "index") becomes one ANT
+    # tool_use content block. The first delta for a given index carries id/name
+    # (content_block_start); every delta carrying function.arguments — whole or
+    # fragmented — is relayed as its own input_json_delta. Any open reasoning/text
+    # block is closed first (block sequencing: text-then-tool_use is the common case).
+    def emit_oai_tool_call_deltas(state, tool_calls, block)
+      close_oai_text_blocks(state, block)
+
+      tool_calls.each do |tc|
+        entry = (state[:tool_calls][tc["index"]] ||= {})
+
+        unless entry[:started]
+          entry[:started]   = true
+          entry[:ant_index] = state[:next_index]
+          state[:next_index] += 1
+          emit_ant(block, "content_block_start", {
+                     "type" => "content_block_start", "index" => entry[:ant_index],
+            "content_block" => { "type" => "tool_use", "id" => ant_tool_id(tc["id"]),
+                                  "name" => tc.dig("function", "name"), "input" => {}, },
+                   })
+        end
+
+        args = tc.dig("function", "arguments")
+        next if args.nil?
+
+        emit_ant(block, "content_block_delta", {
+                   "type" => "content_block_delta", "index" => entry[:ant_index],
+          "delta" => { "type" => "input_json_delta", "partial_json" => args.to_s },
+                 })
+      end
+    end
+
+    def close_oai_text_blocks(state, block)
       if state[:in_reasoning]
+        state[:in_reasoning] = false
         emit_ant(block, "content_block_stop", {
                    "type" => "content_block_stop", "index" => state[:reasoning_idx],
                  })
       end
-      if state[:in_text]
-        emit_ant(block, "content_block_stop", {
-                   "type" => "content_block_stop", "index" => state[:text_idx],
-                 })
+      return unless state[:in_text]
+
+      state[:in_text] = false
+      emit_ant(block, "content_block_stop", {
+                 "type" => "content_block_stop", "index" => state[:text_idx],
+               })
+    end
+
+    def emit_oai_finish(state, finish_reason, block)
+      stop_reason = oai_finish_to_ant(finish_reason)
+      close_oai_text_blocks(state, block)
+      state[:tool_calls].each_value do |entry|
+        next unless entry[:started]
+
+        emit_ant(block, "content_block_stop", { "type" => "content_block_stop", "index" => entry[:ant_index] })
       end
       emit_ant(block, "message_delta", {
                  "type" => "message_delta",

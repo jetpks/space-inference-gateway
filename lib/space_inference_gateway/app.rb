@@ -362,15 +362,18 @@ module SpaceInferenceGateway
       JSON.generate(parsed)
     end
 
-    # Minimal ANT→OAI request translation for the mlx engine path.
-    # mlx speaks OAI only; system becomes messages[0]; fields mapped.
+    # Minimal ANT→OAI request translation for the mlx/optiq engine path.
+    # mlx/optiq speak OAI only; system becomes messages[0]; fields mapped;
+    # tool definitions, tool_result, and tool_use blocks are translated to
+    # their OAI equivalents (see ant_message_to_oai / ant_tools_to_oai).
     def ant_to_oai(body_str, model_name, stop_tokens: nil)
       ant  = JSON.parse(body_str)
       msgs = []
       msgs << { "role" => "system", "content" => ant["system"] } if ant["system"]
-      msgs.concat(ant["messages"] || [])
+      (ant["messages"] || []).each { |m| ant_message_to_oai(m, msgs) }
 
       oai = { "model" => model_name, "messages" => msgs }
+      oai["tools"]       = ant_tools_to_oai(ant["tools"]) if ant["tools"]
       oai["max_tokens"]  = ant["max_tokens"]  if ant.key?("max_tokens")
       oai["stream"]      = ant["stream"]      if ant.key?("stream")
       oai["temperature"] = ant["temperature"] if ant.key?("temperature")
@@ -378,6 +381,75 @@ module SpaceInferenceGateway
       oai["stop"]        = ant["stop_sequences"] if ant.key?("stop_sequences")
       merge_stop_tokens(oai, stop_tokens) if stop_tokens
       JSON.generate(oai)
+    end
+
+    # ANT tools -> OAI tools (AC1). ANT: {name, description, input_schema}.
+    def ant_tools_to_oai(tools)
+      tools.map do |t|
+        { "type" => "function",
+          "function" => { "name" => t["name"], "description" => t["description"], "parameters" => t["input_schema"] }, }
+      end
+    end
+
+    # Translates one ANT message into one or more OAI messages, appending to oai_msgs.
+    # - user message with tool_result blocks (AC2): one OAI {role: tool} message per
+    #   tool_result, plus a trailing {role: user} message for any leftover text.
+    # - assistant message with tool_use blocks (AC3): a single OAI assistant message
+    #   carrying both the flattened text (content) and the tool_calls array.
+    # - everything else: content (string or text-block array) flattened to a string.
+    def ant_message_to_oai(msg, oai_msgs)
+      role    = msg["role"]
+      content = msg["content"]
+      blocks  = content.is_a?(Array) ? content : []
+      types   = blocks.map { |b| b["type"] }
+
+      if role == "user" && types.include?("tool_result")
+        append_ant_tool_result_message(blocks, oai_msgs)
+      elsif role == "assistant" && types.include?("tool_use")
+        append_ant_tool_use_message(blocks, oai_msgs)
+      else
+        oai_msgs << { "role" => role, "content" => flatten_ant_text(content) }
+      end
+    end
+
+    # AC2: a tool_result-bearing user message becomes one OAI {role: tool}
+    # message per tool_result, plus a trailing {role: user} message for any
+    # leftover (non-tool_result) text in the same ANT message.
+    def append_ant_tool_result_message(blocks, oai_msgs)
+      blocks.each do |block|
+        next unless block["type"] == "tool_result"
+
+        oai_msgs << { "role" => "tool", "tool_call_id" => block["tool_use_id"],
+                      "content" => flatten_ant_text(block["content"]), }
+      end
+      text = flatten_ant_text(blocks.reject { |b| b["type"] == "tool_result" })
+      oai_msgs << { "role" => "user", "content" => text } unless text.empty?
+    end
+
+    # AC3: a tool_use-bearing assistant message becomes a single OAI assistant
+    # message carrying both the flattened text and the tool_calls array.
+    def append_ant_tool_use_message(blocks, oai_msgs)
+      text       = flatten_ant_text(blocks.reject { |b| b["type"] == "tool_use" })
+      tool_calls = blocks.select { |b| b["type"] == "tool_use" }.map { |b| ant_tool_use_to_oai(b) }
+      oai_msgs << { "role" => "assistant", "content" => text, "tool_calls" => tool_calls }
+    end
+
+    # ANT tool_use block -> OAI tool_calls entry (AC3). input is JSON-encoded
+    # into function.arguments, the shape mlx/optiq expect.
+    def ant_tool_use_to_oai(block)
+      { "id" => block["id"], "type" => "function",
+        "function" => { "name" => block["name"], "arguments" => JSON.generate(block["input"]) }, }
+    end
+
+    # Flattens ANT text content to a plain string: a string passes through;
+    # an array of content blocks joins each block's "text" (non-text blocks,
+    # e.g. tool_use/tool_result, contribute nothing — callers filter those out).
+    def flatten_ant_text(content)
+      case content
+      when String then content
+      when Array  then content.map { |b| b["text"].to_s }.join
+      else ""
+      end
     end
 
     def build_default_controller

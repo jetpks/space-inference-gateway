@@ -1,0 +1,17 @@
+: keepalive 1/1
+
+data: {"id": "chatcmpl-tool-synth-0001", "system_fingerprint": "0.31.3-0.32.0-macOS-26.5.2-arm64-arm-64bit-applegpu_g16s", "object": "chat.completion.chunk", "model": "mlx-community/Qwen3.6-27B-OptiQ-4bit", "created": 1784070000, "choices": [{"index": 0, "finish_reason": null, "delta": {"role": "assistant", "reasoning": "The user wants the weather, I should call get_weather."}}]}
+
+data: {"id": "chatcmpl-tool-synth-0001", "system_fingerprint": "0.31.3-0.32.0-macOS-26.5.2-arm64-arm-64bit-applegpu_g16s", "object": "chat.completion.chunk", "model": "mlx-community/Qwen3.6-27B-OptiQ-4bit", "created": 1784070000, "choices": [{"index": 0, "finish_reason": null, "delta": {"role": "assistant", "content": "Let me check that for you.\n\n"}}]}
+
+data: {"id": "chatcmpl-tool-synth-0001", "system_fingerprint": "0.31.3-0.32.0-macOS-26.5.2-arm64-arm-64bit-applegpu_g16s", "object": "chat.completion.chunk", "model": "mlx-community/Qwen3.6-27B-OptiQ-4bit", "created": 1784070000, "choices": [{"index": 0, "finish_reason": null, "delta": {"role": "assistant", "tool_calls": [{"index": 0, "id": "call_9f8a2b", "type": "function", "function": {"name": "get_weather", "arguments": ""}}]}}]}
+
+data: {"id": "chatcmpl-tool-synth-0001", "system_fingerprint": "0.31.3-0.32.0-macOS-26.5.2-arm64-arm-64bit-applegpu_g16s", "object": "chat.completion.chunk", "model": "mlx-community/Qwen3.6-27B-OptiQ-4bit", "created": 1784070000, "choices": [{"index": 0, "finish_reason": null, "delta": {"tool_calls": [{"index": 0, "function": {"arguments": "{\"locati"}}]}}]}
+
+data: {"id": "chatcmpl-tool-synth-0001", "system_fingerprint": "0.31.3-0.32.0-macOS-26.5.2-arm64-arm-64bit-applegpu_g16s", "object": "chat.completion.chunk", "model": "mlx-community/Qwen3.6-27B-OptiQ-4bit", "created": 1784070000, "choices": [{"index": 0, "finish_reason": null, "delta": {"tool_calls": [{"index": 0, "function": {"arguments": "on\": \"Tok"}}]}}]}
+
+data: {"id": "chatcmpl-tool-synth-0001", "system_fingerprint": "0.31.3-0.32.0-macOS-26.5.2-arm64-arm-64bit-applegpu_g16s", "object": "chat.completion.chunk", "model": "mlx-community/Qwen3.6-27B-OptiQ-4bit", "created": 1784070000, "choices": [{"index": 0, "finish_reason": null, "delta": {"tool_calls": [{"index": 0, "function": {"arguments": "yo\"}"}}]}}]}
+
+data: {"id": "chatcmpl-tool-synth-0001", "system_fingerprint": "0.31.3-0.32.0-macOS-26.5.2-arm64-arm-64bit-applegpu_g16s", "object": "chat.completion.chunk", "model": "mlx-community/Qwen3.6-27B-OptiQ-4bit", "created": 1784070000, "choices": [{"index": 0, "finish_reason": "tool_calls", "delta": {}}]}
+
+data: [DONE]
