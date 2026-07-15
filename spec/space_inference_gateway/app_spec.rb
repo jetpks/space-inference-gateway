@@ -404,6 +404,72 @@ RSpec.describe SpaceInferenceGateway::App do
     end
   end
 
+  # ── Prometheus /metrics route (AC1, AC2) ──────────────────────────────────────
+
+  describe "GET /metrics" do
+    before do
+      SpaceInferenceGateway::Metrics.reset_all
+      get "/metrics"
+    end
+
+    it "returns HTTP 200" do
+      expect(last_response.status).to eq(200)
+    end
+
+    it "content-type is Prometheus text format" do
+      ct = last_response.headers["content-type"]
+      expect(ct).to include("text/plain")
+      expect(ct).to include("version=0.0.4")
+    end
+
+    it "body has # HELP and # TYPE for sig_requests_total" do
+      expect(last_response.body).to include("# HELP sig_requests_total")
+      expect(last_response.body).to include("# TYPE sig_requests_total counter")
+    end
+  end
+
+  describe "request instrumentation (AC2)" do
+    before { SpaceInferenceGateway::Metrics.reset_all }
+
+    it "increments sig_requests_total for OAI non-stream" do
+      body = JSON.generate({ model: "any", messages: [] })
+      post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
+      expect(SpaceInferenceGateway::Metrics::REQUESTS.get(labels: { flavor: "oai", stream: "false" })).to eq(1)
+    end
+
+    it "increments sig_requests_total for OAI stream (legacy-seam path)" do
+      streaming_fn = ->(_path, _body) { [oai_s_response, 200, {}] }
+      streaming_app = described_class.new(upstream_fn: streaming_fn)
+      body = JSON.generate({ model: "any", messages: [], stream: true })
+      post_response = Rack::MockRequest.new(streaming_app).post(
+        "/v1/chat/completions", input: body, "CONTENT_TYPE" => "application/json",
+      )
+      expect(post_response.status).to eq(200)
+      expect(SpaceInferenceGateway::Metrics::REQUESTS.get(labels: { flavor: "oai", stream: "true" })).to eq(1)
+    end
+
+    it "increments sig_requests_total for ANT non-stream" do
+      body = JSON.generate({ model: "any", messages: [], max_tokens: 100 })
+      post "/v1/messages", body, "CONTENT_TYPE" => "application/json"
+      expect(SpaceInferenceGateway::Metrics::REQUESTS.get(labels: { flavor: "ant", stream: "false" })).to eq(1)
+    end
+
+    it "exactly +1 for OAI non-stream and +1 for OAI stream after separate requests (AC2)" do
+      ns_body = JSON.generate({ model: "any", messages: [] })
+      post "/v1/chat/completions", ns_body, "CONTENT_TYPE" => "application/json"
+
+      streaming_fn = ->(_path, _body) { [oai_s_response, 200, {}] }
+      streaming_app = described_class.new(upstream_fn: streaming_fn)
+      s_body = JSON.generate({ model: "any", messages: [], stream: true })
+      Rack::MockRequest.new(streaming_app).post(
+        "/v1/chat/completions", input: s_body, "CONTENT_TYPE" => "application/json",
+      )
+
+      expect(SpaceInferenceGateway::Metrics::REQUESTS.get(labels: { flavor: "oai", stream: "false" })).to eq(1)
+      expect(SpaceInferenceGateway::Metrics::REQUESTS.get(labels: { flavor: "oai", stream: "true" })).to eq(1)
+    end
+  end
+
   describe "upstream error passthrough" do
     let(:incident_body) do
       '{"error":{"code":400,"message":"Cannot have 2 or more assistant messages at the end of the list.","type":"invalid_request_error"}}'

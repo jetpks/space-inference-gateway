@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "json"
+require_relative "metrics"
 require_relative "oai_normalizer"
 require_relative "ant_normalizer"
 require_relative "model_registry"
@@ -42,7 +43,7 @@ module SpaceInferenceGateway
     # `to_enum(:each).next`, which runs #each in a separate Enumerator fiber
     # where Async::Task.current is unavailable. IO.select and Fiber.scheduler
     # work in any fiber on the scheduler's thread.
-    StreamBody = Struct.new(:response, :client, :normalizer, :on_close) do
+    StreamBody = Struct.new(:response, :client, :normalizer, :on_close, :flavor) do
       def each
         read_io, write_io = IO.pipe
 
@@ -59,6 +60,7 @@ module SpaceInferenceGateway
         loop do
           if read_io.wait_readable(App::KEEPALIVE_INTERVAL).nil?
             yield App::KEEPALIVE_COMMENT
+            Metrics::KEEPALIVE_COMMENTS.increment(labels: { flavor: flavor.to_s })
           else
             data = read_io.read_nonblock(65_536, exception: false)
             break if data.nil? # EOF — upstream finished
@@ -109,13 +111,14 @@ module SpaceInferenceGateway
       path   = env["PATH_INFO"]
 
       case [method, path]
-      when ["POST", "/v1/chat/completions"] then handle_oai(env)
-      when ["POST", "/v1/messages"]         then handle_ant(env)
+      when ["POST", "/v1/chat/completions"]      then handle_oai(env)
+      when ["POST", "/v1/messages"]              then handle_ant(env)
       when ["POST", "/v1/messages/count_tokens"] then handle_count_tokens(env)
-      when ["GET",  "/v1/models"]           then handle_models
-      when ["POST", "/v1/load"]             then handle_load(env)
-      when ["POST", "/v1/unload"]           then handle_unload(env)
-      when ["GET",  "/v1/load-progress"]    then handle_load_progress
+      when ["GET",  "/v1/models"]                then handle_models
+      when ["POST", "/v1/load"]                  then handle_load(env)
+      when ["POST", "/v1/unload"]                then handle_unload(env)
+      when ["GET",  "/v1/load-progress"]         then handle_load_progress
+      when ["GET",  "/metrics"]                  then handle_metrics
       else
         [404, JSON_HEADERS.dup, [JSON.generate({ error: { message: "Not found", type: "invalid_request_error" } })]]
       end
@@ -127,6 +130,7 @@ module SpaceInferenceGateway
     private
 
     def handle_oai(env)
+      t0          = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       body_str    = read_body(env)
       request     = JSON.parse(body_str)
       model_alias = request["model"]
@@ -145,7 +149,10 @@ module SpaceInferenceGateway
 
       body_str = rewrite_model_for_mlx(body_str, model_alias)
 
-      return open_stream("/v1/chat/completions", body_str, normalizer, flavor: :oai) if streaming && @upstream_fn.nil?
+      if streaming && @upstream_fn.nil?
+        observe_request(t0, flavor: "oai", streaming: streaming)
+        return open_stream("/v1/chat/completions", body_str, normalizer, flavor: :oai)
+      end
 
       result = nil
       @controller.with_generation do
@@ -160,10 +167,12 @@ module SpaceInferenceGateway
                    @error_relay.relay(status, body_up, flavor: :oai)
                  end
       end
+      observe_request(t0, flavor: "oai", streaming: streaming)
       result
     end
 
     def handle_ant(env)
+      t0          = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       body_str    = read_body(env)
       request     = JSON.parse(body_str)
       model_alias = request["model"]
@@ -180,9 +189,13 @@ module SpaceInferenceGateway
         supports_reasoning: mode[:supports_reasoning],
       )
 
+      # mlx/optiq path instruments inside handle_ant_mlx
       return handle_ant_mlx(body_str, model_alias, normalizer, streaming) if mlx_engine?(model_alias)
 
-      return open_stream("/v1/messages", body_str, normalizer, flavor: :ant) if streaming && @upstream_fn.nil?
+      if streaming && @upstream_fn.nil?
+        observe_request(t0, flavor: "ant", streaming: streaming)
+        return open_stream("/v1/messages", body_str, normalizer, flavor: :ant)
+      end
 
       result = nil
       @controller.with_generation do
@@ -197,14 +210,17 @@ module SpaceInferenceGateway
                    @error_relay.relay(status, body_up, flavor: :ant)
                  end
       end
+      observe_request(t0, flavor: "ant", streaming: streaming)
       result
     end
 
     def handle_ant_mlx(body_str, model_alias, normalizer, streaming)
+      t0       = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       oai_body = ant_to_oai(body_str, mlx_model_id(model_alias),
                             stop_tokens: mlx_stop_tokens(model_alias),)
 
       if streaming && @upstream_fn.nil?
+        observe_request(t0, flavor: "ant", streaming: streaming)
         return open_stream("/v1/chat/completions", oai_body, OaiToAntAdapter.new(normalizer), flavor: :ant)
       end
 
@@ -223,6 +239,7 @@ module SpaceInferenceGateway
                    @error_relay.relay(status, body_up, flavor: :ant)
                  end
       end
+      observe_request(t0, flavor: "ant", streaming: streaming)
       result
     end
 
@@ -291,6 +308,16 @@ module SpaceInferenceGateway
       end
     end
 
+    def handle_metrics
+      pid     = @controller.child_pid
+      running = @controller.child_running?
+      Metrics::CHILD_UP.set(running ? 1 : 0)
+      Metrics::CHILD_PID.set((pid || 0).to_f)
+      Metrics::CHILD_RSS_BYTES.set(Metrics.child_rss_bytes(pid).to_f)
+      update_model_info_metric
+      [200, { "content-type" => Prometheus::Client::Formats::Text::CONTENT_TYPE }, [Metrics.render]]
+    end
+
     def open_stream(path, body_str, normalizer, flavor:)
       @controller.begin_generation
       succeeded = false
@@ -298,7 +325,7 @@ module SpaceInferenceGateway
       if response.status == 200
         on_close  = -> { @controller.end_generation }
         succeeded = true
-        [200, SSE_HEADERS.dup, StreamBody.new(response, client, normalizer, on_close)]
+        [200, SSE_HEADERS.dup, StreamBody.new(response, client, normalizer, on_close, flavor)]
       else
         @error_relay.relay(response.status, response.read.tap { client.close }, flavor: flavor)
       end
@@ -314,6 +341,21 @@ module SpaceInferenceGateway
       else
         @upstream_client.call("POST", path, body_str)
       end
+    end
+
+    def observe_request(t0, flavor:, streaming:)
+      labels = { flavor: flavor, stream: streaming.to_s }
+      Metrics::REQUESTS.increment(labels: labels)
+      Metrics::REQUEST_DURATION.observe(Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0, labels: labels)
+    end
+
+    def update_model_info_metric
+      alias_name = @controller.active_alias
+      return unless alias_name
+
+      entry  = @controller.registry.resolve(alias_name)
+      engine = entry&.fetch(:engine, "unknown") || "unknown"
+      Metrics.update_model_info(alias_name.to_s, engine.to_s)
     end
 
     def read_body(env)
