@@ -1,0 +1,167 @@
+---
+# ── 1. Homebrew PATH ─────────────────────────────────────────────────────────
+
+- name: space-inference-gateway | ensure /opt/homebrew/bin on PATH in ~/.zprofile
+  ansible.builtin.lineinfile:
+    path: "{{ ansible_env.HOME }}/.zprofile"
+    line: 'export PATH="/opt/homebrew/bin:$PATH"'
+    create: true
+    mode: "0644"
+
+# ── 2. op CLI auth ───────────────────────────────────────────────────────────
+# The operator places a service-account token at ~/.config/secret/op (mode 0600)
+# before the first apply. This task only verifies op is resolvable; it does not
+# create, read, or modify the token file.
+
+- name: space-inference-gateway | verify op cli is available
+  ansible.builtin.command: op --version
+  changed_when: false
+
+# ── 3. mise + Ruby 4.0.5 ─────────────────────────────────────────────────────
+
+- name: space-inference-gateway | install ruby via mise
+  ansible.builtin.command: "{{ mise_bin }} install ruby@{{ mise_ruby_version }}"
+  register: mise_ruby_install
+  changed_when: "'already installed' not in mise_ruby_install.stderr"
+
+- name: space-inference-gateway | set global ruby version via mise
+  ansible.builtin.command: "{{ mise_bin }} use --global ruby@{{ mise_ruby_version }}"
+  changed_when: false
+
+# ── 4. Gateway checkout ───────────────────────────────────────────────────────
+
+- name: space-inference-gateway | ensure ~/src directory exists
+  ansible.builtin.file:
+    path: "{{ ansible_env.HOME }}/src"
+    state: directory
+    mode: "0755"
+
+- name: space-inference-gateway | clone or pull gateway repository
+  ansible.builtin.git:
+    repo: "{{ gateway_repo_url }}"
+    dest: "{{ gateway_src_dir }}"
+    version: main
+    update: true
+
+# ── 5. bundle install guard (LOAD-BEARING — must run before gateway restart) ─
+
+- name: space-inference-gateway | bundle install gateway gems
+  community.general.bundler:
+    state: present
+    chdir: "{{ gateway_src_dir }}"
+    executable: "{{ mise_ruby_bin }}/bundle"
+  environment:
+    PATH: "{{ mise_ruby_bin }}:/opt/homebrew/bin:/usr/bin:/bin"
+
+# ── 6. Gateway launchd KeepAlive agent ───────────────────────────────────────
+
+- name: space-inference-gateway | ensure ~/Library/Logs exists
+  ansible.builtin.file:
+    path: "{{ ansible_env.HOME }}/Library/Logs"
+    state: directory
+    mode: "0755"
+
+- name: space-inference-gateway | template gateway run script
+  ansible.builtin.template:
+    src: run-gateway.sh.j2
+    dest: "{{ gateway_src_dir }}/run-gateway.sh"
+    mode: "0755"
+
+- name: space-inference-gateway | template gateway launchd plist
+  ansible.builtin.template:
+    src: com.slushsystems.space-inference-gateway.plist.j2
+    dest: "{{ ansible_env.HOME }}/Library/LaunchAgents/{{ gateway_label }}.plist"
+    mode: "0644"
+  notify: restart gateway
+
+- name: space-inference-gateway | ensure gateway service is started
+  community.general.launchd:
+    name: "{{ gateway_label }}"
+    state: started
+
+# ── 7. optiq venv (~/.venv-optiq) ────────────────────────────────────────────
+
+- name: space-inference-gateway | install mlx-optiq in optiq venv
+  ansible.builtin.pip:
+    name: "mlx-optiq=={{ mlx_optiq_version }}"
+    virtualenv: "{{ optiq_venv }}"
+    virtualenv_python: "{{ python_bin }}"
+
+# ── 8. MLX venv (~/.venv-vllm-metal) ─────────────────────────────────────────
+# Path matches config/models.yml venv: ~/.venv-vllm-metal/bin/python
+
+- name: space-inference-gateway | install mlx-lm in mlx venv
+  ansible.builtin.pip:
+    name: "mlx-lm=={{ mlx_lm_version }}"
+    virtualenv: "{{ mlx_venv }}"
+    virtualenv_python: "{{ python_bin }}"
+
+# ── 9. HF cache directory ────────────────────────────────────────────────────
+# Model artifacts are moved by manual ops (operator one-time mv from another
+# user's cache). The playbook only ensures the directory exists.
+
+- name: space-inference-gateway | ensure huggingface hub cache directory exists
+  ansible.builtin.file:
+    path: "{{ ansible_env.HOME }}/.cache/huggingface/hub"
+    state: directory
+    mode: "0755"
+
+# ── 10. Caddy (xcaddy build + DO plugin + launchd agent) ─────────────────────
+
+- name: space-inference-gateway | tap caddyserver homebrew tap
+  community.general.homebrew_tap:
+    name: caddyserver/tap
+    state: present
+
+- name: space-inference-gateway | install xcaddy via homebrew
+  community.general.homebrew:
+    name: xcaddy
+    state: present
+
+- name: space-inference-gateway | ensure caddy build directory exists
+  ansible.builtin.file:
+    path: "{{ caddy_build_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: space-inference-gateway | build caddy with digitalocean dns plugin
+  ansible.builtin.command:
+    cmd: xcaddy build --with github.com/caddy-dns/digitalocean
+    chdir: "{{ caddy_build_dir }}"
+    creates: "{{ caddy_build_dir }}/caddy"
+  environment:
+    PATH: /opt/homebrew/bin:/usr/local/go/bin:/usr/bin:/bin
+    HOME: "{{ ansible_env.HOME }}"
+  changed_when: true
+
+- name: space-inference-gateway | ensure caddy config directory exists
+  ansible.builtin.file:
+    path: "{{ caddy_config_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: space-inference-gateway | template Caddyfile
+  ansible.builtin.template:
+    src: Caddyfile.j2
+    dest: "{{ caddy_config_dir }}/Caddyfile"
+    mode: "0644"
+  notify: restart caddy
+
+- name: space-inference-gateway | template caddy run script
+  ansible.builtin.template:
+    src: run-caddy.sh.j2
+    dest: "{{ caddy_config_dir }}/run-caddy.sh"
+    mode: "0755"
+  notify: restart caddy
+
+- name: space-inference-gateway | template caddy launchd plist
+  ansible.builtin.template:
+    src: com.slushsystems.caddy.plist.j2
+    dest: "{{ ansible_env.HOME }}/Library/LaunchAgents/{{ caddy_label }}.plist"
+    mode: "0644"
+  notify: restart caddy
+
+- name: space-inference-gateway | ensure caddy service is started
+  community.general.launchd:
+    name: "{{ caddy_label }}"
+    state: started

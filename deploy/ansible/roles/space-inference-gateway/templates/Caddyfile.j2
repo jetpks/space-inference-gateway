@@ -1,0 +1,13 @@
+{
+	email {{ caddy_email }}
+}
+
+{{ caddy_domain }} {
+	tls {
+		dns digitalocean {env.DIGITAL_OCEAN_API_KEY}
+		resolvers ns1.digitalocean.com ns2.digitalocean.com ns3.digitalocean.com
+		propagation_delay 45s
+		propagation_timeout 5m
+	}
+	reverse_proxy 127.0.0.1:{{ gateway_port }}
+}

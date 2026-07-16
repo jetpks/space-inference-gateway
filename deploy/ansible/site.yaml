@@ -1,0 +1,17 @@
+---
+# Deploy space-inference-gateway on studio.slush.systems (macOS, user-level,
+# no become). Run locally on the studio:
+#
+#   cd ~/src/space-inference-gateway
+#   ansible-playbook -i deploy/ansible/hosts deploy/ansible/site.yaml
+#
+# Or via ansible-pull (runs unattended from the public repo):
+#
+#   ansible-pull -U https://github.com/jetpks/space-inference-gateway.git \
+#     -i deploy/ansible/hosts deploy/ansible/site.yaml
+- name: deploy space-inference-gateway on studio
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  roles:
+    - space-inference-gateway

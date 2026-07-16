@@ -1,0 +1,7 @@
+---
+# Collections required by this playbook. All are present on a standard
+# ansible 14.x install (brew install ansible); included here for portability
+# and explicit documentation of dependencies.
+collections:
+  - ansible.posix
+  - community.general

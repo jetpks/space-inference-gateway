@@ -1,0 +1,32 @@
+---
+# --- Gateway ---
+gateway_repo_url: https://github.com/jetpks/space-inference-gateway.git
+gateway_src_dir: "{{ ansible_env.HOME }}/src/space-inference-gateway"
+gateway_port: 9292
+gateway_label: com.slushsystems.space-inference-gateway
+
+# --- mise / Ruby ---
+mise_bin: /opt/homebrew/bin/mise
+mise_ruby_version: "4.0.5"
+# Derived path; override only if mise installs to a non-default location.
+mise_ruby_bin: "{{ ansible_env.HOME }}/.local/share/mise/installs/ruby/{{ mise_ruby_version }}/bin"
+
+# --- Python venvs ---
+# Names match config/models.yml venv paths — do not rename without updating the app config.
+python_bin: /opt/homebrew/bin/python3.12
+optiq_venv: "{{ ansible_env.HOME }}/.venv-optiq"
+mlx_venv: "{{ ansible_env.HOME }}/.venv-vllm-metal"
+mlx_optiq_version: "0.3.5"
+mlx_lm_version: "0.31.3"
+
+# --- Caddy ---
+caddy_label: com.slushsystems.caddy
+caddy_build_dir: "{{ ansible_env.HOME }}/caddy-build"
+caddy_config_dir: "{{ ansible_env.HOME }}/.config/caddy"
+caddy_domain: studio.slush.systems
+caddy_email: eric@ebj.dev
+# 1Password reference for the DigitalOcean API key (DNS-01 challenge).
+# op must be authenticated via the token file at ~/.config/secret/op (mode 0600,
+# hand-placed by the operator before the first apply — the playbook does not create
+# or read this file). Override in group_vars if the vault/item name differs.
+caddy_do_api_key_ref: "op://ansible/digitalocean-api-key/credential"

@@ -1,0 +1,10 @@
+---
+- name: restart gateway
+  community.general.launchd:
+    name: "{{ gateway_label }}"
+    state: restarted
+
+- name: restart caddy
+  community.general.launchd:
+    name: "{{ caddy_label }}"
+    state: restarted
