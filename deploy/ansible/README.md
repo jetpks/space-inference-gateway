@@ -6,10 +6,12 @@ launchctl workflow documented in `docs/how-to/deploy-on-the-studio.md`.
 
 ## Pre-requisites (operator, one-time)
 
-1. **1Password CLI auth** — place the service-account token at
-   `~/.config/secret/op` (mode 0600). The playbook does not create this file;
-   it verifies `op` is reachable and reads secrets at apply time via
-   `op read 'op://...'`.
+1. **1Password CLI auth** — place a service-account token at
+   `~/.config/secret/op` (mode 0600) as a shell snippet:
+   `export OP_SERVICE_ACCOUNT_TOKEN=ops_...`. `op` does not read this file
+   automatically, so `run-caddy.sh` sources it to load the token before
+   calling `op read 'op://...'`. The playbook does not create or read this
+   file; it only verifies `op` is reachable.
 2. **HF model cache** — model artifacts live in `~/.cache/huggingface/hub`.
    The playbook ensures the directory exists; the operator moves the actual
    model files from the old user's cache (one-time, manual).
@@ -41,7 +43,7 @@ prepends `/opt/homebrew/bin` to PATH for non-interactive SSH, and pins
 | Scope item | Result |
 |---|---|
 | Homebrew PATH | `/opt/homebrew/bin` added to `~/.zprofile` |
-| op CLI | verified on PATH; token file at `~/.config/secret/op` is operator-managed |
+| op CLI | verified on PATH; service-account token sourced at apply time from `~/.config/secret/op` (operator-managed) |
 | mise + Ruby | `ruby@4.0.5` installed and set as global via mise |
 | Gateway checkout | `~/src/space-inference-gateway` cloned/pulled each apply (runtime checkout; the playbook itself runs from the ansible-pull clone) |
 | bundle install | runs before every gateway restart (load-bearing guard) |
