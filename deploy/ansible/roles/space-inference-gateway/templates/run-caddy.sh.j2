@@ -1,0 +1,8 @@
+#!/bin/bash
+# DigitalOcean API key for DNS-01 TLS challenge, read from 1Password at runtime.
+# op must be authenticated via the service-account token at ~/.config/secret/op.
+export DIGITAL_OCEAN_API_KEY="$(op read '{{ caddy_do_api_key_ref }}')"
+export PATH="/opt/homebrew/bin:/usr/bin:/bin"
+exec "{{ caddy_build_dir }}/caddy" run \
+  --config "{{ caddy_config_dir }}/Caddyfile" \
+  --adapter caddyfile

@@ -1,0 +1,13 @@
+#!/bin/bash
+# Reap any orphaned optiq process that may hold :8080 after a supervisor restart.
+# launchd restart can leave the old engine child on :8080, causing the new gateway
+# to return 502 on the first request. BRIEF §7.8 — startup-reap via pkill is the
+# accepted interim; a cleaner in-supervisor reap is a follow-up.
+pkill -f 'optiq.*--port 8080' 2>/dev/null || true
+sleep 1
+
+export PORT={{ gateway_port }}
+RUBYBIN="{{ ansible_env.HOME }}/.local/share/mise/installs/ruby/{{ mise_ruby_version }}/bin"
+export PATH="$RUBYBIN:/opt/homebrew/bin:/usr/bin:/bin"
+cd "{{ gateway_src_dir }}" || exit 1
+exec env -u RUBYOPT bundle exec ruby bin/space-inference-gateway

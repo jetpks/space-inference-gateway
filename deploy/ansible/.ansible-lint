@@ -1,0 +1,23 @@
+# House ansible-lint posture, mirrored from repos/config-mgmt-base/.ansible-lint.
+# We keep ansible-lint's default (production) profile — it catches real defects
+# (idempotency, risky-shell, undefined vars, deprecations) — but opt out of
+# stylistic rules the house style predates and does not follow:
+#
+#   name[casing]        — task/handler names are "<role> | lowercase description".
+#   fqcn[action-core]   — we call the builtin flow keyword bare (`include_tasks:`),
+#                         matching every existing role.
+#   yaml[indentation]   — ansible-lint 26.x yamllint integration enforces 4-space
+#                         list-item indentation; house style uses 2-space for
+#                         top-level loop items (matching config-mgmt-base).
+#   var-naming[no-role-prefix] — established register/var names predate the rule.
+#   role-name           — house uses hyphenated role names (space-inference-gateway);
+#                         the ^[a-z][a-z0-9_]*$ pattern predates this convention.
+#
+# Behavioral rules (no-handler, ignore-errors, risky-file-permissions,
+# package-latest, no-changed-when) stay fatal.
+skip_list:
+  - name[casing]
+  - fqcn[action-core]
+  - yaml[indentation]
+  - var-naming[no-role-prefix]
+  - role-name
