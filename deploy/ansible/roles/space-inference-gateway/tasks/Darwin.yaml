@@ -3,7 +3,7 @@
 
 - name: space-inference-gateway | ensure /opt/homebrew/bin on PATH in ~/.zprofile
   ansible.builtin.lineinfile:
-    path: "{{ ansible_env.HOME }}/.zprofile"
+    path: "{{ ansible_facts.env.HOME }}/.zprofile"
     line: 'export PATH="/opt/homebrew/bin:$PATH"'
     create: true
     mode: "0644"
@@ -32,7 +32,7 @@
 
 - name: space-inference-gateway | ensure ~/src directory exists
   ansible.builtin.file:
-    path: "{{ ansible_env.HOME }}/src"
+    path: "{{ ansible_facts.env.HOME }}/src"
     state: directory
     mode: "0755"
 
@@ -57,7 +57,7 @@
 
 - name: space-inference-gateway | ensure ~/Library/Logs exists
   ansible.builtin.file:
-    path: "{{ ansible_env.HOME }}/Library/Logs"
+    path: "{{ ansible_facts.env.HOME }}/Library/Logs"
     state: directory
     mode: "0755"
 
@@ -67,10 +67,16 @@
     dest: "{{ gateway_src_dir }}/run-gateway.sh"
     mode: "0755"
 
+- name: space-inference-gateway | ensure ~/Library/LaunchAgents exists
+  ansible.builtin.file:
+    path: "{{ ansible_facts.env.HOME }}/Library/LaunchAgents"
+    state: directory
+    mode: "0755"
+
 - name: space-inference-gateway | template gateway launchd plist
   ansible.builtin.template:
     src: com.slushsystems.space-inference-gateway.plist.j2
-    dest: "{{ ansible_env.HOME }}/Library/LaunchAgents/{{ gateway_label }}.plist"
+    dest: "{{ ansible_facts.env.HOME }}/Library/LaunchAgents/{{ gateway_label }}.plist"
     mode: "0644"
   notify: restart gateway
 
@@ -102,21 +108,22 @@
 
 - name: space-inference-gateway | ensure huggingface hub cache directory exists
   ansible.builtin.file:
-    path: "{{ ansible_env.HOME }}/.cache/huggingface/hub"
+    path: "{{ ansible_facts.env.HOME }}/.cache/huggingface/hub"
     state: directory
     mode: "0755"
 
 # ── 10. Caddy (xcaddy build + DO plugin + launchd agent) ─────────────────────
 
-- name: space-inference-gateway | tap caddyserver homebrew tap
-  community.general.homebrew_tap:
-    name: caddyserver/tap
-    state: present
-
-- name: space-inference-gateway | install xcaddy via homebrew
-  community.general.homebrew:
-    name: xcaddy
-    state: present
+# xcaddy is installed via `go install` because the caddyserver homebrew tap is
+# gone (404 on GitHub) and xcaddy is not in homebrew-core. The binary lands in
+# GOPATH/bin (~/go/bin), which is added to PATH for the build task below.
+- name: space-inference-gateway | install xcaddy via go install
+  ansible.builtin.command:
+    cmd: "{{ go_bin }} install github.com/caddyserver/xcaddy/cmd/xcaddy@latest"
+    creates: "{{ xcaddy_bin }}"
+  environment:
+    PATH: /opt/homebrew/bin:/usr/bin:/bin
+    HOME: "{{ ansible_facts.env.HOME }}"
 
 - name: space-inference-gateway | ensure caddy build directory exists
   ansible.builtin.file:
@@ -130,8 +137,8 @@
     chdir: "{{ caddy_build_dir }}"
     creates: "{{ caddy_build_dir }}/caddy"
   environment:
-    PATH: /opt/homebrew/bin:/usr/local/go/bin:/usr/bin:/bin
-    HOME: "{{ ansible_env.HOME }}"
+    PATH: "{{ ansible_facts.env.HOME }}/go/bin:/opt/homebrew/bin:/usr/local/go/bin:/usr/bin:/bin"
+    HOME: "{{ ansible_facts.env.HOME }}"
   changed_when: true
 
 - name: space-inference-gateway | ensure caddy config directory exists
@@ -157,7 +164,7 @@
 - name: space-inference-gateway | template caddy launchd plist
   ansible.builtin.template:
     src: com.slushsystems.caddy.plist.j2
-    dest: "{{ ansible_env.HOME }}/Library/LaunchAgents/{{ caddy_label }}.plist"
+    dest: "{{ ansible_facts.env.HOME }}/Library/LaunchAgents/{{ caddy_label }}.plist"
     mode: "0644"
   notify: restart caddy
 
