@@ -18,18 +18,23 @@ launchctl workflow documented in `docs/how-to/deploy-on-the-studio.md`.
 
 ## How to apply
 
-On the studio, from `~/src/space-inference-gateway`:
+Use the wrapper at `deploy/run.sh`, which invokes `ansible-pull` so the
+playbook runs from a fresh clone rather than the live `~/src/space-inference-gateway`
+checkout it is itself updating (avoids the self-modifying-playbook problem):
 
 ```sh
-ansible-playbook -i deploy/ansible/hosts deploy/ansible/site.yaml
+# from anywhere on the studio (no local checkout needed):
+ssh eric@studio.slush.systems 'bash -s' < deploy/run.sh
+
+# or, after a clone:
+./deploy/run.sh
 ```
 
-Or via ansible-pull (runs unattended; re-applies on every pull):
-
-```sh
-ansible-pull -U https://github.com/jetpks/space-inference-gateway.git \
-  -i deploy/ansible/hosts deploy/ansible/site.yaml
-```
+The wrapper bootstraps a small controller venv (`~/.venv-ansible`) for
+`packaging`/`virtualenv` (Homebrew's pythons are PEP-668 externally-managed),
+prepends `/opt/homebrew/bin` to PATH for non-interactive SSH, and pins
+`ansible_python_interpreter` to that venv. Override the repo with
+`GATEWAY_REPO=…` or pass extra vars with `ANSIBLE_EXTRA=…`.
 
 ## What the playbook manages
 
@@ -38,7 +43,7 @@ ansible-pull -U https://github.com/jetpks/space-inference-gateway.git \
 | Homebrew PATH | `/opt/homebrew/bin` added to `~/.zprofile` |
 | op CLI | verified on PATH; token file at `~/.config/secret/op` is operator-managed |
 | mise + Ruby | `ruby@4.0.5` installed and set as global via mise |
-| Gateway checkout | `~/src/space-inference-gateway` cloned, pulled on re-apply |
+| Gateway checkout | `~/src/space-inference-gateway` cloned/pulled each apply (runtime checkout; the playbook itself runs from the ansible-pull clone) |
 | bundle install | runs before every gateway restart (load-bearing guard) |
 | Gateway launchd agent | `com.slushsystems.space-inference-gateway` on port 9292, KeepAlive |
 | optiq venv | `~/.venv-optiq` with `mlx-optiq` (path matches `config/models.yml`) |

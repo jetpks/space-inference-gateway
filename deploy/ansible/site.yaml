@@ -1,14 +1,17 @@
 ---
 # Deploy space-inference-gateway on studio.slush.systems (macOS, user-level,
-# no become). Run locally on the studio:
+# no become). Apply via the wrapper, which uses ansible-pull so the playbook
+# runs from a fresh clone (not the ~/src/space-inference-gateway checkout it
+# is itself updating — avoids the self-modifying-playbook problem):
 #
-#   cd ~/src/space-inference-gateway
-#   ansible-playbook -i deploy/ansible/hosts deploy/ansible/site.yaml
+#   ssh eric@studio.slush.systems 'bash -s' < deploy/run.sh
 #
-# Or via ansible-pull (runs unattended from the public repo):
+# or locally after a clone:
+#   ./deploy/run.sh
 #
-#   ansible-pull -U https://github.com/jetpks/space-inference-gateway.git \
-#     -i deploy/ansible/hosts deploy/ansible/site.yaml
+# The wrapper bootstraps ~/.venv-ansible (controller interpreter with
+# packaging/virtualenv, since Homebrew pythons are PEP-668 managed) and
+# pins ansible_python_interpreter to it.
 - name: deploy space-inference-gateway on studio
   hosts: localhost
   connection: local
