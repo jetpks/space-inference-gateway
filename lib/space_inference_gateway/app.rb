@@ -43,16 +43,27 @@ module SpaceInferenceGateway
     # `to_enum(:each).next`, which runs #each in a separate Enumerator fiber
     # where Async::Task.current is unavailable. IO.select and Fiber.scheduler
     # work in any fiber on the scheduler's thread.
-    StreamBody = Struct.new(:response, :client, :normalizer, :on_close, :flavor) do
+    StreamBody = Struct.new(:response, :client, :normalizer, :on_close, :flavor, :t0) do
       def each
         read_io, write_io = IO.pipe
+        @read_io  = read_io
+        @write_io = write_io
 
         # Drain the upstream normalizer in a scheduled fiber. Chunks are
         # written to the pipe; closing the write end on exit signals EOF.
+        # An idle-gap timeout mid-stream (upstream silent past
+        # UPSTREAM_IDLE_TIMEOUT) surfaces as IO::TimeoutError here — counted
+        # separately from a downstream-abandon close (plain IOError) so it's
+        # observable in /metrics even though the SSE stream, already 200'd,
+        # can only end silently rather than carry a 5xx.
         Fiber.scheduler.fiber do
           normalizer.stream_to_sse(response.body) { |chunk| write_io.write(chunk) }
+        rescue IO::TimeoutError
+          Metrics::UPSTREAM_ERRORS.increment(labels: { status: "504", flavor: flavor.to_s })
+        rescue StandardError
+          nil
         ensure
-          write_io.close
+          write_io.close unless write_io.closed?
         end
 
         # Read from the pipe with a keepalive timeout. IO.select is
@@ -72,15 +83,26 @@ module SpaceInferenceGateway
       rescue StandardError
         nil
       ensure
-        read_io.close
+        read_io.close unless read_io.closed?
       end
 
+      # Single idempotent teardown: upstream response closed before client (so
+      # client#close's pool-drain wait returns promptly instead of hanging on
+      # the still-checked-out connection), both pipe ends closed, duration
+      # observed, and the generation counter released — exactly once.
       def close
         return if @closed
 
         @closed = true
-        on_close&.call
+        response.close
         client&.close
+        @read_io&.close unless @read_io&.closed?
+        @write_io&.close unless @write_io&.closed?
+        Metrics::REQUEST_DURATION.observe(
+          Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0,
+          labels: { flavor: flavor.to_s, stream: "true" },
+        )
+        on_close&.call
       end
     end
     private_constant :StreamBody
@@ -150,8 +172,8 @@ module SpaceInferenceGateway
       body_str = rewrite_model_for_mlx(body_str, model_alias)
 
       if streaming && @upstream_fn.nil?
-        observe_request(t0, flavor: "oai", streaming: streaming)
-        return open_stream("/v1/chat/completions", body_str, normalizer, flavor: :oai)
+        record_request_accepted(flavor: "oai", streaming: streaming)
+        return open_stream("/v1/chat/completions", body_str, normalizer, flavor: :oai, t0: t0)
       end
 
       result = nil
@@ -193,8 +215,8 @@ module SpaceInferenceGateway
       return handle_ant_mlx(body_str, model_alias, normalizer, streaming) if mlx_engine?(model_alias)
 
       if streaming && @upstream_fn.nil?
-        observe_request(t0, flavor: "ant", streaming: streaming)
-        return open_stream("/v1/messages", body_str, normalizer, flavor: :ant)
+        record_request_accepted(flavor: "ant", streaming: streaming)
+        return open_stream("/v1/messages", body_str, normalizer, flavor: :ant, t0: t0)
       end
 
       result = nil
@@ -220,8 +242,8 @@ module SpaceInferenceGateway
                             stop_tokens: mlx_stop_tokens(model_alias),)
 
       if streaming && @upstream_fn.nil?
-        observe_request(t0, flavor: "ant", streaming: streaming)
-        return open_stream("/v1/chat/completions", oai_body, OaiToAntAdapter.new(normalizer), flavor: :ant)
+        record_request_accepted(flavor: "ant", streaming: streaming)
+        return open_stream("/v1/chat/completions", oai_body, OaiToAntAdapter.new(normalizer), flavor: :ant, t0: t0)
       end
 
       result = nil
@@ -318,17 +340,19 @@ module SpaceInferenceGateway
       [200, { "content-type" => Prometheus::Client::Formats::Text::CONTENT_TYPE }, [Metrics.render]]
     end
 
-    def open_stream(path, body_str, normalizer, flavor:)
+    def open_stream(path, body_str, normalizer, flavor:, t0:)
       @controller.begin_generation
       succeeded = false
       response, client = @upstream_client.open_stream(path, body_str)
       if response.status == 200
         on_close  = -> { @controller.end_generation }
         succeeded = true
-        [200, SSE_HEADERS.dup, StreamBody.new(response, client, normalizer, on_close, flavor)]
+        [200, SSE_HEADERS.dup, StreamBody.new(response, client, normalizer, on_close, flavor, t0)]
       else
         @error_relay.relay(response.status, response.read.tap { client.close }, flavor: flavor)
       end
+    rescue IO::TimeoutError => e
+      @error_relay.relay(504, e.message, flavor: flavor)
     rescue StandardError
       upstream_error(502)
     ensure
@@ -347,6 +371,13 @@ module SpaceInferenceGateway
       labels = { flavor: flavor, stream: streaming.to_s }
       Metrics::REQUESTS.increment(labels: labels)
       Metrics::REQUEST_DURATION.observe(Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0, labels: labels)
+    end
+
+    # Streaming accept-time counter only — duration is observed at stream
+    # teardown (StreamBody#close), not here, since a streaming request's
+    # useful duration is the whole generation, not the ms it took to open it.
+    def record_request_accepted(flavor:, streaming:)
+      Metrics::REQUESTS.increment(labels: { flavor: flavor, stream: streaming.to_s })
     end
 
     def update_model_info_metric
