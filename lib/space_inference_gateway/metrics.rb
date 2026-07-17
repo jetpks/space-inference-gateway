@@ -46,6 +46,11 @@ module SpaceInferenceGateway
       docstring: "Total number of inference child process starts",
     )
 
+    CHILD_ZOMBIE_RESTARTS = REGISTRY.counter(
+      :sig_child_zombie_restarts_total,
+      docstring: "Total number of watchdog-triggered child restarts after consecutive zombie detections",
+    )
+
     SWAP_RESULTS = REGISTRY.counter(
       :sig_model_operation_results_total,
       docstring: "Model load/unload operation results",

@@ -17,10 +17,22 @@ module SpaceInferenceGateway
     # one idle-gap window. Acceptable — the dev clients (pi/CC/opencode) all stream.
     UPSTREAM_IDLE_TIMEOUT = Integer(ENV.fetch("UPSTREAM_IDLE_TIMEOUT", "600"))
 
-    def initialize(base_url:, token: "", idle_timeout: UPSTREAM_IDLE_TIMEOUT)
-      @base_url     = base_url
-      @token        = token
-      @idle_timeout = idle_timeout
+    # Wall-clock bound on waiting for the upstream's response status line +
+    # headers in #open_stream (streaming opens only) — enforced via
+    # Async::Task#with_timeout, independent of the socket-level idle timeout
+    # above. A zombied engine child accepts the TCP connection but its
+    # generation thread has died, so it never writes a response; this bound
+    # catches that quickly instead of waiting out the full idle-gap window.
+    # Once headers arrive, UPSTREAM_IDLE_TIMEOUT resumes governing mid-stream
+    # gaps as before.
+    UPSTREAM_HEADERS_TIMEOUT = Integer(ENV.fetch("UPSTREAM_HEADERS_TIMEOUT", "300"))
+
+    def initialize(base_url:, token: "", idle_timeout: UPSTREAM_IDLE_TIMEOUT,
+                   headers_timeout: UPSTREAM_HEADERS_TIMEOUT)
+      @base_url        = base_url
+      @token           = token
+      @idle_timeout    = idle_timeout
+      @headers_timeout = headers_timeout
     end
 
     # Buffered call — suitable for control-plane and non-stream generations.
@@ -43,7 +55,7 @@ module SpaceInferenceGateway
     def open_stream(path, body_str)
       client   = build_client
       request  = build_request("POST", path, body_str)
-      response = client.call(request)
+      response = Async::Task.current.with_timeout(@headers_timeout) { client.call(request) }
       [response, client]
     rescue StandardError
       client&.close

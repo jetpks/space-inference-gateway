@@ -2,6 +2,7 @@
 
 require "async"
 require "socket"
+require "tmpdir"
 
 FAKE_INF_BINARY = File.expand_path("../support/fake_llama_server", __dir__)
 
@@ -402,6 +403,44 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
           expect(result).to be_success
           expect(supervisor.active_alias).to eq("model-a")
         end
+      end
+    end
+  end
+
+  # ── I04 AC4 — child log location ─────────────────────────────────────────
+
+  describe "child log location (I04 AC4)" do
+    it "defaults to ~/Library/Logs/space-inference-gateway when ENGINE_LOG_DIR is unset" do
+      expect(ENV.fetch("ENGINE_LOG_DIR", nil)).to be_nil
+      default_only_supervisor = SpaceInferenceGateway::InferenceServerSupervisor.new(registry: registry)
+      expect(default_only_supervisor.send(:default_log_dir)).to(
+        eq(File.expand_path("~/Library/Logs/space-inference-gateway")),
+      )
+    end
+
+    it "honors ENGINE_LOG_DIR for the default log_dir, writing real child output there" do
+      Dir.mktmpdir do |custom_dir|
+        ENV["ENGINE_LOG_DIR"] = custom_dir
+        override_supervisor = SpaceInferenceGateway::InferenceServerSupervisor.new(
+          registry: registry,
+          timeouts: SpaceInferenceGateway::InferenceServerSupervisor::Timeouts.new(
+            readiness: 10, stop_grace: 0.5, poll_interval: 0.05,
+          ),
+        )
+
+        Async do |task|
+          task.with_timeout(10) do
+            result = override_supervisor.start("test-model")
+            expect(result).to be_success
+
+            log_path = File.join(custom_dir, "test-model.log")
+            expect(File.exist?(log_path)).to be true
+          end
+        ensure
+          override_supervisor.stop
+        end
+      ensure
+        ENV.delete("ENGINE_LOG_DIR")
       end
     end
   end

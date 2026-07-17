@@ -2,7 +2,6 @@
 
 require "fileutils"
 require "socket"
-require "tmpdir"
 require "uri"
 require "async/semaphore"
 require "async/process/child"
@@ -18,7 +17,7 @@ module SpaceInferenceGateway
     end
 
     def initialize(registry:,
-                   log_dir: File.join(Dir.tmpdir, "space-inference-gateway"),
+                   log_dir: default_log_dir,
                    timeouts: Timeouts.default)
       @registry      = registry
       @log_dir       = log_dir
@@ -193,6 +192,15 @@ module SpaceInferenceGateway
 
     def sanitize(name)
       name.gsub(/[^a-z0-9-]/, "_")
+    end
+
+    # Stable, human-findable default for engine child stdout+stderr (see
+    # #spawn_child), overridable via ENGINE_LOG_DIR — not the ephemeral tmpdir
+    # a crash-forensics session would otherwise have to go hunting through.
+    # A method (not a constant) so it re-reads ENV on every call, like
+    # Timeouts.default above.
+    def default_log_dir
+      File.expand_path(ENV.fetch("ENGINE_LOG_DIR", "~/Library/Logs/space-inference-gateway"))
     end
   end
 end

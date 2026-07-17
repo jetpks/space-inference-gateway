@@ -7,12 +7,20 @@ module SpaceInferenceGateway
   class ModelController
     include Dry::Monads[:result]
 
+    # Consecutive streaming headers-phase timeouts (zero response bytes
+    # received) before restarting the active child — the request-path zombie
+    # watchdog (I04). Any successful stream open (headers received, any
+    # status) resets the count; mid-stream idle timeouts, buffered-path
+    # timeouts, and connection errors never touch it (see App#open_stream).
+    ZOMBIE_RESTART_THRESHOLD = Integer(ENV.fetch("ZOMBIE_RESTART_THRESHOLD", "2"))
+
     attr_reader :registry
 
     def initialize(registry:, supervisor:)
       @registry           = registry
       @supervisor         = supervisor
       @active_generations = 0
+      @zombie_streak      = 0
     end
 
     def active_alias   = @supervisor.active_alias
@@ -91,6 +99,31 @@ module SpaceInferenceGateway
       yield
     ensure
       end_generation
+    end
+
+    # Resets the zombie-timeout streak — called whenever a streaming open
+    # receives response headers, regardless of status code.
+    def note_headers_received
+      @zombie_streak = 0
+    end
+
+    # Counts a streaming headers-phase timeout. At ZOMBIE_RESTART_THRESHOLD
+    # consecutive occurrences, restarts the active child directly through the
+    # supervisor's stop->spawn->readiness machinery (serialized by its own
+    # swap semaphore) — bypassing the :busy guard in #ensure_active above,
+    # since a zombied child dooms any in-flight generations anyway. The
+    # streak resets immediately (before the restart's own await), so
+    # concurrent timeouts racing to the threshold cannot stack restarts. A
+    # no-op if no child is running — the lazy ensure-active path owns that case.
+    def note_headers_timeout
+      return unless @supervisor.running?
+
+      @zombie_streak += 1
+      return if @zombie_streak < ZOMBIE_RESTART_THRESHOLD
+
+      @zombie_streak = 0
+      @supervisor.swap(to: @supervisor.active_alias)
+      Metrics::CHILD_ZOMBIE_RESTARTS.increment
     end
 
     private
