@@ -16,6 +16,15 @@ RSpec.describe "Stream lifecycle (I02 AC2-AC7, AC9)" do
     end
   end
 
+  # ── I04 AC2 — env knob default ──────────────────────────────────────────────
+
+  describe "UpstreamClient::UPSTREAM_HEADERS_TIMEOUT" do
+    it "defaults to 300 (env-overridable via UPSTREAM_HEADERS_TIMEOUT)" do
+      expect(ENV.fetch("UPSTREAM_HEADERS_TIMEOUT", nil)).to be_nil
+      expect(SpaceInferenceGateway::UpstreamClient::UPSTREAM_HEADERS_TIMEOUT).to eq(300)
+    end
+  end
+
   # ── AC4 — buffered (non-stream) idle-gap timeout ────────────────────────────
 
   describe "AC4 — buffered path idle-gap timeout" do
@@ -115,6 +124,98 @@ RSpec.describe "Stream lifecycle (I02 AC2-AC7, AC9)" do
           expect(swap.success?).to be true
 
           # AC7 — timeout observable, distinguishable by status label.
+          expect(
+            SpaceInferenceGateway::Metrics::UPSTREAM_ERRORS.get(labels: { status: "504", flavor: "oai" }),
+          ).to eq(1)
+        ensure
+          client.close
+          proxy_task.stop
+          proxy_bound.close
+          upstream.stop
+        end
+      end
+    end
+  end
+
+  # ── I04 AC2 — headers/idle split ────────────────────────────────────────────
+
+  describe "I04 AC2 — streaming headers-wait bound is distinct from the idle-gap bound" do
+    it "never-responding upstream 504s within the (short) headers timeout, well under a long idle timeout" do
+      @task.with_timeout(5) do
+        SpaceInferenceGateway::Metrics.reset_all
+        upstream = FakeUpstreamServer::RawUpstream.new(@task)
+        upstream.accept { |_sock| @task.sleep(60) } # never responds
+
+        upstream_client = SpaceInferenceGateway::UpstreamClient.new(
+          base_url: upstream.base_url, idle_timeout: 30, headers_timeout: 1,
+        )
+        app = make_app(upstream_client: upstream_client)
+        proxy_port, proxy_task, proxy_bound = boot_proxy(app)
+        client = client_for(proxy_port)
+
+        body = JSON.generate({ model: "diffusiongemma", messages: [], stream: true })
+
+        begin
+          t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+          response = client.post("/v1/chat/completions", [["content-type", "application/json"]], body)
+          response_body = response.read
+          elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0
+
+          expect(response.status).to eq(504)
+          expect(JSON.parse(response_body).dig("error", "message")).to be_a(String)
+          expect(elapsed).to be < 3 # bounded by headers_timeout (1s), not idle_timeout (30s)
+
+          expect(
+            SpaceInferenceGateway::Metrics::UPSTREAM_ERRORS.get(labels: { status: "504", flavor: "oai" }),
+          ).to eq(1)
+        ensure
+          client.close
+          proxy_task.stop
+          proxy_bound.close
+          upstream.stop
+        end
+      end
+    end
+
+    it "headers + one chunk then stall: stream ends only after the (long) idle gap, not the headers bound" do
+      @task.with_timeout(8) do
+        SpaceInferenceGateway::Metrics.reset_all
+        first_event = fixture("oai_s.txt").split(/(?<=\n\n)/).reject(&:empty?).first
+
+        upstream = FakeUpstreamServer::RawUpstream.new(@task)
+        upstream.accept do |sock|
+          sse_headers(sock)
+          http_chunk(sock, first_event)
+          @task.sleep(60) # headers + one chunk arrive, then stall
+        end
+
+        upstream_client = SpaceInferenceGateway::UpstreamClient.new(
+          base_url: upstream.base_url, idle_timeout: 1, headers_timeout: 30,
+        )
+        app = make_app(upstream_client: upstream_client)
+        proxy_port, proxy_task, proxy_bound = boot_proxy(app)
+        client = client_for(proxy_port)
+
+        body = JSON.generate({ model: "diffusiongemma", messages: [], stream: true })
+
+        begin
+          response = client.post("/v1/chat/completions", [["content-type", "application/json"]], body)
+          expect(response.status).to eq(200) # headers arrived promptly, well under headers_timeout
+
+          t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+          first = response.body.read
+          expect(first).to include("data:")
+
+          nil while response.body.read # drain until EOF (drain fiber ends the pipe on IO::TimeoutError)
+          elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0
+
+          expect(elapsed).to be >= 1 # ended after the idle gap, not cut short by headers_timeout
+
+          @task.with_timeout(3) do
+            @task.sleep(0.05) until SpaceInferenceGateway::Metrics::UPSTREAM_ERRORS.get(
+              labels: { status: "504", flavor: "oai" },
+            ) == 1
+          end
           expect(
             SpaceInferenceGateway::Metrics::UPSTREAM_ERRORS.get(labels: { status: "504", flavor: "oai" }),
           ).to eq(1)

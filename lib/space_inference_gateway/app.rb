@@ -344,6 +344,7 @@ module SpaceInferenceGateway
       @controller.begin_generation
       succeeded = false
       response, client = @upstream_client.open_stream(path, body_str)
+      @controller.note_headers_received
       if response.status == 200
         on_close  = -> { @controller.end_generation }
         succeeded = true
@@ -351,7 +352,8 @@ module SpaceInferenceGateway
       else
         @error_relay.relay(response.status, response.read.tap { client.close }, flavor: flavor)
       end
-    rescue IO::TimeoutError => e
+    rescue IO::TimeoutError, Async::TimeoutError => e
+      @controller.note_headers_timeout
       @error_relay.relay(504, e.message, flavor: flavor)
     rescue StandardError
       upstream_error(502)
