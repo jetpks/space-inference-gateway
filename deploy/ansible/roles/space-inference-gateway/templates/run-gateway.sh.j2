@@ -7,7 +7,7 @@ pkill -f 'optiq.*--port 8080' 2>/dev/null || true
 sleep 1
 
 export PORT={{ gateway_port }}
-RUBYBIN="{{ ansible_env.HOME }}/.local/share/mise/installs/ruby/{{ mise_ruby_version }}/bin"
+RUBYBIN="{{ ansible_facts.env.HOME }}/.local/share/mise/installs/ruby/{{ mise_ruby_version }}/bin"
 export PATH="$RUBYBIN:/opt/homebrew/bin:/usr/bin:/bin"
 cd "{{ gateway_src_dir }}" || exit 1
 exec env -u RUBYOPT bundle exec ruby bin/space-inference-gateway

@@ -1,8 +1,19 @@
 #!/bin/bash
 # DigitalOcean API key for DNS-01 TLS challenge, read from 1Password at runtime.
-# op must be authenticated via the service-account token at ~/.config/secret/op.
-export DIGITAL_OCEAN_API_KEY="$(op read '{{ caddy_do_api_key_ref }}')"
+#
+# Auth: the operator places a service-account token at ~/.config/secret/op
+# (mode 0600) as a shell snippet: `export OP_SERVICE_ACCOUNT_TOKEN=ops_...`.
+# `op` does not read that file automatically, so we source it to load the token
+# into the env before calling `op read`.
+#
+# PATH must include /opt/homebrew/bin BEFORE the `op read` call — launchd starts
+# this agent with a minimal PATH (/usr/bin:/bin) where `op` is not resolvable, so
+# exporting the key before fixing PATH silently sets it to empty and Caddy then
+# gets a 401 from the DigitalOcean API with an empty token.
 export PATH="/opt/homebrew/bin:/usr/bin:/bin"
+# shellcheck disable=SC1091
+source "{{ ansible_facts.env.HOME }}/.config/secret/op"
+export DIGITAL_OCEAN_API_KEY="$(op read '{{ caddy_do_api_key_ref }}')"
 exec "{{ caddy_build_dir }}/caddy" run \
   --config "{{ caddy_config_dir }}/Caddyfile" \
   --adapter caddyfile
