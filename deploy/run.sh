@@ -43,7 +43,10 @@ export PATH="/opt/homebrew/bin:$PATH"
 # `ssh ... 'bash -s' < deploy/run.sh`, so there's no file on disk to derive a
 # lock path from $0 — use a fixed path under $HOME instead. The locker's pid
 # is stored inside so a dead previous run's lock is detected and reclaimed
-# rather than wedging deploys forever.
+# rather than wedging deploys forever. Reclaiming a dead lock re-attempts the
+# same guarded `mkdir` used for the fast path, so the only way to own the
+# lock is a `mkdir` call this process itself made succeed; a waiter that
+# loses that race refuses instead of assuming ownership.
 LOCK_DIR="$HOME/.deploy-run.lock"
 LOCK_OWNED=0
 
@@ -69,7 +72,10 @@ acquire_lock() {
 
   echo ">> reclaiming stale lock left by dead pid ${locker_pid:-unknown} ($LOCK_DIR)"
   rm -rf "$LOCK_DIR"
-  mkdir "$LOCK_DIR"
+  if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    echo ">> lost the race to reclaim the stale lock ($LOCK_DIR) to another waiter — refusing to start" >&2
+    exit 1
+  fi
   echo $$ >"$LOCK_DIR/pid"
   LOCK_OWNED=1
 }

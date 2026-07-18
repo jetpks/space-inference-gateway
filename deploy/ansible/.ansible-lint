@@ -15,6 +15,13 @@
 #
 # Behavioral rules (no-handler, ignore-errors, risky-file-permissions,
 # package-latest, no-changed-when) stay fatal.
+#
+# ansible-lint's config-file discovery is CWD-relative, not target-path-relative:
+# it searches upward from the current working directory for `.ansible-lint`, so
+# this file is only found when invoked as `(cd deploy/ansible && ansible-lint)`.
+# Running `ansible-lint deploy/ansible` from elsewhere (e.g. the repo root) does
+# not discover this file, so skip_list resolves empty and every skipped rule
+# above reports as a fatal failure.
 skip_list:
   - name[casing]
   - fqcn[action-core]
