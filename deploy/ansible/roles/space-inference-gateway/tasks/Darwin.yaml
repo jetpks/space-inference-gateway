@@ -21,8 +21,8 @@
 
 - name: space-inference-gateway | install ruby via mise
   ansible.builtin.command: "{{ mise_bin }} install ruby@{{ mise_ruby_version }}"
-  register: mise_ruby_install
-  changed_when: "'already installed' not in mise_ruby_install.stderr"
+  args:
+    creates: "{{ mise_ruby_bin }}/ruby"
 
 - name: space-inference-gateway | set global ruby version via mise
   ansible.builtin.command: "{{ mise_bin }} use --global ruby@{{ mise_ruby_version }}"
@@ -42,6 +42,7 @@
     dest: "{{ gateway_src_dir }}"
     version: main
     update: true
+  notify: restart gateway
 
 # ── 5. bundle install guard (LOAD-BEARING — must run before gateway restart) ─
 
@@ -52,8 +53,28 @@
     executable: "{{ mise_ruby_bin }}/bundle"
   environment:
     PATH: "{{ mise_ruby_bin }}:/opt/homebrew/bin:/usr/bin:/bin"
+  notify: restart gateway
 
-# ── 6. Gateway launchd KeepAlive agent ───────────────────────────────────────
+# ── 6. optiq venv (~/.venv-optiq) ────────────────────────────────────────────
+
+- name: space-inference-gateway | install mlx-optiq in optiq venv
+  ansible.builtin.pip:
+    name: "mlx-optiq=={{ mlx_optiq_version }}"
+    virtualenv: "{{ optiq_venv }}"
+    virtualenv_python: "{{ python_bin }}"
+
+# ── 7. MLX venv (~/.venv-vllm-metal) ─────────────────────────────────────────
+# Path matches config/models.yml venv: ~/.venv-vllm-metal/bin/python
+
+- name: space-inference-gateway | install mlx-lm in mlx venv
+  ansible.builtin.pip:
+    name: "mlx-lm=={{ mlx_lm_version }}"
+    virtualenv: "{{ mlx_venv }}"
+    virtualenv_python: "{{ python_bin }}"
+
+# ── 8. Gateway launchd KeepAlive agent ───────────────────────────────────────
+# Runs after the optiq/mlx venv sections so a first apply has the engine
+# venvs in place before the gateway agent starts.
 
 - name: space-inference-gateway | ensure ~/Library/Logs exists
   ansible.builtin.file:
@@ -84,23 +105,6 @@
   community.general.launchd:
     name: "{{ gateway_label }}"
     state: started
-
-# ── 7. optiq venv (~/.venv-optiq) ────────────────────────────────────────────
-
-- name: space-inference-gateway | install mlx-optiq in optiq venv
-  ansible.builtin.pip:
-    name: "mlx-optiq=={{ mlx_optiq_version }}"
-    virtualenv: "{{ optiq_venv }}"
-    virtualenv_python: "{{ python_bin }}"
-
-# ── 8. MLX venv (~/.venv-vllm-metal) ─────────────────────────────────────────
-# Path matches config/models.yml venv: ~/.venv-vllm-metal/bin/python
-
-- name: space-inference-gateway | install mlx-lm in mlx venv
-  ansible.builtin.pip:
-    name: "mlx-lm=={{ mlx_lm_version }}"
-    virtualenv: "{{ mlx_venv }}"
-    virtualenv_python: "{{ python_bin }}"
 
 # ── 9. HF cache directory ────────────────────────────────────────────────────
 # Model artifacts are moved by manual ops (operator one-time mv from another
@@ -139,7 +143,6 @@
   environment:
     PATH: "{{ ansible_facts.env.HOME }}/go/bin:/opt/homebrew/bin:/usr/local/go/bin:/usr/bin:/bin"
     HOME: "{{ ansible_facts.env.HOME }}"
-  changed_when: true
 
 - name: space-inference-gateway | ensure caddy config directory exists
   ansible.builtin.file:
