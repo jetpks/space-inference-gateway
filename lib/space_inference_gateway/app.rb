@@ -490,7 +490,14 @@ module SpaceInferenceGateway
       ant  = JSON.parse(body_str)
       msgs = []
       msgs << { "role" => "system", "content" => ant["system"] } if ant["system"]
-      (ant["messages"] || []).each { |m| ant_message_to_oai(m, msgs) }
+      # Claude Code 2.1.214+ sends mid-conversation system-role entries inside
+      # messages[]; mlx/optiq reject any system message that isn't first, so
+      # demote them to user (content preserved) — the top-level "system" field
+      # above stays the only leading OAI system message.
+      (ant["messages"] || []).each do |m|
+        m["role"] = "user" if m["role"] == "system"
+        ant_message_to_oai(m, msgs)
+      end
 
       oai = { "model" => model_name, "messages" => msgs }
       oai["tools"]       = ant_tools_to_oai(ant["tools"]) if ant["tools"]

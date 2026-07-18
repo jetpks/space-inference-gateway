@@ -262,6 +262,81 @@ RSpec.describe SpaceInferenceGateway::App do
     end
   end
 
+  # ── I05: mid-conversation system-role demotion (Claude Code 2.1.214+ compat) ──
+  describe "ANT mid-conversation system-role demotion for the optiq engine (I05 AC2)" do
+    let(:forwarded) { [] }
+    let(:upstream_fn) do
+      lambda do |path, body|
+        forwarded << { path: path, body: body }
+        [fixture("oai_ns.json"), 200, {}]
+      end
+    end
+
+    it "demotes a mid-conversation system entry to user, preserving top-level system (AC2a)" do
+      body = JSON.generate({
+                             model: "qwen3-27b-optiq",
+        system: "top-level reminder",
+        messages: [
+          { role: "user", content: "hi" },
+          { role: "system", content: "mid-conversation reminder" },
+        ],
+        max_tokens: 100,
+                           })
+      post "/v1/messages", body, "CONTENT_TYPE" => "application/json"
+      sent = JSON.parse(forwarded.first[:body])
+      expect(sent["messages"].map { |m| m["role"] }).to eq(%w[system user user])
+      expect(sent["messages"]).to eq([
+                                       { "role" => "system", "content" => "top-level reminder" },
+                                       { "role" => "user", "content" => "hi" },
+                                       { "role" => "user", "content" => "mid-conversation reminder" },
+                                     ])
+    end
+
+    it "translates a system-role content-block array exactly as it would in a user message (AC2b)" do
+      body = JSON.generate({
+                             model: "qwen3-27b-optiq",
+        messages: [
+          { role: "user", content: "hi" },
+          { role: "system", content: [{ type: "text", text: "block reminder" }] },
+        ],
+        max_tokens: 100,
+                           })
+      post "/v1/messages", body, "CONTENT_TYPE" => "application/json"
+      sent = JSON.parse(forwarded.first[:body])
+      expect(sent["messages"][1]).to eq({ "role" => "user", "content" => "block reminder" })
+    end
+
+    it "demotes unconditionally with no top-level system field (AC2c)" do
+      body = JSON.generate({
+                             model: "qwen3-27b-optiq",
+        messages: [
+          { role: "system", content: "reminder" },
+          { role: "user", content: "hi" },
+        ],
+        max_tokens: 100,
+                           })
+      post "/v1/messages", body, "CONTENT_TYPE" => "application/json"
+      sent = JSON.parse(forwarded.first[:body])
+      expect(sent["messages"].map { |m| m["role"] }).to eq(%w[user user])
+    end
+
+    it "matches the recorded live-repro shape: [user, system] with no top-level system -> [user, user]" do
+      body = JSON.generate({
+                             model: "qwen3-27b-optiq", max_tokens: 32,
+        messages: [
+          { role: "user", content: "hi" },
+          { role: "system", content: "reminder" },
+        ],
+                           })
+      post "/v1/messages", body, "CONTENT_TYPE" => "application/json"
+      sent = JSON.parse(forwarded.first[:body])
+      expect(sent["messages"]).to eq([
+                                       { "role" => "user", "content" => "hi" },
+                                       { "role" => "user", "content" => "reminder" },
+                                     ])
+    end
+  end
+
   # ── I10: end-to-end streaming tool_use synthesis (AC7) ───────────────────
   describe "ANT streaming tool_use synthesis from an optiq tool_calls SSE stream (I10 AC7)" do
     OPTIQ_TOOL_FIXTURE_PATH = File.expand_path("../fixtures/optiq", __dir__) unless defined?(OPTIQ_TOOL_FIXTURE_PATH)
