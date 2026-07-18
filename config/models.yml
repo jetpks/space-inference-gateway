@@ -65,3 +65,16 @@ models:
     venv: ~/.venv-vllm-metal/bin/python
     decode_concurrency: 32
     prompt_concurrency: 8
+  # MoE 120B/A12B (Nemotron 3 Super, q5). Custom NemotronH architecture —
+  # mlx_lm 0.31.3 ships nemotron_h support. Reasoning model: emits thinking
+  # tags the proxy's parser lifts into the reasoning channel. Registered after
+  # a guided-ops trial 2026-07-18: loaded and served through the TLS edge,
+  # reasoning_content separated, finish_reason stop.
+  nemotron-3-super:
+    engine: mlx
+    model: mlx-community/NVIDIA-Nemotron-3-Super-120B-A12B-5bit
+    port: 8080
+    venv: ~/.venv-vllm-metal/bin/python
+    decode_concurrency: 32
+    prompt_concurrency: 8
+    supports_reasoning: true
