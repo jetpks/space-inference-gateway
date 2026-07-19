@@ -86,7 +86,8 @@ module SpaceInferenceGateway
     # Incremental OAI SSE → Anthropic SSE conversion (mlx engine path).
     # Reads delta[@reasoning_field] for reasoning, delta["content"] for text.
     # Yields ANT-format "event: ...\ndata: ...\n\n" strings.
-    def stream_to_sse_from_oai(upstream_body, &block)
+    # observer (I09): optional GenerationObserver tapping deltas/finish/usage.
+    def stream_to_sse_from_oai(upstream_body, observer: nil, &block)
       state = init_oai_to_ant_state
       buf   = +""
 
@@ -104,7 +105,7 @@ module SpaceInferenceGateway
             data = JSON.parse(raw)
             next if data["type"] == "diffusion_frame"
 
-            process_oai_chunk(data, state, &block)
+            process_oai_chunk(data, state, observer, &block)
           end
         end
       end
@@ -113,7 +114,8 @@ module SpaceInferenceGateway
     # Incremental streaming entry — pulls raw SSE bytes from upstream_body chunk-by-chunk
     # and yields normalized SSE strings as they become available.
     # Byte-identical to normalize_stream_to_sse when output is concatenated.
-    def stream_to_sse(upstream_body)
+    # observer (I09): optional GenerationObserver tapping deltas/finish/usage.
+    def stream_to_sse(upstream_body, observer: nil)
       state = init_stream_state
       buf   = +""
 
@@ -125,7 +127,7 @@ module SpaceInferenceGateway
           ev = parse_sse_block(event_block)
           next unless ev[:data]
 
-          process_event(ev, state)
+          process_event(ev, state, observer)
 
           state[:result].each do |evt|
             yield "event: #{evt[:event]}\ndata: #{JSON.generate(evt[:data])}\n\n"
@@ -144,15 +146,26 @@ module SpaceInferenceGateway
       }
     end
 
-    def process_event(ev, state)
+    def process_event(ev, state, observer = nil)
       case ev[:data]["type"]
       when "message_start"       then handle_message_start(ev, state)
       when "content_block_start" then handle_block_start(ev, state)
-      when "content_block_delta" then handle_block_delta(ev, state)
+      when "content_block_delta" then handle_block_delta(ev, state, observer)
       when "content_block_stop"  then handle_block_stop(state)
-      when "message_delta"       then state[:result] << { event: "message_delta", data: ev[:data] }
-      when "message_stop"        then state[:result] << { event: "message_stop",  data: ev[:data] }
+      when "message_delta"       then handle_message_delta(ev, state, observer)
+      when "message_stop"        then state[:result] << { event: "message_stop", data: ev[:data] }
       end
+    end
+
+    # message_delta carries the authoritative final usage (input_tokens +
+    # output_tokens) and the stop_reason, both upstream-verbatim; message_start's
+    # usage is a zeroed placeholder, so it is intentionally not observed here.
+    def handle_message_delta(ev, state, observer)
+      stop_reason = ev[:data].dig("delta", "stop_reason")
+      observer&.on_finish(stop_reason) if stop_reason
+      usage = ev[:data]["usage"]
+      observer&.on_usage(prompt: usage&.dig("input_tokens"), completion: usage&.dig("output_tokens")) if usage
+      state[:result] << { event: "message_delta", data: ev[:data] }
     end
 
     def handle_message_start(ev, state)
@@ -173,11 +186,15 @@ module SpaceInferenceGateway
       end
     end
 
-    def handle_block_delta(ev, state)
+    def handle_block_delta(ev, state, observer = nil)
       delta = ev[:data]["delta"]
       case delta&.fetch("type", nil)
-      when "thinking_delta" then state[:thinking_buffer] << delta["thinking"].to_s if state[:in_thinking]
-      when "text_delta"     then state[:text_buffer] << delta["text"].to_s if state[:in_text]
+      when "thinking_delta"
+        observer&.on_delta(:reasoning)
+        state[:thinking_buffer] << delta["thinking"].to_s if state[:in_thinking]
+      when "text_delta"
+        observer&.on_delta(:content)
+        state[:text_buffer] << delta["text"].to_s if state[:in_text]
       end
     end
 
@@ -381,8 +398,12 @@ module SpaceInferenceGateway
       }
     end
 
-    def process_oai_chunk(data, state, &block)
+    def process_oai_chunk(data, state, observer = nil, &block)
       state[:id] ||= data["id"]
+      if data["usage"]
+        observer&.on_usage(prompt: data.dig("usage", "prompt_tokens"),
+                           completion: data.dig("usage", "completion_tokens"),)
+      end
 
       choice = (data["choices"] || []).first
       return unless choice
@@ -390,18 +411,20 @@ module SpaceInferenceGateway
       delta = choice["delta"] || {}
       emit_oai_message_start(state, block) unless state[:started]
 
-      emit_oai_reasoning_or_content_delta(state, delta, block)
-      emit_oai_tool_call_deltas(state, delta["tool_calls"], block) if delta["tool_calls"]
-      emit_oai_finish(state, choice["finish_reason"], block) if choice["finish_reason"]
+      emit_oai_reasoning_or_content_delta(state, delta, block, observer)
+      emit_oai_tool_call_deltas(state, delta["tool_calls"], block, observer) if delta["tool_calls"]
+      emit_oai_finish(state, choice["finish_reason"], block, observer) if choice["finish_reason"]
     end
 
-    def emit_oai_reasoning_or_content_delta(state, delta, block)
+    def emit_oai_reasoning_or_content_delta(state, delta, block, observer = nil)
       reasoning_text = delta.key?(@reasoning_field) ? delta[@reasoning_field] : nil
       content_text   = delta.key?("content") ? delta["content"] : nil
 
       if !reasoning_text.nil?
+        observer&.on_delta(:reasoning)
         emit_oai_reasoning_delta(state, reasoning_text, block)
       elsif !content_text.nil?
+        observer&.on_delta(:content)
         emit_oai_content_delta(state, content_text, block)
       end
     end
@@ -462,7 +485,8 @@ module SpaceInferenceGateway
     # (content_block_start); every delta carrying function.arguments — whole or
     # fragmented — is relayed as its own input_json_delta. Any open reasoning/text
     # block is closed first (block sequencing: text-then-tool_use is the common case).
-    def emit_oai_tool_call_deltas(state, tool_calls, block)
+    def emit_oai_tool_call_deltas(state, tool_calls, block, observer = nil)
+      observer&.on_delta(:tool_args)
       close_oai_text_blocks(state, block)
 
       tool_calls.each do |tc|
@@ -504,7 +528,11 @@ module SpaceInferenceGateway
                })
     end
 
-    def emit_oai_finish(state, finish_reason, block)
+    # AC5: records the raw OAI finish_reason verbatim (not the ant-mapped
+    # stop_reason) — the upstream protocol here is always OAI, regardless of
+    # this generation's client-facing (ant) flavor.
+    def emit_oai_finish(state, finish_reason, block, observer = nil)
+      observer&.on_finish(finish_reason)
       stop_reason = oai_finish_to_ant(finish_reason)
       close_oai_text_blocks(state, block)
       state[:tool_calls].each_value do |entry|

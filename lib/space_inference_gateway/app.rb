@@ -2,6 +2,7 @@
 
 require "json"
 require_relative "metrics"
+require_relative "generation_observer"
 require_relative "oai_normalizer"
 require_relative "ant_normalizer"
 require_relative "model_registry"
@@ -43,7 +44,7 @@ module SpaceInferenceGateway
     # `to_enum(:each).next`, which runs #each in a separate Enumerator fiber
     # where Async::Task.current is unavailable. IO.select and Fiber.scheduler
     # work in any fiber on the scheduler's thread.
-    StreamBody = Struct.new(:response, :client, :normalizer, :on_close, :flavor, :t0) do
+    StreamBody = Struct.new(:response, :client, :normalizer, :on_close, :flavor, :t0, :observer) do
       def each
         read_io, write_io = IO.pipe
         @read_io  = read_io
@@ -57,7 +58,7 @@ module SpaceInferenceGateway
         # observable in /metrics even though the SSE stream, already 200'd,
         # can only end silently rather than carry a 5xx.
         Fiber.scheduler.fiber do
-          normalizer.stream_to_sse(response.body) { |chunk| write_io.write(chunk) }
+          normalizer.stream_to_sse(response.body, observer: observer) { |chunk| write_io.write(chunk) }
         rescue IO::TimeoutError
           Metrics::UPSTREAM_ERRORS.increment(labels: { status: "504", flavor: flavor.to_s })
         rescue StandardError
@@ -102,6 +103,7 @@ module SpaceInferenceGateway
           Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0,
           labels: { flavor: flavor.to_s, stream: "true" },
         )
+        observer&.close
         on_close&.call
       end
     end
@@ -110,8 +112,8 @@ module SpaceInferenceGateway
     # Adapter: makes AntNormalizer#stream_to_sse_from_oai duck-type as stream_to_sse
     # so it can be dropped into StreamBody for the mlx ANT streaming path.
     OaiToAntAdapter = Struct.new(:normalizer) do
-      def stream_to_sse(body, &block)
-        normalizer.stream_to_sse_from_oai(body, &block)
+      def stream_to_sse(body, observer: nil, &block)
+        normalizer.stream_to_sse_from_oai(body, observer: observer, &block)
       end
     end
     private_constant :OaiToAntAdapter
@@ -183,7 +185,9 @@ module SpaceInferenceGateway
                    if streaming
                      [200, SSE_HEADERS.dup, [normalizer.normalize_stream_to_sse(body_up)]]
                    else
-                     [200, JSON_HEADERS.dup, [JSON.generate(normalizer.normalize(JSON.parse(body_up)))]]
+                     parsed = JSON.parse(body_up)
+                     record_oai_usage_and_stop(parsed, flavor: "oai")
+                     [200, JSON_HEADERS.dup, [JSON.generate(normalizer.normalize(parsed))]]
                    end
                  else
                    @error_relay.relay(status, body_up, flavor: :oai)
@@ -226,7 +230,9 @@ module SpaceInferenceGateway
                    if streaming
                      [200, SSE_HEADERS.dup, [normalizer.normalize_stream_to_sse(body_up)]]
                    else
-                     [200, JSON_HEADERS.dup, [JSON.generate(normalizer.normalize(JSON.parse(body_up)))]]
+                     parsed = JSON.parse(body_up)
+                     record_ant_usage_and_stop(parsed, flavor: "ant")
+                     [200, JSON_HEADERS.dup, [JSON.generate(normalizer.normalize(parsed))]]
                    end
                  else
                    @error_relay.relay(status, body_up, flavor: :ant)
@@ -255,7 +261,9 @@ module SpaceInferenceGateway
                      normalizer.stream_to_sse_from_oai(Enumerator.new { |y| y << body_up }) { |s| sse << s }
                      [200, SSE_HEADERS.dup, [sse]]
                    else
-                     [200, JSON_HEADERS.dup, [JSON.generate(normalizer.normalize_oai(JSON.parse(body_up)))]]
+                     parsed = JSON.parse(body_up)
+                     record_oai_usage_and_stop(parsed, flavor: "ant")
+                     [200, JSON_HEADERS.dup, [JSON.generate(normalizer.normalize_oai(parsed))]]
                    end
                  else
                    @error_relay.relay(status, body_up, flavor: :ant)
@@ -346,9 +354,10 @@ module SpaceInferenceGateway
       response, client = @upstream_client.open_stream(path, body_str)
       @controller.note_headers_received
       if response.status == 200
+        observer  = GenerationObserver.new(flavor: flavor, t0: t0)
         on_close  = -> { @controller.end_generation }
         succeeded = true
-        [200, SSE_HEADERS.dup, StreamBody.new(response, client, normalizer, on_close, flavor, t0)]
+        [200, SSE_HEADERS.dup, StreamBody.new(response, client, normalizer, on_close, flavor, t0, observer)]
       else
         @error_relay.relay(response.status, response.read.tap { client.close }, flavor: flavor)
       end
@@ -380,6 +389,29 @@ module SpaceInferenceGateway
     # useful duration is the whole generation, not the ms it took to open it.
     def record_request_accepted(flavor:, streaming:)
       Metrics::REQUESTS.increment(labels: { flavor: flavor, stream: streaming.to_s })
+    end
+
+    # Non-stream OAI-upstream usage/stop recording (AC3): usage.prompt_tokens/
+    # completion_tokens and choices[0].finish_reason, both upstream-verbatim.
+    def record_oai_usage_and_stop(parsed, flavor:)
+      record_usage(parsed["usage"], prompt_key: "prompt_tokens", completion_key: "completion_tokens", flavor: flavor)
+      finish = parsed.dig("choices", 0, "finish_reason")
+      Metrics::GENERATION_STOPS.increment(labels: { flavor: flavor, stop_reason: finish.to_s }) if finish
+    end
+
+    # Non-stream ANT-native usage/stop recording (AC3): usage.input_tokens/
+    # output_tokens and stop_reason, both upstream-verbatim.
+    def record_ant_usage_and_stop(parsed, flavor:)
+      record_usage(parsed["usage"], prompt_key: "input_tokens", completion_key: "output_tokens", flavor: flavor)
+      stop = parsed["stop_reason"]
+      Metrics::GENERATION_STOPS.increment(labels: { flavor: flavor, stop_reason: stop.to_s }) if stop
+    end
+
+    def record_usage(usage, prompt_key:, completion_key:, flavor:)
+      return unless usage.is_a?(Hash)
+
+      Metrics::USAGE_TOKENS.increment(by: usage[prompt_key].to_i, labels: { flavor: flavor, kind: "prompt" })
+      Metrics::USAGE_TOKENS.increment(by: usage[completion_key].to_i, labels: { flavor: flavor, kind: "completion" })
     end
 
     def update_model_info_metric
