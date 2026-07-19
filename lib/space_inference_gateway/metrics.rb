@@ -5,7 +5,7 @@ require "prometheus/client/formats/text"
 require "prometheus/client/data_stores/single_threaded"
 
 module SpaceInferenceGateway
-  module Metrics
+  module Metrics # rubocop:disable Metrics/ModuleLength
     # SingleThreaded store: no mutex overhead, fiber-safe under async Ruby.
     # The gateway is single-threaded (one Falcon reactor, cooperative fibers);
     # metric increments do not await so no concurrent access is possible.
@@ -73,6 +73,41 @@ module SpaceInferenceGateway
       :sig_keepalive_comments_total,
       docstring: "SSE keepalive comments emitted during upstream silence",
       labels: %i[flavor],
+    )
+
+    GENERATION_PHASE = REGISTRY.gauge(
+      :sig_generation_phase,
+      docstring: "Streaming generations currently in each phase (streaming only)",
+      labels: %i[phase],
+    )
+    GENERATION_PHASE.set(0, labels: { phase: "prefill" })
+    GENERATION_PHASE.set(0, labels: { phase: "decode" })
+
+    STREAM_DELTAS = REGISTRY.counter(
+      :sig_stream_deltas_total,
+      docstring: "Streamed delta events by channel; delta approximates a token " \
+                 "for the token-by-token mlx/optiq upstreams",
+      labels: %i[flavor channel],
+    )
+
+    TIME_TO_FIRST_TOKEN = REGISTRY.histogram(
+      :sig_time_to_first_token_seconds,
+      docstring: "Time from stream open to the first observed delta (prefill duration)",
+      labels: %i[flavor],
+      buckets: [0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 600],
+    )
+
+    USAGE_TOKENS = REGISTRY.counter(
+      :sig_usage_tokens_total,
+      docstring: "Authoritative upstream-reported token usage; never fabricated " \
+                 "(streaming contributes nothing when the upstream omits usage)",
+      labels: %i[flavor kind],
+    )
+
+    GENERATION_STOPS = REGISTRY.counter(
+      :sig_generation_stops_total,
+      docstring: "Generation end-of-output events by the upstream's verbatim stop/finish reason",
+      labels: %i[flavor stop_reason],
     )
 
     def self.render
