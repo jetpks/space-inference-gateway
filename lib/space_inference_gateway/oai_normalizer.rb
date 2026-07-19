@@ -70,7 +70,8 @@ module SpaceInferenceGateway
     # Incremental streaming entry — pulls raw SSE bytes from upstream_body chunk-by-chunk
     # and yields normalized SSE strings as they become available.
     # Byte-identical to normalize_stream_to_sse when output is concatenated.
-    def stream_to_sse(upstream_body)
+    # observer (I09): optional GenerationObserver tapping deltas/finish/usage.
+    def stream_to_sse(upstream_body, observer: nil)
       parser    = @supports_reasoning ? ReasoningParser.new : nil
       canonical = nil
       created   = nil
@@ -81,7 +82,7 @@ module SpaceInferenceGateway
 
         while (idx = buf.index("\n\n"))
           buf.slice!(0, idx + 2).each_line do |line|
-            canonical, created, chunks = normalize_sse_line(line, canonical, created, parser)
+            canonical, created, chunks = normalize_sse_line(line, canonical, created, parser, observer)
             chunks.each { |chunk| yield "data: #{JSON.generate(chunk)}\n\n" }
           end
         end
@@ -148,7 +149,7 @@ module SpaceInferenceGateway
       }
     end
 
-    def normalize_sse_line(line, canonical, created, parser)
+    def normalize_sse_line(line, canonical, created, parser, observer = nil)
       stripped = line.strip
       return [canonical, created, []] unless stripped.start_with?("data:")
 
@@ -160,7 +161,7 @@ module SpaceInferenceGateway
 
       canonical ||= data["id"]
       created   ||= data["created"]
-      [canonical, created, emit_chunks(data, canonical, created, parser)]
+      [canonical, created, emit_chunks(data, canonical, created, parser, observer)]
     end
 
     def parse_sse_data(text)
@@ -181,19 +182,28 @@ module SpaceInferenceGateway
       }
     end
 
-    def emit_chunks(data, canonical, created, parser)
+    def emit_chunks(data, canonical, created, parser, observer = nil)
       base = base_chunk(canonical, created)
-      (data["choices"] || []).flat_map { |c| emit_choice(c, base, canonical, created, parser) }
+      if data["usage"]
+        observer&.on_usage(prompt: data.dig("usage", "prompt_tokens"),
+                           completion: data.dig("usage", "completion_tokens"),)
+      end
+      (data["choices"] || []).flat_map { |c| emit_choice(c, base, [canonical, created], parser, observer) }
     end
 
-    def emit_choice(choice, base, canonical, created, parser)
+    def emit_choice(choice, base, ids, parser, observer = nil)
+      canonical, created = ids
       delta  = choice["delta"] || {}
       result = []
 
+      observer&.on_finish(choice["finish_reason"]) if choice["finish_reason"]
+
       if delta.key?(@reasoning_field)
+        observer&.on_delta(:reasoning)
         flush_into(result, parser, canonical, created, choice["index"])
         result.concat(emit_reasoning_delta(choice, base))
       elsif delta.key?("content")
+        observer&.on_delta(:content)
         result.concat(emit_content_delta(choice, base, canonical, created, parser))
       elsif choice["finish_reason"]
         flush_into(result, parser, canonical, created, choice["index"])
@@ -205,6 +215,7 @@ module SpaceInferenceGateway
       # mlx emits tool_calls in their own chunk (alongside content or
       # finish_reason); pass them through verbatim so the client can execute.
       if delta.key?("tool_calls")
+        observer&.on_delta(:tool_args)
         flush_into(result, parser, canonical, created, choice["index"])
         result << base.merge("choices" => [{ "index" => choice["index"],
                                              "delta" => { "tool_calls" => delta["tool_calls"] }, }])
