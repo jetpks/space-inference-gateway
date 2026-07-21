@@ -53,6 +53,17 @@ prepends `/opt/homebrew/bin` to PATH for non-interactive SSH, and pins
 | HF cache dir | `~/.cache/huggingface/hub` created, ownership set |
 | Caddy | xcaddy build with DO plugin → `~/caddy-build/caddy`; `com.slushsystems.caddy` launchd agent on :443 |
 
+## Caddy vhost routing
+
+`Caddyfile.j2` path-routes `studio.slush.systems`: `/v1/* /metrics` goes to
+the gateway (`reverse_proxy` with `flush_interval -1` so streaming completions
+aren't buffered), and everything else falls through to
+`import {{ caddy_config_dir }}/caddy.d/*.caddy` — a glob import that is a
+no-op until another role drops a `*.caddy` snippet (e.g. a catch-all `handle`
+for a separate app) into `~/.config/caddy/caddy.d/`. The playbook ensures
+that directory exists so the import always has a home, even before any
+snippet is present.
+
 ## Secrets
 
 No secret values are committed. The DigitalOcean API key for Caddy's DNS-01
