@@ -9,5 +9,11 @@
 		propagation_delay 45s
 		propagation_timeout 5m
 	}
-	reverse_proxy 127.0.0.1:{{ gateway_port }}
+	@api path /v1/* /metrics
+	handle @api {
+		reverse_proxy 127.0.0.1:{{ gateway_port }} {
+			flush_interval -1
+		}
+	}
+	import {{ caddy_config_dir }}/caddy.d/*.caddy
 }
