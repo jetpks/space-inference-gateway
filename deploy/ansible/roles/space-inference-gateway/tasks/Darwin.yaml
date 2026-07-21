@@ -150,6 +150,12 @@
     state: directory
     mode: "0755"
 
+- name: space-inference-gateway | ensure caddy.d import directory exists
+  ansible.builtin.file:
+    path: "{{ caddy_config_dir }}/caddy.d"
+    state: directory
+    mode: "0755"
+
 - name: space-inference-gateway | template Caddyfile
   ansible.builtin.template:
     src: Caddyfile.j2
