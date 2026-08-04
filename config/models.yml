@@ -65,6 +65,22 @@ models:
     venv: ~/.venv-vllm-metal/bin/python
     decode_concurrency: 32
     prompt_concurrency: 8
+  # Qwen3.6 35B A3B (model_type qwen3_5_moe — same arch family as the 3.5
+  # MoE above, runs on the pinned mlx_lm 0.31.3).
+  qwen3.6-35b-a3b-4bit:
+    engine: mlx
+    model: mlx-community/Qwen3.6-35B-A3B-4bit
+    port: 8080
+    venv: ~/.venv-vllm-metal/bin/python
+    decode_concurrency: 32
+    prompt_concurrency: 8
+  qwen3.6-35b-a3b-8bit:
+    engine: mlx
+    model: mlx-community/Qwen3.6-35B-A3B-8bit
+    port: 8080
+    venv: ~/.venv-vllm-metal/bin/python
+    decode_concurrency: 32
+    prompt_concurrency: 8
   # MoE 120B/A12B (Nemotron 3 Super, q5). Custom NemotronH architecture —
   # mlx_lm 0.31.3 ships nemotron_h support. Reasoning model: emits thinking
   # tags the proxy's parser lifts into the reasoning channel. Registered after
