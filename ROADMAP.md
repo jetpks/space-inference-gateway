@@ -43,21 +43,43 @@ directory and launcher references, and update the launchd plist label/path to
 match. (Until then, the deployed launcher works only because the old binary
 name still exists in the rsync'd copy.)
 
+## ✅ DONE (2026-08-05): single-flight swap + wedge-proof supervision (I01)
+
+Closed the swap TOCTOU and the undetectable-zombie wedge, both diagnosed live
+on the deployed Mac Studio instance:
+
+- `ModelController`'s active/busy decision, the engine transition, and the
+  generation reservation are now atomic (one `Async::Semaphore(1)` gate) —
+  concurrent same-alias requests coalesce onto a single transition, and the
+  cross-alias 409-busy guard is now race-free (a generation is counted before
+  any concurrent swap decision can observe a zero count).
+- `InferenceServerSupervisor#stop` always clears tracked state (even for an
+  already-dead child), so an externally-crashed engine is observed and the
+  next request respawns cleanly. Kill is verified (TERM→KILL, bounded waits)
+  and the port is confirmed released before a successor spawns, closing the
+  "corpse holds the port, `running?` sticks false forever" wedge.
+- The zombie watchdog (I04) now feeds from the buffered (non-stream) request
+  path too, not just streaming headers-timeouts — an eval workload (always
+  non-streaming) now recovers instead of wedging.
+- **Startup orphan-reap belongs in the supervisor** (below) is done: the
+  supervisor reaps any pre-existing listener on the configured engine port
+  itself (via `lsof`, engine-agnostic), once per port per process lifetime.
+  The launcher's `optiq`-only `pkill` in `run-gateway.sh.j2` is removed.
+- **TOCTOU between `ensure_active_if_known` and `begin_generation`** (below)
+  is done: the reservation now happens atomically as part of the swap
+  decision itself.
+- `bin/space-inference-gateway` now traps SIGTERM/SIGINT and tears down the
+  engine child before exit, so a gateway restart no longer orphans it.
+- Per-model readiness budgets (`readiness_timeout:` in `config/models.yml`)
+  replace the flat 120s budget for the ≥100B entries.
+
 ## Smaller carry-forwards
 
 These are tracked from the build and are non-blocking:
 
-- **Startup orphan-reap belongs in the supervisor.** `run-proxy.sh` currently
-  `pkill`s a stray `llama-server --port 8080` before launch. A startup reap
-  inside `LlamaServerSupervisor` (kill anything already bound to the target
-  port) would make the gem self-sufficient and drop the launcher's hard-coded
-  port.
 - **Shared fixture-path constant.** Both normalizer specs define a top-level
   `LLAMACPP_FIXTURE_PATH`, producing a harmless "already initialized constant"
   warning in the combined suite. Hoist to one shared spec helper.
 - **Anthropic stream stop-dispatch ignores event `index`.** Correct for the
   current 2-block (thinking + text) shape; revisit if `llama-server` ever emits
   more than two content blocks.
-- **TOCTOU between `ensure_active_if_known` and `begin_generation`.** Two
-  concurrent first-requests can both pass the busy-guard. Single-user in
-  practice; tighten if the gateway grows real concurrency.

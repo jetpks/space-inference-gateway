@@ -13,10 +13,28 @@ app      = SpaceInferenceGateway::App.new
 # body and must not sit in front of this API.
 server   = Falcon::Server.new(Falcon::Server.middleware(app, cache: false), endpoint)
 
+# Explicit SIGTERM/SIGINT handling (AC7) — Falcon/Async installs its own
+# SIGINT handling that does not reliably raise Interrupt here, so both are
+# trapped the same way rather than relying on Ruby's default SIGINT action.
+# Two things had to move out of the natural
+# `Async do ... rescue Interrupt ... end` shape:
+#   - the Interrupt raised on the main thread can land inside
+#     Async::Scheduler's own run_loop rather than the task body, escaping a
+#     rescue/ensure scoped to the block entirely — caught one level up
+#     instead, around the Async(...) call.
+#   - app.shutdown needs its own live Async task context (Async::Task.current
+#     inside the supervisor's stop sequence) — the original reactor is
+#     already gone by the time the rescue above runs, so it gets a fresh one.
+Signal.trap("TERM") { Thread.main.raise(Interrupt) }
+Signal.trap("INT")  { Thread.main.raise(Interrupt) }
+at_exit { Async { app.shutdown }.wait }
+
 puts "space-inference-gateway listening on http://localhost:#{port}"
 
-Async do
-  server.run.wait
+begin
+  Async do
+    server.run.wait
+  end
 rescue Interrupt
   # graceful shutdown
 end
