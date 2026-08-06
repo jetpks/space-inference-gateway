@@ -341,6 +341,109 @@ RSpec.describe "Model Control Plane (I05 — Supervisor Backend)" do
     end
   end
 
+  # ── AC1 (I09) — single-flight swap ───────────────────────────────────────────
+
+  describe "AC1 (I09) — single-flight swap: concurrent same-alias requests coalesce" do
+    it "N concurrent requests for a not-yet-active alias produce exactly one transition and no 502s" do
+      Async do |task|
+        task.with_timeout(30) do
+          SpaceInferenceGateway::Metrics.reset_all
+          proxy_port, proxy_task, proxy_bound = boot_proxy(app)
+          clients = Array.new(5) { http_client(proxy_port) }
+
+          begin
+            body = JSON.generate({ model: "model-a", messages: [{ role: "user", content: "hi" }] })
+            responses = clients.map do |c|
+              task.async { c.post("/v1/chat/completions", [["content-type", "application/json"]], body) }
+            end.map(&:wait)
+
+            statuses = responses.map(&:status)
+            responses.each(&:read)
+
+            # The original defect: N concurrent requests each observing "not
+            # active" would each run a serial stop->start, SIGTERMing the
+            # engine serving the others' in-flight generations — surfacing as
+            # 502 to all but the last. Fixed: exactly one transition (one
+            # CHILD_STARTS), every request served by its result, no 502s.
+            expect(statuses).to all(eq(200))
+            expect(SpaceInferenceGateway::Metrics::CHILD_STARTS.get).to eq(1)
+            expect(supervisor.active_alias).to eq("model-a")
+          ensure
+            clients.each(&:close)
+            proxy_task.stop
+            proxy_bound.close
+          end
+        end
+      end
+    end
+  end
+
+  # ── AC2 (I09) — cross-alias busy refusal is race-free ────────────────────────
+
+  describe "AC2 (I09) — cross-alias busy refusal is race-free" do
+    it "a concurrent different-alias request is refused busy once the in-flight swap reserves its " \
+       "generation, and never kills the engine it raced" do
+      Async do |task|
+        task.with_timeout(15) do
+          r1 = r2 = nil
+          t1 = task.async { r1 = controller.ensure_active_if_known("model-a") }
+          task.yield # let t1 start its swap before t2 is admitted
+          t2 = task.async { r2 = controller.ensure_active("model-b") }
+
+          t1.wait
+          t2.wait
+
+          # The defect this closes: t2, admitted while t1's generation hadn't
+          # been counted yet, would see a zero count and proceed to kill
+          # model-a out from under t1. Fixed: the decision + transition +
+          # reservation are atomic, so t2 can only run after t1's reservation
+          # is visible.
+          expect(r1).to be_success
+          expect(r2).to be_failure
+          expect(r2.failure).to eq(:busy)
+          expect(supervisor.active_alias).to eq("model-a")
+          expect(supervisor.running?).to be true
+        end
+      end
+    end
+  end
+
+  # ── AC1 (I02) — no reservation outlives its request ──────────────────────────
+
+  describe "AC1 (I02) — a raise in per-request prep after reservation does not leak the count" do
+    it "OAI: ill-shaped messages body 500s, then a cross-alias ensure_active still succeeds" do
+      Async do |task|
+        task.with_timeout(15) do
+          controller.ensure_active("model-a")
+
+          resp = call_app(app, "POST", "/v1/chat/completions",
+                          JSON.generate({ "model" => "model-a", "messages" => [5] }),)
+          expect(resp.status).to eq(500)
+
+          swap_result = controller.ensure_active("model-b")
+          expect(swap_result).to be_success
+          expect(supervisor.active_alias).to eq("model-b")
+        end
+      end
+    end
+
+    it "ANT: ill-shaped messages body on an mlx alias 500s, then a cross-alias ensure_active still succeeds" do
+      Async do |task|
+        task.with_timeout(15) do
+          controller.ensure_active("model-a")
+
+          resp = call_app(app, "POST", "/v1/messages",
+                          JSON.generate({ "model" => "model-a", "messages" => [5] }),)
+          expect(resp.status).to eq(500)
+
+          swap_result = controller.ensure_active("model-b")
+          expect(swap_result).to be_success
+          expect(supervisor.active_alias).to eq("model-b")
+        end
+      end
+    end
+  end
+
   # ── AC6 — Explicit endpoints, schema-valid ───────────────────────────────────
 
   describe "AC6 — explicit endpoints schema-valid with real backend" do
@@ -374,6 +477,20 @@ RSpec.describe "Model Control Plane (I05 — Supervisor Backend)" do
 
           parsed = JSON.parse(resp.body)
           expect(SpaceInferenceGateway::Schemas::UNLOAD_RESPONSE.call(parsed)).to be_success
+        end
+      end
+    end
+
+    it "POST /v1/unload with an empty body succeeds (AC8) instead of 500ing" do
+      Async do |task|
+        task.with_timeout(20) do
+          controller.ensure_active("model-a")
+
+          resp = call_app(app, "POST", "/v1/unload", nil)
+
+          expect(resp.status).to eq(200)
+          expect(supervisor.running?).to be false
+          expect(JSON.parse(resp.body)["status"]).to eq("unloaded")
         end
       end
     end

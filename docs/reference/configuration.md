@@ -29,6 +29,8 @@ models:
     binary:      <path>     # optional; ~ expanded; overrides LLAMA_SERVER_BINARY
     extra_args:  [<str>…]   # optional; appended verbatim
     supports_reasoning: <bool>   # optional; default true
+    readiness_timeout: <seconds> # optional; per-model readiness budget, default
+                                  # (Timeouts.default.readiness, 120s) when unset
 ```
 
 - `gguf` and `binary` are the **only** keys with `~` expansion (`PATH_KEYS`) —
@@ -59,15 +61,21 @@ shape and the whole reasoning pipeline is bypassed.
 
 `LlamaServerSupervisor::Timeouts` (a `Data` value, `Timeouts.default`):
 
-| Field           | Default | Meaning                                                        |
-|-----------------|---------|----------------------------------------------------------------|
-| `readiness`     | 120 s   | Max wait for the child's `/health` to return 200 before `504`. |
-| `stop_grace`    | 5 s     | Grace after `TERM` before escalating to `KILL`.                |
-| `poll_interval` | 0.5 s   | `/health` poll cadence during readiness.                       |
+| Field           | Default        | Meaning                                                        |
+|-----------------|----------------|----------------------------------------------------------------|
+| `readiness`     | 120 s          | Default max wait for the child's `/health` to return 200 before `504` — overridable per model via `readiness_timeout:` in `config/models.yml`. |
+| `stop_grace`    | 5 s            | Grace after `TERM` before escalating to `KILL`.                |
+| `poll_interval` | 0.5 s          | `/health` poll cadence during readiness.                       |
+| `kill_grace`    | `stop_grace`   | Grace after `KILL` (and while confirming the port is released) before giving up. |
+| `probe_timeout` | 5 s            | Connect+read bound on a single `/health` or port-liveness check — no probe can block indefinitely. |
 
 Not env-configurable; override by constructing the supervisor with a custom
 `Timeouts` (used in tests). Child logs are written to
 `$TMPDIR/space-inference-gateway/<alias>.log`.
+
+On its first spawn to a given port, the supervisor reaps any pre-existing
+listener there (via `lsof`, engine-agnostic) — covers a prior gateway
+process's orphaned engine child after a restart.
 
 ## Process / file layout
 

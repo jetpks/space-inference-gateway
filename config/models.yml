@@ -58,6 +58,9 @@ models:
     venv: ~/.venv-vllm-metal/bin/python
     decode_concurrency: 32
     prompt_concurrency: 8
+    # ~122B params — the default 120s readiness budget kills a legitimately
+    # loading model of this size before it's had a chance to come up.
+    readiness_timeout: 300
   qwen3-35b-a3b:
     engine: mlx
     model: mlx-community/Qwen3.5-35B-A3B-4bit
@@ -94,3 +97,5 @@ models:
     decode_concurrency: 32
     prompt_concurrency: 8
     supports_reasoning: true
+    # ~120B params — see qwen3-122b-a10b's readiness_timeout comment above.
+    readiness_timeout: 300
