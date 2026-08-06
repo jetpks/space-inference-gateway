@@ -1,22 +1,23 @@
 # How-to: connect Claude Code and opencode
 
-Point your clients at the deployed gateway. This is laptop-side work. It assumes
-the gateway is [deployed behind Caddy](deploy-on-the-studio.md) at
-`https://inference.example.com`.
+Point your clients at the deployed gateway. This is laptop-side work. It
+assumes the gateway is [deployed behind Caddy](deploy-on-the-studio.md) at
+`https://studio.slush.systems`.
 
 ## Why a loopback shim (the one-paragraph version)
 
 macOS's Local Network privacy gate blocks signed CLI binaries (`claude`,
-`opencode`) from connecting to a **private LAN IP** — and the studio resolves to
-one. The block keys on the destination IP and on the binary's identity, so no
-hostname or TLS trick gets `claude` itself onto the LAN. The escape: **loopback
-is exempt**, and **Apple's `/usr/bin/python3` is exempt** from the LAN gate. So
-the clients talk plaintext to `127.0.0.1`, and a tiny Python forwarder running
-under the system interpreter carries the bytes over TLS to the studio. Full
-reasoning in the [architecture explanation](explanation/architecture.md#the-tcc-gate).
+`opencode`) from connecting to a **private LAN IP** — and the studio resolves
+to one. The block keys on the destination IP and on the binary's identity, so
+no hostname or TLS trick gets `claude` itself onto the LAN. The escape:
+**loopback is exempt**, and **Apple's `/usr/bin/python3` is exempt** from the
+LAN gate. So the clients talk plaintext to `127.0.0.1`, and a tiny Python
+forwarder running under the system interpreter carries the bytes over TLS to
+the studio. Full reasoning in the
+[architecture explanation](../explanation/architecture.md#the-tcc-gate).
 
 ```
-claude / opencode → 127.0.0.1:3001 → forward_tls.py ─TLS→ inference.example.com:443 → Caddy → gateway
+claude / opencode → 127.0.0.1:3001 → forward_tls.py ─TLS→ studio.slush.systems:443 → Caddy → gateway
 ```
 
 ## 1. Install the loopback TLS shim
@@ -24,7 +25,11 @@ claude / opencode → 127.0.0.1:3001 → forward_tls.py ─TLS→ inference.exam
 `forward_tls.py` is an HTTP-aware, stdlib-only async forwarder. It frames each
 request/response (Content-Length / chunked / read-until-close), keeps the
 connection alive, streams SSE, and **rewrites the request `Host:` header** to
-`inference.example.com` (Caddy needs it — see the deploy pitfalls).
+`studio.slush.systems` (Caddy needs it — see the deploy pitfalls).
+
+> The script is not yet vendored in this repo (a
+> [roadmap](../../ROADMAP.md) item) — copy it from your existing install or
+> from wherever you keep it.
 
 Install it where the launcher expects it:
 
@@ -37,7 +42,7 @@ It takes `<listen-port> <upstream-host> <upstream-port>` and must be run with
 the system Python:
 
 ```sh
-/usr/bin/python3 ~/.config/claude-local-proxy/forward_tls.py 3001 inference.example.com 443
+/usr/bin/python3 ~/.config/claude-local-proxy/forward_tls.py 3001 studio.slush.systems 443
 ```
 
 You won't normally run it by hand — the fish functions below start it on demand.
@@ -56,8 +61,8 @@ function ensure-local-proxy --description 'Ensure the loopback->studio TLS forwa
     set -l proxy_log /Users/eric/.config/claude-local-proxy/proxy.log
     set -l listen 3001
     if not nc -z 127.0.0.1 $listen 2>/dev/null
-        echo "ensure-local-proxy: starting 127.0.0.1:$listen -> tls://inference.example.com:443" >&2
-        nohup /usr/bin/python3 $proxy_py $listen inference.example.com 443 >>$proxy_log 2>&1 &
+        echo "ensure-local-proxy: starting 127.0.0.1:$listen -> tls://studio.slush.systems:443" >&2
+        nohup /usr/bin/python3 $proxy_py $listen studio.slush.systems 443 >>$proxy_log 2>&1 &
         disown
         for x in 1 2 3 4 5 6
             nc -z 127.0.0.1 $listen 2>/dev/null; and break
@@ -67,8 +72,8 @@ function ensure-local-proxy --description 'Ensure the loopback->studio TLS forwa
 end
 ```
 
-**`claude-local.fish`** — runs Claude Code against the gateway's native
-Anthropic surface:
+**`claude-local.fish`** — runs Claude Code against the gateway's Anthropic
+surface:
 
 ```fish
 function claude-local --description 'Run Claude Code against the local inference gateway'
@@ -81,7 +86,7 @@ end
 ```
 
 The API key is a dummy — the VLAN plus TLS is the security boundary, not a
-bearer token (see [non-goals](explanation/architecture.md)).
+bearer token (see [non-goals](../explanation/architecture.md#non-goals-deliberately-out-of-scope)).
 
 **`opencode-local.fish`** — runs opencode (which reads its base URL from
 `opencode.jsonc`) with the shim guaranteed up:
@@ -108,10 +113,11 @@ opencode reads its provider base URL from config, not the environment. In your
 }
 ```
 
-opencode then hits `127.0.0.1:3001/v1/chat/completions`, which the shim carries
-to the studio. Use whatever model id you've registered (e.g.
-`qwen3-35b-a3b`) — unknown ids are served by the running/default model anyway
-(see the [HTTP API reference](../reference/http-api.md#model-resolution)).
+opencode then hits `127.0.0.1:3001/v1/chat/completions`, which the shim
+carries to the studio. Use whatever alias you've registered (e.g.
+`qwen3-27b-optiq`, the current default, or `deepseek-r1-70b`) — unknown ids
+are served by the running/default model anyway (see the
+[HTTP API reference](../reference/http-api.md#model-resolution)).
 
 ## 4. Use it
 
@@ -121,8 +127,10 @@ claude-local -p "What is 17 times 23?"        # one-shot
 opencode-local                                # opencode on local inference
 ```
 
-Reasoning shows up separated (Claude Code renders the `thinking` blocks; opencode
-shows `reasoning_content` deltas), with no client-side parse errors.
+Reasoning shows up separated (Claude Code renders the `thinking` blocks;
+opencode shows `reasoning_content` deltas), with no client-side parse errors.
+Claude Code's pre-flight `count_tokens` call is answered by the gateway too —
+no "model may not exist" refusals.
 
 ## Troubleshooting
 
@@ -134,5 +142,5 @@ shows `reasoning_content` deltas), with no client-side parse errors.
   (pointed `ANTHROPIC_BASE_URL` at the studio directly). It must point at
   `127.0.0.1:3001`; only `/usr/bin/python3` may cross the LAN gate.
 - **TLS/cert errors.** Check the cert at the edge:
-  `curl -sv https://inference.example.com/v1/models`. If the cert is bad, look at
-  `~/Library/Logs/caddy.log` on the studio (ACME/DNS-01).
+  `curl -sv https://studio.slush.systems/v1/models`. If the cert is bad, look
+  at `~/Library/Logs/caddy.log` on the studio (ACME/DNS-01).

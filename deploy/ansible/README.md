@@ -1,8 +1,9 @@
 # deploy/ansible
 
 Ansible playbook to deploy and keep the gateway alive on `studio.slush.systems`
-(macOS, user-level, no root/become). Replaces the retired rsync + manual
-launchctl workflow documented in `docs/how-to/deploy-on-the-studio.md`.
+(macOS, user-level, no root/become). Replaced the retired rsync + manual
+launchctl workflow; the operator-facing guide is
+[`docs/how-to/deploy-on-the-studio.md`](../../docs/how-to/deploy-on-the-studio.md).
 
 ## Pre-requisites (operator, one-time)
 

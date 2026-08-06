@@ -1,127 +1,193 @@
-# Tutorial: your first end-to-end request
+# Tutorial: your first end-to-end run
 
-By the end of this you will have the gateway running on one machine, serving a
-real model, answering both an OpenAI-flavored and an Anthropic-flavored request
-with reasoning separated into its own channel. No Caddy, no TLS, no loopback
-shim yet — just the gateway and a `llama-server`, talking over plain HTTP on
-localhost. That is the smallest thing that proves the whole idea.
-
-This is a learning exercise. For production deployment see the
-[deploy how-to](how-to/deploy-on-the-studio.md); for the security model behind
-the loopback shim see the [architecture explanation](explanation/architecture.md).
+By the end of this page you will have the gateway running locally, supervising
+a real `mlx_lm.server`, and answering both OpenAI-flavor and Anthropic-flavor
+requests — including separated reasoning. Everything happens on one machine;
+no Caddy, no shim, no deploy.
 
 ## What you need
 
-- A machine with a GPU/enough RAM to run a small reasoning model.
-- Ruby ≥ 3.3 with Bundler.
-- A `llama-server` binary and a `.gguf` model file. If you don't have these yet,
-  the [install-dependencies how-to](how-to/install-dependencies.md) walks
-  through `brew install llama.cpp` and fetching a model.
+- An Apple-silicon Mac with enough free disk and RAM for a real model (the
+  demo model below is a ~20 GB download and wants ~24 GB of memory headroom).
+- Ruby ≥ 3.3 (`mise use -g ruby@4.0.5` matches production — see
+  [install dependencies](how-to/install-dependencies.md)).
+- A Python 3.12 venv with mlx-lm at the path the registry expects:
 
-We'll use a small reasoning model so the `<think>`/reasoning separation is
-visible. Any chat model that emits reasoning works; substitute paths freely.
+  ```sh
+  /opt/homebrew/bin/python3.12 -m venv ~/.venv-vllm-metal
+  ~/.venv-vllm-metal/bin/pip install 'mlx-lm==0.31.3'
+  ```
 
-## 1. Get the gateway
+  The odd venv name is historical; `config/models.yml` points at it, so keep
+  it (or edit the registry's `venv:` keys to match yours).
+
+## 1. Install and prove the code works
 
 ```sh
-cd space-inference-gateway
 bundle install
-bundle exec rspec        # sanity: the suite should be green
+bundle exec rspec        # the whole suite runs against fake upstreams — no model needed
+bundle exec rubocop
 ```
 
-## 2. Tell it about your model
+## 2. Meet the model registry
 
-The gateway reads `config/models.yml` — a registry mapping a friendly **alias**
-to a concrete gguf path and launch arguments. Edit it to point at your model:
+Open [`config/models.yml`](../config/models.yml). Each entry maps a friendly
+**alias** (what clients put in the request's `model` field) to an engine launch
+recipe:
 
 ```yaml
-default: my-model
-
-models:
-  my-model:
-    gguf: ~/models/your-model.gguf      # ~ is expanded for you
-    port: 8080                          # the llama-server child port
-    ctx: 8192                           # context window (per the note below)
-    parallel: 1                         # concurrent slots; per-slot ctx = ctx / parallel
-    offload: fit                        # "fit" → --fit on; "ngl" → -ngl -1; omit for neither
-    binary: ~/.local/bin/llama-server   # optional; omit to use $LLAMA_SERVER_BINARY or PATH
+qwen3-35b-a3b:
+  engine: mlx                                # which child to spawn
+  model: mlx-community/Qwen3.5-35B-A3B-4bit  # HF repo id, passed to --model
+  port: 8080                                 # child's listen port
+  venv: ~/.venv-vllm-metal/bin/python        # interpreter that runs mlx_lm.server
+  decode_concurrency: 32
+  prompt_concurrency: 8
 ```
 
-> The gateway **spawns `llama-server` itself** — you do not start it. It builds
-> the command line from this entry (always adding `--jinja`, which is what makes
-> reasoning come back on its own channel).
+We'll use `qwen3-35b-a3b` — a 35B MoE (3B active) that's a reasonable size for
+a first run. The full key reference is in
+[configuration](reference/configuration.md).
 
-## 3. Start the gateway
+## 3. Pre-fetch the model
+
+The engine downloads the model from Hugging Face on first launch — but the
+supervisor only waits **120 seconds** (the default readiness budget; big
+models raise it via `readiness_timeout:`) for the child to become healthy,
+and a 20 GB download won't finish inside that window. Fetch it ahead of time with
+the venv's own CLI:
+
+```sh
+~/.venv-vllm-metal/bin/huggingface-cli download mlx-community/Qwen3.5-35B-A3B-4bit
+```
+
+(If you skip this, the first `load` will 504 with `Model load timed out` while
+the download continues in the background; retrying after it finishes works,
+but pre-fetching is kinder.)
+
+## 4. Boot the gateway
 
 ```sh
 PORT=3001 bundle exec ruby bin/space-inference-gateway
-# space-inference-gateway listening on http://localhost:3001
 ```
 
-It is now listening, but no model is loaded yet — the gateway loads lazily on
-the first request (or you can preload; see step 6).
+You'll see `space-inference-gateway listening on http://localhost:3001`. No
+engine is running yet — children spawn lazily, on the first request or an
+explicit load.
 
-## 4. Make an OpenAI-flavored request
-
-In another terminal:
+## 5. Look around the control plane
 
 ```sh
-curl -s http://localhost:3001/v1/chat/completions \
+curl -s http://localhost:3001/v1/models | jq
+```
+
+Every registry alias is listed. Now load the model explicitly (this is also
+what you'd do in production to take the cold start off the first request):
+
+```sh
+curl -s -X POST http://localhost:3001/v1/load \
+  -H 'content-type: application/json' \
+  -d '{"model":"qwen3-35b-a3b"}' | jq
+```
+
+This blocks while the supervisor spawns `mlx_lm.server` and polls its
+`/health` endpoint, then returns
+`{"status":"loaded","model_path":"mlx-community/Qwen3.5-35B-A3B-4bit"}`.
+Watch the child's own logs in another terminal if you're curious:
+
+```sh
+tail -f ~/Library/Logs/space-inference-gateway/qwen3-35b-a3b.log
+```
+
+`GET /v1/load-progress` reports `"phase":"ready"` once it's up.
+
+## 6. First generation — OpenAI flavor
+
+```sh
+curl -s -X POST http://localhost:3001/v1/chat/completions \
   -H 'content-type: application/json' \
   -d '{
-        "model": "my-model",
-        "messages": [{"role":"user","content":"What is 17 times 23? Think it through."}]
-      }' | jq
+    "model": "qwen3-35b-a3b",
+    "messages": [{"role": "user", "content": "What is 17 times 23?"}],
+    "max_tokens": 512
+  }' | jq
 ```
 
-The **first** call blocks while the gateway spawns `llama-server` and waits for
-its `/health` to go green (cold start can take 10–30s). Subsequent calls are
-fast. In the response, note:
+Note the shape of `choices[0].message`: the model's chain-of-thought is in
+`reasoning_content`, the answer alone is in `content`. Nothing non-standard
+survives — the response validates against a strict OpenAI schema.
 
-- `choices[0].message.content` — the clean answer, **no `<think>` tags**;
-- `choices[0].message.reasoning_content` — the model's reasoning, lifted out;
-- `model` — your alias, not the gguf path;
-- `usage` — exactly three integer keys, no upstream `timings`.
-
-## 5. Make an Anthropic-flavored request
-
-Same model, same server, different shape:
+## 7. Streaming
 
 ```sh
-curl -s http://localhost:3001/v1/messages \
+curl -sN -X POST http://localhost:3001/v1/chat/completions \
   -H 'content-type: application/json' \
   -d '{
-        "model": "my-model",
-        "max_tokens": 512,
-        "messages": [{"role":"user","content":"What is 17 times 23? Think it through."}]
-      }' | jq
+    "model": "qwen3-35b-a3b",
+    "messages": [{"role": "user", "content": "Count to five."}],
+    "stream": true, "max_tokens": 256
+  }'
 ```
 
-Here the reasoning comes back as a `thinking` content block alongside the `text`
-block — the native Anthropic shape Claude Code expects — with no `signature`
-field.
+SSE chunks stream out with `reasoning_content` deltas first, then `content`
+deltas, then a `finish_reason` chunk and `data: [DONE]`. If the engine goes
+quiet for 45 s (long prompts spend a while in prefill), you'll see
+`: keepalive` comment lines — SSE-legal, ignored by client SDKs, and the
+reason idle HTTP timers don't kill long generations.
 
-## 6. Drive the model lifecycle explicitly (optional)
+## 8. Same model, Anthropic flavor
 
 ```sh
-curl -s http://localhost:3001/v1/models | jq          # list known aliases
-curl -s -XPOST http://localhost:3001/v1/load    -d '{"model":"my-model"}' | jq   # preload
-curl -s http://localhost:3001/v1/load-progress | jq   # readiness phase
-curl -s -XPOST http://localhost:3001/v1/unload  -d '{}' | jq                     # stop the child
+curl -s -X POST http://localhost:3001/v1/messages \
+  -H 'content-type: application/json' \
+  -d '{
+    "model": "qwen3-35b-a3b",
+    "messages": [{"role": "user", "content": "What is 17 times 23?"}],
+    "max_tokens": 512
+  }' | jq
 ```
 
-## 7. Try streaming
+Here's the trick worth understanding: **the engine never saw an Anthropic
+request**. mlx and optiq speak OpenAI HTTP only, so the gateway translated
+your Anthropic request into an OpenAI one, and synthesized a conformant
+Anthropic response — `thinking` block, `text` block, mapped `stop_reason` —
+from the OpenAI reply. Claude Code also calls
+`POST /v1/messages/count_tokens` before sending; try it:
 
-Add `"stream": true` to either request and watch SSE arrive incrementally —
-`reasoning_content` deltas then `content` deltas (OpenAI), or `thinking_delta`
-then `text_delta` events (Anthropic), ending with `data: [DONE]` on the OpenAI
-side.
+```sh
+curl -s -X POST http://localhost:3001/v1/messages/count_tokens \
+  -H 'content-type: application/json' \
+  -d '{"model":"x","messages":[{"role":"user","content":"hello there"}]}' | jq
+```
 
-## What you just proved
+It's a deliberate chars/4 estimate — good enough for the client's
+context-window accounting.
 
-One `llama-server`, supervised by the gateway, served two API dialects with
-reasoning cleanly separated and schemas conformant. That is the entire mission
-in miniature. To make it reachable from another machine securely, add the
-[TLS edge and loopback shim](how-to/deploy-on-the-studio.md). To understand why
-that shim has to exist at all, read the
-[architecture explanation](explanation/architecture.md).
+## 9. Peek at the telemetry
+
+```sh
+curl -s http://localhost:3001/metrics | grep -E '^sig_' | head -20
+```
+
+Requests, child PID/RSS, generation phases, token usage — the whole
+[metrics surface](reference/metrics.md), no setup required.
+
+## 10. Clean up
+
+```sh
+curl -s -X POST http://localhost:3001/v1/unload -H 'content-type: application/json' -d '{}' | jq
+```
+
+The supervisor TERMs (then KILLs, if needed) the engine's process group.
+Ctrl-C the gateway; nothing is left running.
+
+## What you just saw
+
+One supervised engine child served two API dialects, with reasoning separated
+and schemas enforced, plus a control plane for loading and swapping models.
+That's the whole idea. From here:
+
+- Wire up your real clients: [connect clients](how-to/connect-clients.md).
+- Put it behind TLS under launchd: [deploy on the studio](how-to/deploy-on-the-studio.md).
+- Register your own models: [add & tune models](how-to/add-and-tune-models.md).
+- Understand why it's shaped this way: [architecture](explanation/architecture.md).

@@ -1,98 +1,130 @@
-# How-to: add a model and tune the context window
+# How-to: add and tune models
 
-Everything model-related lives in one file: `config/models.yml`, the **registry**
-that maps a friendly alias to a concrete gguf and `llama-server` launch args.
-The gateway builds the `llama-server` command line from a registry entry; you
-never write that command line yourself.
+Register a new model, pick the right engine flags, and roll it out. The
+registry is [`config/models.yml`](../../config/models.yml); the alias key is
+what clients pass in the request's `model` field, what `GET /v1/models`
+lists, and what responses echo back. The full key schema lives in the
+[configuration reference](../reference/configuration.md#the-model-registry).
 
-## Add a model
-
-Add an entry under `models:`. The alias (the key) is what clients pass as
-`model`, what `GET /v1/models` lists, and what the responses echo back.
+## Add an mlx model
 
 ```yaml
-default: qwen3-35b-a3b
-
 models:
-  qwen3-35b-a3b:
-    gguf: ~/.cache/huggingface/hub/models--unsloth--Qwen3.6-35B-A3B-MTP-GGUF/snapshots/<sha>/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
+  my-new-model:
+    engine: mlx
+    model: mlx-community/Some-Model-4bit      # HF repo id, passed to --model verbatim
     port: 8080
-    ctx: 524288
-    parallel: 2
-    offload: fit
-    binary: ~/.unsloth/llama.cpp/llama-server
-
-  my-other-model:
-    gguf: ~/models/other.gguf
-    port: 8081
-    ctx: 32768
-    parallel: 1
+    venv: ~/.venv-vllm-metal/bin/python       # the interpreter that runs mlx_lm.server
+    decode_concurrency: 32
+    prompt_concurrency: 8
 ```
 
-Field reference:
+Then decide two things:
 
-| Key          | Meaning                                                                 |
-|--------------|------------------------------------------------------------------------|
-| `gguf`       | Path to the model file. `~` is expanded and made absolute.             |
-| `port`       | Localhost port the `llama-server` child listens on.                     |
-| `ctx`        | Total context (KV) across all slots → `-c`. `0`/omitted → `-c 0`.       |
-| `parallel`   | Concurrent slots → `--parallel`. **Per-slot context = `ctx / parallel`.** |
-| `offload`    | `fit` → `--fit on`; `ngl` → `-ngl -1`; omit → neither.                  |
-| `binary`     | Optional per-model `llama-server` path (`~` expanded). Falls back to `$LLAMA_SERVER_BINARY`, then `llama-server` on `PATH`. |
-| `extra_args` | Optional array appended verbatim to the command line.                   |
-| `supports_reasoning` | Set `false` to disable reasoning separation for a non-reasoning model (default: enabled). |
+**1. Does it reason?** If the model emits `<think>…</think>` (DeepSeek-R1
+distills, Nemotron, most "reasoning" finetunes), leave `supports_reasoning`
+unset (defaults on) — the gateway lifts the tags onto the proper reasoning
+channel. If it's a plain instruct model whose chat template emits content
+only (e.g. `hermes-4-70b`), set `supports_reasoning: false` to keep the
+normalizer in passthrough; otherwise a literal `<think>` in ordinary output
+would be misclassified as reasoning.
 
-Every spawn always gets `--flash-attn on`, `--no-context-shift`, and **`--jinja`**
-(applies the model's chat template so reasoning comes back on its own channel —
-the gateway's normalization depends on it). The full assembled command line is
-documented in the [configuration reference](../reference/configuration.md#how-the-command-line-is-built).
+**2. Does its tokenizer hit the mlx eos-stop bug?** mlx_lm 0.31.3 has a bug
+where the `eos_token_id`-based stop doesn't fire for some models — observed
+with Llama-3.3-tokenizer models (`hermes-4-70b`, `deepseek-r1-70b`), which
+generate straight past `<|eot_id|>`. String-based stop detection is
+unaffected, so inject the eos token as an explicit stop sequence:
 
-After editing the file, restart the gateway (locally: stop/start; on the studio:
-`launchctl kickstart -k …` — see [deploy](deploy-on-the-studio.md)). To switch
-the live model without editing config, just send a request with a different
-registered `model` (lazy auto-swap) or `POST /v1/load`.
+```yaml
+    stop_tokens:
+      - <|eot_id|>
+```
 
-## Tune the context window
+The gateway merges `stop_tokens` into every request's `stop` field
+(de-duplicated) for that model. If a new model runs past where it should
+stop, check its tokenizer's eos token and add it here.
 
-The two knobs are `ctx` (total KV across slots) and `parallel` (slots).
-**Per-request context = `ctx / parallel`.** KV memory scales with total `ctx`.
-The per-slot maximum is the model's trained window (`n_ctx_train`).
+## Add an optiq model
 
-For the reference Qwen3.6-35B-A3B (trained window 262144), values tried during
-bring-up:
+```yaml
+models:
+  my-optiq-model:
+    engine: optiq
+    model: mlx-community/Some-Model-OptiQ-4bit
+    port: 8080
+    venv: ~/.venv-optiq/bin/optiq             # NB: the optiq BINARY, not a python
+    mtp: true                                  # multi-token prediction
+    mtp_depth: 2
+    max_concurrent: 8
+```
 
-| `ctx`    | `parallel` | per-slot | Outcome                                                      |
-|----------|------------|----------|-------------------------------------------------------------|
-| 8192     | 2          | 4096     | ❌ Claude Code's ~25k-token prompt overflowed → 502         |
-| 32768    | 1          | 32768    | ✅ loads; single slot                                        |
-| 262144   | 4          | 65536    | ✅ four 64k slots                                            |
-| **524288** | **2**    | **262144** | ✅ **production** — two slots, each the full trained window |
+Note the `venv` asymmetry: for mlx it's a Python interpreter (the supervisor
+runs `<venv> -m mlx_lm.server …`); for optiq it's the optiq binary itself
+(`<venv> serve …`). The supervisor always adds `--no-auth` for optiq.
 
-The production setting (`524288 / 2`) gives every request the model's full 262k
-window with two concurrent. Measured live: child RSS ≈ 31.6 GB (this MoE has
-aggressive GQA, ≈ 27 KB/token KV), box at ~39 GB free.
+## Know the model-field semantics per engine
 
-To change it:
+- **mlx validates the request's `model` field** against what it loaded — and
+  tries to *fetch unknown names from Hugging Face*. So the gateway rewrites
+  the field to the entry's HF repo id before forwarding; your alias never
+  reaches the engine.
+- **optiq's single-model mode accepts any value** — the field is a label, no
+  rewrite needed.
+
+Either way clients keep using the alias; this is engine plumbing, documented
+so a surprising engine log line ("fetching model …") makes sense.
+
+## Tune concurrency
+
+There is no context-window knob (that was a llama.cpp-era concept); the
+levers are request concurrency:
+
+| Engine | Key | Meaning |
+|---|---|---|
+| mlx | `decode_concurrency` | parallel decode slots |
+| mlx | `prompt_concurrency` | parallel prefill slots |
+| mlx | `prompt_cache_size` | prompt-cache entries |
+| optiq | `max_concurrent` | total concurrent requests |
+| optiq | `mtp`, `mtp_depth` | multi-token prediction (speculative decode depth) |
+| both | `readiness_timeout` | per-model readiness budget in seconds (default 120) — set it for ≥100B models a flat budget would kill mid-load; the 120B entries use 300 |
+| both | `extra_args` | verbatim extra argv for anything else |
+
+Current practice from the registry: big MoE models run 32/8
+(`qwen3-122b-a10b`, `nemotron-3-super`); dense 70Bs run 8/4.
+
+## Roll it out
 
 ```sh
-# edit config/models.yml ctx + parallel, then on the studio:
-rsync ...                                  # sync the change to the box (see deploy)
-launchctl kickstart -k gui/$(id -u)/com.example.local-inference-proxy
+bundle exec rspec                      # the registry is loaded by the suite; typos surface here
+git commit -am 'registry: add my-new-model'
+git push
+ssh eric@studio.slush.systems 'bash -s' < deploy/run.sh
 ```
 
-Rules of thumb:
-
-- **Clients see "context overflow" / 502** → per-slot too small. Raise `ctx` or
-  lower `parallel`.
-- **OOM / won't load** → total `ctx` too large for VRAM/RAM. Lower `ctx`.
-- **Need more concurrency** → raise `parallel`, but watch per-slot size and KV
-  growth.
-- Never set per-slot (`ctx / parallel`) above the model's `n_ctx_train`.
+The apply pulls the runtime checkout and restarts the gateway. (Local
+escape hatch: edit `~/src/space-inference-gateway/config/models.yml` on the
+studio and `launchctl kickstart -k gui/$(id -u)/com.slushsystems.space-inference-gateway`
+— but the next apply will overwrite uncommitted edits.)
 
 ## Verify
 
 ```sh
-curl -s http://127.0.0.1:9292/v1/models | jq           # new alias listed?
-curl -s -XPOST http://127.0.0.1:9292/v1/load -d '{"model":"my-other-model"}' | jq
-tail -f "${TMPDIR:-/tmp}/space-inference-gateway/my-other-model.log"   # child boot log
+curl -s https://studio.slush.systems/v1/models | jq            # alias listed?
+curl -s -X POST https://studio.slush.systems/v1/load \
+  -H 'content-type: application/json' -d '{"model":"my-new-model"}'
 ```
+
+Watch the child boot in `~/Library/Logs/space-inference-gateway/my-new-model.log`
+on the studio. First load of an uncached model downloads from HF and will
+likely 504 the readiness gate (120 s default; `readiness_timeout` raises it
+per model) — pre-fetch with the venv's `huggingface-cli download <repo-id>`,
+or let the download finish and load again. Then send a real generation and check the reasoning separation looks
+right for your `supports_reasoning` choice. The active model is also visible
+in the metrics: `sig_active_model_info{alias="my-new-model",engine="mlx"} 1`.
+
+## Change the default
+
+The `default:` key at the top of the registry names the model served when a
+client sends an unknown/absent `model` and nothing is running yet — which is
+the normal case for real clients (they send their own model names, not your
+aliases). Point it at whatever the studio should wake up serving.

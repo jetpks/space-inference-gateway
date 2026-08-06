@@ -1,137 +1,113 @@
-# How-to: install the dependencies
+# How-to: install dependencies
 
-This covers every dependency the gateway and its edge need, with the exact
-commands. It is split by where the software runs: the **studio** (the Mac that
-serves inference) and the **client laptop** (where Claude Code / opencode run).
+What has to exist on each machine before the gateway runs. The reference
+deployment is a Mac Studio (`studio.slush.systems`) serving inference, with
+laptops as clients.
 
-The reference deployment is a Mac Studio (`inference.example.com`, Apple silicon,
-macOS 25) using Homebrew. Adapt paths for your box.
+**Most studio-side setup is automated.** The
+[Ansible playbook](deploy-on-the-studio.md) installs Ruby, the engine venvs,
+and the Caddy build on every apply. This page covers the handful of manual
+prerequisites the playbook assumes, explains what it installs (so you know
+what you're getting), and covers the laptop side, which has no automation.
 
----
+## On the studio — manual prerequisites
 
-## Studio (the inference host)
+The playbook runs user-level (no root, no `become`) and expects these on the
+box already:
 
-### 1. Homebrew
+1. **Homebrew**, with these packages:
 
-If it isn't already present:
+   ```sh
+   brew install mise go python@3.12 ansible 1password-cli
+   ```
+
+   The playbook invokes `mise`, `go`, and `python3.12` at their
+   `/opt/homebrew/bin` paths, uses the Homebrew `ansible` (its bundled
+   collections cover everything in `deploy/ansible/requirements.yaml`), and
+   *verifies* `op` is present without installing it.
+
+2. **A 1Password service-account token** at `~/.config/secret/op`
+   (mode 0600), as a shell snippet:
+
+   ```sh
+   export OP_SERVICE_ACCOUNT_TOKEN=ops_...
+   ```
+
+   `op` does not read this file on its own — `run-caddy.sh` sources it, then
+   fetches the DigitalOcean API key via
+   `op read 'op://ansible/digitalocean-certbot-token/token'` for Caddy's
+   DNS-01 challenge. The playbook never creates or reads this file.
+
+3. **Model artifacts** in `~/.cache/huggingface/hub`. The engines download
+   models from Hugging Face automatically on first load, but the supervisor's
+   120 s readiness window won't cover a multi-GB download — pre-fetch big
+   models (see the [tutorial](../tutorial.md#3-pre-fetch-the-model)) or let a
+   failed first load finish downloading in the background and retry.
+
+## On the studio — what the playbook installs
+
+You don't run these by hand; this is what an apply produces, for orientation
+and debugging:
+
+| Piece | Where | Why |
+|---|---|---|
+| Ruby 4.0.5 via mise | `~/.local/share/mise/installs/ruby/4.0.5/bin` | the launcher puts this on `PATH` explicitly so launchd gets the right interpreter without a login shell |
+| Gateway checkout + bundle | `~/src/space-inference-gateway` | runtime checkout, pulled and `bundle install`ed on every apply |
+| optiq venv | `~/.venv-optiq` (`mlx-optiq==0.3.5`) | the `optiq serve` engine; the binary is `~/.venv-optiq/bin/optiq` |
+| mlx venv | `~/.venv-vllm-metal` (`mlx-lm==0.31.3`) | the `mlx_lm.server` engine. The name is historical — it matches `config/models.yml` `venv:` paths, **do not rename one without the other** |
+| Caddy with the DigitalOcean DNS plugin | `~/caddy-build/caddy` | see below |
+
+### Why Caddy is built with xcaddy
+
+TLS at the edge needs a real Let's Encrypt cert, and the studio sits on a
+private VLAN with no inbound HTTP-01 path — so the ACME challenge must be
+**DNS-01** against DigitalOcean DNS. Homebrew's stock `caddy` ships no
+third-party DNS providers, the old caddyserver Homebrew tap is gone (404),
+and xcaddy isn't in homebrew-core; hence the playbook does
+`go install …/xcaddy@latest` and then:
 
 ```sh
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+xcaddy build --with github.com/caddy-dns/digitalocean
 ```
 
-### 2. Ruby via `mise`
+Verify a build: `~/caddy-build/caddy list-modules | grep digitalocean` →
+`dns.providers.digitalocean`.
 
-The gateway needs Ruby ≥ 3.3; production runs 4.0.5. We pin it with `mise`
-rather than the system Ruby.
+## On a client laptop
+
+Two rules, both consequences of the macOS Local Network privacy gate (full
+story in the [architecture explanation](../explanation/architecture.md#the-tcc-gate)):
+
+1. **Use the system Python.** The loopback shim must run under
+   `/usr/bin/python3` — an Apple-platform binary exempt from the LAN gate. Do
+   not substitute a Homebrew/mise Python; it would be gated like any other
+   binary. Nothing to install: the shim is stdlib-only precisely so the stock
+   interpreter can run it.
+2. **Install the clients normally** (`claude`, `opencode`) — they'll talk to
+   `127.0.0.1`, never the LAN. Wiring them up is
+   [connect clients](connect-clients.md).
+
+## On a dev machine
 
 ```sh
 brew install mise
-mise use -g ruby@4.0.5     # writes ~/.config/mise/config.toml
-ruby -v                    # ruby 4.0.5 ...
-```
-
-The launcher (`run-proxy.sh`) puts the mise Ruby on `PATH` explicitly
-(`~/.local/share/mise/installs/ruby/4.0.5/bin`) so launchd gets the right
-interpreter without a login shell.
-
-Then install the gem's dependencies:
-
-```sh
-cd ~/space-inference-gateway
+mise use -g ruby@4.0.5     # anything ≥ 3.3 works; this matches production
 bundle install
-bundle exec rspec && bundle exec rubocop    # gate: both should be green
+bundle exec rspec && bundle exec rubocop
 ```
 
-### 3. `llama-server` (llama.cpp)
+The suite runs entirely against fake upstreams — no engine or model required.
+Running the real thing locally additionally needs the mlx venv (tutorial,
+step 0).
 
-The gateway spawns and supervises a `llama-server` child. **Install the stock
-Homebrew build** — it puts `llama-server` on `PATH` and upgrades like any other
-formula:
+## Verification
 
-```sh
-brew install llama.cpp
-llama-server --version
-```
-
-> The current production box still uses the binary that shipped with Unsloth
-> Studio (`~/.unsloth/llama.cpp/llama-server`, build 9827). Moving to the
-> Homebrew build is a tracked roadmap item — see [ROADMAP](../../ROADMAP.md).
-> Either way, point `config/models.yml` `binary:` (or `LLAMA_SERVER_BINARY`) at
-> the binary you want; omit `binary:` to resolve `llama-server` from `PATH`.
-
-You also need a `.gguf` model file. Fetch one with the Hugging Face CLI
-(`brew install hf`) or any method you like, and record its path in
-`config/models.yml`. See
-[add & tune models](add-and-tune-models.md).
-
-### 4. Caddy with the DigitalOcean DNS plugin (the TLS edge)
-
-Caddy terminates TLS at `:443` with an auto-renewing Let's Encrypt certificate,
-obtained over the **DNS-01** challenge against DigitalOcean (the studio is on a
-private VLAN with no inbound HTTP-01 path). Homebrew's stock `caddy` omits
-third-party DNS providers, so we build a custom Caddy with `xcaddy`.
-
-```sh
-brew install go                              # xcaddy needs the Go toolchain
-go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
-#   → installs to ~/go/bin/xcaddy
-
-# build a Caddy that includes the DigitalOcean DNS provider
-mkdir -p ~/caddy-build && cd ~/caddy-build
-~/go/bin/xcaddy build --with github.com/caddy-dns/digitalocean
-#   → produces ./caddy   (verify the module is in)
-./caddy list-modules | grep digitalocean    # → dns.providers.digitalocean
-./caddy version                              # → v2.11.x ...
-```
-
-Caddy needs a DigitalOcean API token (DNS write scope) at runtime. The launcher
-sources it from `~/.do.env`:
-
-```sh
-printf 'DIGITAL_OCEAN_API_KEY=dop_v1_xxxxxxxx\n' > ~/.do.env
-chmod 600 ~/.do.env
-```
-
-The `Caddyfile`, `run-caddy.sh`, and launchd setup are in the
-[deploy how-to](deploy-on-the-studio.md).
-
----
-
-## Client laptop (Claude Code / opencode)
-
-### Python 3 — already installed, do not `brew install` it
-
-The loopback shim **must** run under Apple's system `/usr/bin/python3`. macOS's
-Local Network privacy gate exempts Apple-platform binaries from the LAN block; a
-Homebrew Python (or a mise Ruby) would itself be gated and could not reach the
-studio. So the one hard requirement here is the binary you already have:
-
-```sh
-/usr/bin/python3 --version     # 3.9.x ships with macOS — this is the one to use
-```
-
-The shim (`forward_tls.py`) is **stdlib-only** precisely so it runs under that
-interpreter with nothing to install. See
-[connect clients](connect-clients.md) for installing the shim and the fish
-functions.
-
-### The clients themselves
-
-Install Claude Code and/or opencode however you normally do. No special build is
-needed — the whole point of the gateway is that they need no per-client patches.
-
----
-
-## Quick verification
-
-| Component        | Check                                                  | Expect                          |
-|------------------|-------------------------------------------------------|---------------------------------|
-| Ruby             | `ruby -v`                                              | `4.0.5` (or ≥ 3.3)              |
-| Gem deps         | `bundle exec rspec`                                    | suite green                     |
-| llama-server     | `llama-server --version`                              | a build number                  |
-| Caddy + DNS      | `~/caddy-build/caddy list-modules \| grep digitalocean` | `dns.providers.digitalocean`  |
-| DO token         | `test -f ~/.do.env && echo ok`                        | `ok`                            |
-| Client python    | `/usr/bin/python3 --version`                          | system Python 3                 |
-
-With these in place, follow the [tutorial](../tutorial.md) for a first local run
-or the [deploy how-to](deploy-on-the-studio.md) for the full TLS deployment.
+| Check | Expect |
+|---|---|
+| `op --version` | prints a version (playbook hard-fails without it) |
+| `test -f ~/.config/secret/op && stat -f %Lp ~/.config/secret/op` | `600` |
+| `mise which ruby` | `~/.local/share/mise/installs/ruby/4.0.5/bin/ruby` |
+| `~/.venv-optiq/bin/optiq --help` | optiq usage text |
+| `~/.venv-vllm-metal/bin/python -c 'import mlx_lm'` | exits 0 |
+| `~/caddy-build/caddy list-modules \| grep digitalocean` | `dns.providers.digitalocean` |
+| `/usr/bin/python3 --version` (laptop) | the Apple-shipped Python |

@@ -9,8 +9,8 @@ Gem::Specification.new do |spec|
   spec.name          = "space-inference-gateway"
   spec.version       = SpaceInferenceGateway::VERSION
   spec.authors       = ["eric"]
-  spec.summary       = "Falcon gateway for local llama.cpp inference: supervises llama-server, " \
-                       "swaps models, and normalizes OpenAI + Anthropic flavors"
+  spec.summary       = "Falcon gateway for local Apple-silicon inference: supervises mlx/optiq " \
+                       "engines, swaps models, and serves OpenAI + Anthropic flavors"
   spec.executables   = ["space-inference-gateway"]
 
   spec.required_ruby_version = ">= 3.3"
