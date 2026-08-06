@@ -357,6 +357,154 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
         end
       end
     end
+
+    it "verified kill (AC6): by the time #stop returns, the port is confirmed released" do
+      Async do |task|
+        task.with_timeout(10) do
+          supervisor.start("test-model")
+          expect(supervisor.running?).to be true
+
+          supervisor.stop
+
+          # No EADDRINUSE — a real listener can bind the instant #stop returns,
+          # proving the predecessor's port was actually released, not merely
+          # assumed dead after a fixed sleep.
+          rebound = TCPServer.new("127.0.0.1", port)
+          rebound.close
+        end
+      end
+    end
+  end
+
+  # ── AC3 — Child death is observed ───────────────────────────────────────────
+
+  describe "child death is observed (AC3)" do
+    it "an externally-killed child is reflected by running?, and the next request respawns cleanly" do
+      Async do |task|
+        task.with_timeout(10) do
+          supervisor.start("test-model")
+          first_pid = supervisor.pid
+          expect(first_pid).to be_a(Integer)
+
+          # Simulate a crash — e.g. the mlx_lm.server generate-thread malloc
+          # crash from the studio — bypassing the supervisor entirely.
+          Process.kill(:KILL, first_pid)
+          task.sleep(0.05) while supervisor.running?
+
+          expect(supervisor.running?).to be false
+
+          result = supervisor.start("test-model")
+          expect(result).to be_success
+          expect(supervisor.running?).to be true
+          expect(supervisor.pid).not_to eq(first_pid)
+        end
+      end
+    end
+  end
+
+  # ── AC5 — Per-model readiness budget ────────────────────────────────────────
+
+  describe "per-model readiness budget (AC5)" do
+    let(:budget_registry) do
+      build_registry(
+        {
+          "budgeted-model" => {
+            "engine" => "mlx", "venv" => FAKE_INF_BINARY, "model" => "/fake/budgeted", "port" => port,
+            "readiness_timeout" => readiness_timeout,
+          },
+        },
+        "budgeted-model",
+      )
+    end
+
+    let(:budget_supervisor) do
+      SpaceInferenceGateway::InferenceServerSupervisor.new(
+        registry: budget_registry,
+        timeouts: SpaceInferenceGateway::InferenceServerSupervisor::Timeouts.new(
+          readiness: supervisor_readiness, stop_grace: 0.5, poll_interval: 0.05,
+        ),
+        log_dir: Dir.tmpdir,
+      )
+    end
+
+    around do |ex|
+      ex.run
+    ensure
+      Async { budget_supervisor.stop }
+    end
+
+    context "the per-model budget is shorter than the supervisor default" do
+      let(:unready_polls) { 99_999 } # never ready
+      let(:supervisor_readiness) { 10 }
+      let(:readiness_timeout)    { 0.3 }
+
+      it "times out on the shorter per-model budget, not the longer default" do
+        Async do |task|
+          task.with_timeout(5) do
+            t0     = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+            result = budget_supervisor.start("budgeted-model")
+            elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0
+
+            expect(result).to be_failure
+            expect(result.failure).to eq(:readiness_timeout)
+            expect(budget_supervisor.running?).to be false
+            expect(elapsed).to be < 3 # bounded by the 0.3s override, not the 10s default
+          end
+        end
+      end
+    end
+
+    context "the per-model budget is longer than the supervisor default" do
+      let(:unready_polls) { 3 } # ready after 3 * 0.05s poll_interval ≈ 150ms
+      let(:supervisor_readiness) { 0.05 } # shorter than the time-to-ready
+      let(:readiness_timeout)    { 5 }
+
+      it "a slow load within its declared budget is not killed" do
+        Async do |task|
+          task.with_timeout(5) do
+            result = budget_supervisor.start("budgeted-model")
+
+            expect(result).to be_success
+            expect(budget_supervisor.running?).to be true
+          end
+        end
+      end
+    end
+  end
+
+  # ── AC7 — Startup port reap ──────────────────────────────────────────────────
+
+  describe "startup port reap (AC7)" do
+    it "reaps a pre-existing (untracked) listener on the target port before its first spawn" do
+      Async do |task|
+        task.with_timeout(15) do
+          orphan_pid = Process.spawn(FAKE_INF_BINARY, "--port", port.to_s, out: File::NULL, err: File::NULL)
+          Process.detach(orphan_pid)
+
+          task.with_timeout(5) do
+            loop do
+              TCPSocket.new("127.0.0.1", port).close
+              break
+            rescue Errno::ECONNREFUSED
+              task.sleep(0.02)
+            end
+          end
+
+          result = supervisor.start("test-model")
+
+          expect(result).to be_success
+          expect(supervisor.running?).to be true
+          expect(supervisor.pid).not_to eq(orphan_pid)
+          expect { Process.kill(0, orphan_pid) }.to raise_error(Errno::ESRCH)
+        ensure
+          begin
+            Process.kill(:KILL, orphan_pid)
+          rescue Errno::ESRCH
+            nil
+          end
+        end
+      end
+    end
   end
 
   # ── AC1 — Swap ─────────────────────────────────────────────────────────────

@@ -79,26 +79,26 @@ RSpec.describe "Zombie watchdog (I04 AC3)" do
 
     it "a lone timeout below the threshold does not restart" do
       controller, supervisor = build_controller
-      controller.note_headers_timeout
+      controller.note_generation_failure
       expect(supervisor.swap_calls).to eq(0)
     end
 
     it "restarts exactly once at the threshold, then resets the streak" do
       controller, supervisor = build_controller
-      controller.note_headers_timeout # streak 1
-      controller.note_headers_timeout # streak 2 -> restart, reset to 0
+      controller.note_generation_failure # streak 1
+      controller.note_generation_failure # streak 2 -> restart, reset to 0
       expect(supervisor.swap_calls).to eq(1)
       expect(SpaceInferenceGateway::Metrics::CHILD_ZOMBIE_RESTARTS.get).to eq(1)
 
-      controller.note_headers_timeout # post-reset: streak 1, below threshold again
+      controller.note_generation_failure # post-reset: streak 1, below threshold again
       expect(supervisor.swap_calls).to eq(1)
     end
 
-    it "a successful headers-received resets the streak, so an interleaved success below threshold no-ops" do
+    it "a successful generation resets the streak, so an interleaved success below threshold no-ops" do
       controller, supervisor = build_controller
-      controller.note_headers_timeout  # streak 1
-      controller.note_headers_received # reset to 0
-      controller.note_headers_timeout  # streak 1 again (below threshold 2)
+      controller.note_generation_failure # streak 1
+      controller.note_generation_success # reset to 0
+      controller.note_generation_failure # streak 1 again (below threshold 2)
       expect(supervisor.swap_calls).to eq(0)
     end
 
@@ -107,7 +107,7 @@ RSpec.describe "Zombie watchdog (I04 AC3)" do
       # 3 signals for a threshold of 2: the 2nd crosses and resets the streak
       # before its own restart (a real async yield inside #swap) completes;
       # the 3rd lands post-reset and does not re-cross.
-      tasks = Array.new(3) { @task.async { controller.note_headers_timeout } }
+      tasks = Array.new(3) { @task.async { controller.note_generation_failure } }
       tasks.each(&:wait)
       expect(supervisor.swap_calls).to eq(1)
     end
@@ -116,24 +116,24 @@ RSpec.describe "Zombie watchdog (I04 AC3)" do
       controller, supervisor = build_controller
       controller.begin_generation
       controller.begin_generation
-      controller.note_headers_timeout
-      controller.note_headers_timeout # crosses threshold
+      controller.note_generation_failure
+      controller.note_generation_failure # crosses threshold
       expect(supervisor.swap_calls).to eq(1)
     end
 
     it "no restart fires when no child is running" do
       controller, supervisor = build_controller(running: false)
-      controller.note_headers_timeout
-      controller.note_headers_timeout
-      controller.note_headers_timeout
+      controller.note_generation_failure
+      controller.note_generation_failure
+      controller.note_generation_failure
       expect(supervisor.swap_calls).to eq(0)
     end
   end
 
-  # ── Non-feeding paths — buffered 504s and mid-stream idle timeouts ─────────
+  # ── AC4 — buffered (non-stream) failures feed the counter, stream-agnostic ─
 
-  describe "non-feeding paths do not touch the counter" do
-    it "buffered-path (non-stream) timeouts, repeated past the threshold, do not restart" do
+  describe "buffered (non-stream) timeouts feed the streak (AC4)" do
+    it "2 consecutive never-respond buffered calls restart the child — no streaming request involved" do
       @task.with_timeout(6) do
         supervisor = CountingSupervisor.new("diffusiongemma", 0, true)
         controller = SpaceInferenceGateway::ModelController.new(registry: fixture_registry, supervisor: supervisor)
@@ -151,11 +151,71 @@ RSpec.describe "Zombie watchdog (I04 AC3)" do
           upstream&.stop
         end
 
-        expect(supervisor.swap_calls).to eq(0)
-        expect(SpaceInferenceGateway::Metrics::CHILD_ZOMBIE_RESTARTS.get).to eq(0)
+        expect(supervisor.swap_calls).to eq(1)
+        expect(SpaceInferenceGateway::Metrics::CHILD_ZOMBIE_RESTARTS.get).to eq(1)
       end
     end
 
+    it "a lone buffered timeout below the threshold does not restart" do
+      @task.with_timeout(6) do
+        supervisor = CountingSupervisor.new("diffusiongemma", 0, true)
+        controller = SpaceInferenceGateway::ModelController.new(registry: fixture_registry, supervisor: supervisor)
+
+        upstream = FakeUpstreamServer::RawUpstream.new(@task)
+        upstream.accept { |_sock| @task.sleep(60) } # never responds
+
+        upstream_client = SpaceInferenceGateway::UpstreamClient.new(base_url: upstream.base_url, idle_timeout: 0.3)
+        app = SpaceInferenceGateway::App.new(upstream_client: upstream_client, controller: controller)
+
+        resp = call_app(app, "POST", "/v1/chat/completions", JSON.generate({ model: "any", messages: [] }))
+        expect(resp.status).to eq(504)
+
+        expect(supervisor.swap_calls).to eq(0)
+      ensure
+        upstream&.stop
+      end
+    end
+
+    it "a successful buffered response resets the streak, so an interleaved success below threshold no-ops" do
+      @task.with_timeout(6) do
+        supervisor = CountingSupervisor.new("diffusiongemma", 0, true)
+        controller = SpaceInferenceGateway::ModelController.new(registry: fixture_registry, supervisor: supervisor)
+
+        upstream = FakeUpstreamServer::RawUpstream.new(@task)
+        upstream.accept { |_sock| @task.sleep(60) } # never responds
+        upstream_client = SpaceInferenceGateway::UpstreamClient.new(base_url: upstream.base_url, idle_timeout: 0.3)
+        app = SpaceInferenceGateway::App.new(upstream_client: upstream_client, controller: controller)
+        resp = call_app(app, "POST", "/v1/chat/completions", JSON.generate({ model: "any", messages: [] }))
+        expect(resp.status).to eq(504) # streak 1
+        upstream.stop
+
+        ok_upstream = FakeUpstreamServer::RawUpstream.new(@task)
+        ok_upstream.accept do |sock|
+          body = fixture("oai_ns.json")
+          sock.write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: #{body.bytesize}\r\n\r\n#{body}")
+        end
+        ok_client = SpaceInferenceGateway::UpstreamClient.new(base_url: ok_upstream.base_url, idle_timeout: 5)
+        ok_app = SpaceInferenceGateway::App.new(upstream_client: ok_client, controller: controller)
+        ok_resp = call_app(ok_app, "POST", "/v1/chat/completions", JSON.generate({ model: "any", messages: [] }))
+        expect(ok_resp.status).to eq(200) # reset to 0
+        ok_upstream.stop
+
+        upstream2 = FakeUpstreamServer::RawUpstream.new(@task)
+        upstream2.accept { |_sock| @task.sleep(60) } # never responds
+        upstream_client2 = SpaceInferenceGateway::UpstreamClient.new(base_url: upstream2.base_url, idle_timeout: 0.3)
+        app2 = SpaceInferenceGateway::App.new(upstream_client: upstream_client2, controller: controller)
+        resp2 = call_app(app2, "POST", "/v1/chat/completions", JSON.generate({ model: "any", messages: [] }))
+        expect(resp2.status).to eq(504) # streak 1 again (below threshold 2)
+        upstream2.stop
+
+        expect(supervisor.swap_calls).to eq(0)
+      end
+    end
+  end
+
+  # ── Non-feeding paths — mid-stream idle timeouts ────────────────────────────
+
+  describe "non-feeding paths do not touch the counter" do
     it "mid-stream idle timeouts (headers + chunk then stall), repeated past the threshold, do not restart" do
       @task.with_timeout(10) do
         supervisor = CountingSupervisor.new("diffusiongemma", 0, true)

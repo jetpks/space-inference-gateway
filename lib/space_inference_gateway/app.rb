@@ -90,21 +90,26 @@ module SpaceInferenceGateway
       # Single idempotent teardown: upstream response closed before client (so
       # client#close's pool-drain wait returns promptly instead of hanging on
       # the still-checked-out connection), both pipe ends closed, duration
-      # observed, and the generation counter released — exactly once.
+      # observed, and the generation counter released — exactly once. The
+      # counter release runs under ensure (AC8): a raise anywhere above it
+      # (response/client close, metrics) must not leak @active_generations.
       def close
         return if @closed
 
         @closed = true
-        response.close
-        client&.close
-        @read_io&.close unless @read_io&.closed?
-        @write_io&.close unless @write_io&.closed?
-        Metrics::REQUEST_DURATION.observe(
-          Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0,
-          labels: { flavor: flavor.to_s, stream: "true" },
-        )
-        observer&.close
-        on_close&.call
+        begin
+          response.close
+          client&.close
+          @read_io&.close unless @read_io&.closed?
+          @write_io&.close unless @write_io&.closed?
+          Metrics::REQUEST_DURATION.observe(
+            Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0,
+            labels: { flavor: flavor.to_s, stream: "true" },
+          )
+          observer&.close
+        ensure
+          on_close&.call
+        end
       end
     end
     private_constant :StreamBody
@@ -151,6 +156,13 @@ module SpaceInferenceGateway
       [500, JSON_HEADERS.dup, [body]]
     end
 
+    # Tears down the running engine child — called on process shutdown
+    # (SIGTERM/SIGINT; see bin/space-inference-gateway) so a gateway restart
+    # doesn't orphan the (potentially ~80GB resident) engine process (AC7).
+    def shutdown
+      @controller.stop_engine
+    end
+
     private
 
     def handle_oai(env)
@@ -179,8 +191,9 @@ module SpaceInferenceGateway
       end
 
       result = nil
-      @controller.with_generation do
+      with_active_generation do
         body_up, status, = call_upstream("/v1/chat/completions", body_str)
+        note_generation_outcome(status)
         result = if status == 200
                    if streaming
                      [200, SSE_HEADERS.dup, [normalizer.normalize_stream_to_sse(body_up)]]
@@ -224,8 +237,9 @@ module SpaceInferenceGateway
       end
 
       result = nil
-      @controller.with_generation do
+      with_active_generation do
         body_up, status, = call_upstream("/v1/messages", body_str)
+        note_generation_outcome(status)
         result = if status == 200
                    if streaming
                      [200, SSE_HEADERS.dup, [normalizer.normalize_stream_to_sse(body_up)]]
@@ -253,8 +267,9 @@ module SpaceInferenceGateway
       end
 
       result = nil
-      @controller.with_generation do
+      with_active_generation do
         body_up, status, = call_upstream("/v1/chat/completions", oai_body)
+        note_generation_outcome(status)
         result = if status == 200
                    if streaming
                      sse = +""
@@ -318,7 +333,7 @@ module SpaceInferenceGateway
 
     def handle_unload(env)
       body_str   = read_body(env)
-      request    = JSON.parse(body_str)
+      request    = body_str.empty? ? {} : JSON.parse(body_str)
       model_path = request["model_path"].to_s
 
       result = @controller.unload(model_path)
@@ -348,11 +363,15 @@ module SpaceInferenceGateway
       [200, { "content-type" => Prometheus::Client::Formats::Text::CONTENT_TYPE }, [Metrics.render]]
     end
 
+    # begin_generation already ran as part of ensure_active_if_known's
+    # reservation (AC2) — the only caller of open_stream, always after that
+    # call succeeded. This method owns the matching end_generation: once
+    # (immediately below, on any non-success exit) or later, via StreamBody's
+    # on_close, if the stream opens successfully.
     def open_stream(path, body_str, normalizer, flavor:, t0:)
-      @controller.begin_generation
       succeeded = false
       response, client = @upstream_client.open_stream(path, body_str)
-      @controller.note_headers_received
+      @controller.note_generation_success
       if response.status == 200
         observer  = GenerationObserver.new(flavor: flavor, t0: t0)
         on_close  = -> { @controller.end_generation }
@@ -362,7 +381,7 @@ module SpaceInferenceGateway
         @error_relay.relay(response.status, response.read.tap { client.close }, flavor: flavor)
       end
     rescue IO::TimeoutError, Async::TimeoutError => e
-      @controller.note_headers_timeout
+      @controller.note_generation_failure
       @error_relay.relay(504, e.message, flavor: flavor)
     rescue StandardError
       upstream_error(502)
@@ -375,6 +394,35 @@ module SpaceInferenceGateway
         @upstream_fn.call(path, body_str)
       else
         @upstream_client.call("POST", path, body_str)
+      end
+    end
+
+    # The legacy upstream_fn test seam bypasses ensure_active_if_known
+    # entirely (see #handle_oai), so it never reserves a generation slot;
+    # it still owns the full begin/end pair via ModelController#with_generation.
+    # The real supervisor-backed path already reserved the slot as part of
+    # the swap decision (AC2), so only the release is needed here.
+    def with_active_generation(&)
+      if @upstream_fn
+        @controller.with_generation(&)
+      else
+        begin
+          yield
+        ensure
+          @controller.end_generation
+        end
+      end
+    end
+
+    # Feeds the stream-agnostic zombie watchdog (AC4) from the buffered
+    # (non-stream) generation path: a synthesized connection timeout
+    # (UpstreamClient#call's 504) counts as a failure, matching the
+    # streaming path's headers-timeout signal; any real response resets it.
+    def note_generation_outcome(status)
+      if status == 504
+        @controller.note_generation_failure
+      else
+        @controller.note_generation_success
       end
     end
 
@@ -425,8 +473,10 @@ module SpaceInferenceGateway
 
     def read_body(env)
       input = env["rack.input"]
+      return "" unless input
+
       input.rewind if input.respond_to?(:rewind)
-      input.read
+      input.read.to_s
     end
 
     def upstream_error(status)
