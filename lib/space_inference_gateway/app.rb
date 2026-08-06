@@ -172,6 +172,12 @@ module SpaceInferenceGateway
       model_alias = request["model"]
       streaming   = request["stream"] == true
 
+      # Body rewrite runs before the reservation (AC1/I02): it can raise on a
+      # JSON-parseable but ill-shaped body (e.g. a non-hash message), and it
+      # only touches the registry — never the active/busy decision — so
+      # nothing is lost by validating/transforming ahead of ensure_active_if_known.
+      body_str = rewrite_model_for_mlx(body_str, model_alias)
+
       unless @upstream_fn # legacy test seam injects upstream directly; skip the supervisor
         swap_r = @controller.ensure_active_if_known(model_alias)
         return swap_error_response(swap_r.failure) if swap_r.failure?
@@ -182,8 +188,6 @@ module SpaceInferenceGateway
         advertised_model:   effective_model(model_alias),
         supports_reasoning: mode[:supports_reasoning],
       )
-
-      body_str = rewrite_model_for_mlx(body_str, model_alias)
 
       if streaming && @upstream_fn.nil?
         record_request_accepted(flavor: "oai", streaming: streaming)
@@ -216,6 +220,14 @@ module SpaceInferenceGateway
       request     = JSON.parse(body_str)
       model_alias = request["model"]
       streaming   = request["stream"] == true
+      mlx         = mlx_engine?(model_alias)
+
+      # ANT->OAI translation runs before the reservation (AC1/I02): it can
+      # raise on a JSON-parseable but ill-shaped body (e.g. a non-hash
+      # message), and it only touches the registry — never the active/busy
+      # decision — so nothing is lost by translating ahead of
+      # ensure_active_if_known.
+      oai_body = ant_to_oai(body_str, mlx_model_id(model_alias), stop_tokens: mlx_stop_tokens(model_alias)) if mlx
 
       unless @upstream_fn # legacy test seam injects upstream directly; skip the supervisor
         swap_r = @controller.ensure_active_if_known(model_alias)
@@ -229,7 +241,7 @@ module SpaceInferenceGateway
       )
 
       # mlx/optiq path instruments inside handle_ant_mlx
-      return handle_ant_mlx(body_str, model_alias, normalizer, streaming) if mlx_engine?(model_alias)
+      return handle_ant_mlx(oai_body, normalizer, streaming) if mlx
 
       if streaming && @upstream_fn.nil?
         record_request_accepted(flavor: "ant", streaming: streaming)
@@ -256,10 +268,8 @@ module SpaceInferenceGateway
       result
     end
 
-    def handle_ant_mlx(body_str, model_alias, normalizer, streaming)
-      t0       = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      oai_body = ant_to_oai(body_str, mlx_model_id(model_alias),
-                            stop_tokens: mlx_stop_tokens(model_alias),)
+    def handle_ant_mlx(oai_body, normalizer, streaming)
+      t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
       if streaming && @upstream_fn.nil?
         record_request_accepted(flavor: "ant", streaming: streaming)
