@@ -24,9 +24,7 @@ module SpaceInferenceGateway
       def self.default = new(readiness: 120, stop_grace: 5, poll_interval: 0.5)
     end
 
-    def initialize(registry:,
-                   log_dir: default_log_dir,
-                   timeouts: Timeouts.default)
+    def initialize(registry:, log_dir: default_log_dir, timeouts: Timeouts.default)
       @registry      = registry
       @log_dir       = log_dir
       @timeouts      = timeouts
@@ -79,7 +77,8 @@ module SpaceInferenceGateway
       return Failure(:port_in_use) unless port_ready_for_spawn?(port)
 
       argv   = build_argv(entry)
-      child  = spawn_child(argv, alias_name)
+      env    = build_env(entry)
+      child  = spawn_child(argv, env, alias_name)
       budget = entry[:readiness_timeout] || @timeouts.readiness
 
       result = await_readiness("http://127.0.0.1:#{port}", budget)
@@ -102,30 +101,37 @@ module SpaceInferenceGateway
       Failure(:spawn_failed)
     end
 
-    def spawn_child(argv, alias_name)
+    def spawn_child(argv, env, alias_name)
       FileUtils.mkdir_p(@log_dir)
       log_path = File.join(@log_dir, "#{sanitize(alias_name)}.log")
       child = nil
       File.open(log_path, "a") do |log|
-        child = Async::Process::Child.new(*argv, out: log, err: log)
+        child = Async::Process::Child.new(env, *argv, out: log, err: log)
       end
       child
     end
 
     def build_argv(entry)
       case entry[:engine].to_s
-      when "optiq" then build_optiq_argv(entry)
-      else              build_mlx_argv(entry)
+      when "", "mlx" then build_mlx_argv(entry)
+      when "optiq"   then build_optiq_argv(entry)
+      when "mlx-vlm" then build_mlx_vlm_argv(entry)
+      else raise ArgumentError, "unrecognized engine: #{entry[:engine].inspect}"
       end
     end
 
+    # APC (automatic prefix cache) has no CLI flag on mlx-vlm — it is
+    # configured only via environment, so a child spawned with an unset
+    # environment would silently run with caching off. An entry declaring
+    # neither key leaves the child's environment unchanged.
+    def build_env(entry)
+      { "APC_ENABLED" => (entry[:apc_enabled] ? "1" : nil),
+        "APC_EXACT_CACHE_ENTRIES" => entry[:apc_exact_cache_entries]&.to_s, }.compact
+    end
+
     def build_mlx_argv(entry)
-      argv = [
-        entry[:venv].to_s, "-m", "mlx_lm.server",
-        "--model", entry[:model].to_s,
-        "--host", "127.0.0.1",
-        "--port", entry[:port].to_s,
-      ]
+      argv = [entry[:venv].to_s, "-m", "mlx_lm.server",
+              "--model", entry[:model].to_s, "--host", "127.0.0.1", "--port", entry[:port].to_s,]
       argv += ["--decode-concurrency", entry[:decode_concurrency].to_s] if entry[:decode_concurrency]
       argv += ["--prompt-concurrency",  entry[:prompt_concurrency].to_s]  if entry[:prompt_concurrency]
       argv += ["--prompt-cache-size",   entry[:prompt_cache_size].to_s]   if entry[:prompt_cache_size]
@@ -137,18 +143,25 @@ module SpaceInferenceGateway
     # not a python interpreter — the registry expands `~` the same way it does
     # for the mlx venv key.
     def build_optiq_argv(entry)
-      argv = [
-        entry[:venv].to_s, "serve",
-        "--model", entry[:model].to_s,
-        "--host", "127.0.0.1",
-        "--port", entry[:port].to_s,
-      ]
+      argv = [entry[:venv].to_s, "serve",
+              "--model", entry[:model].to_s, "--host", "127.0.0.1", "--port", entry[:port].to_s,]
       if entry[:mtp]
         argv << "--mtp"
         argv += ["--mtp-depth", entry[:mtp_depth].to_s] if entry[:mtp_depth]
       end
       argv << "--no-auth"
       argv += ["--max-concurrent", entry[:max_concurrent].to_s] if entry[:max_concurrent]
+      argv += Array(entry[:extra_args])
+      argv
+    end
+
+    # `venv` for mlx-vlm is the mlx_vlm.server console script, not a python
+    # interpreter — the build_optiq_argv shape, not build_mlx_argv's `-m`.
+    def build_mlx_vlm_argv(entry)
+      argv = [entry[:venv].to_s, "--model", entry[:model].to_s, "--host", "127.0.0.1", "--port", entry[:port].to_s]
+      argv << "--enable-thinking" if entry[:enable_thinking]
+      argv += ["--draft-model", entry[:draft_model].to_s] if entry[:draft_model]
+      argv += ["--draft-kind",  entry[:draft_kind].to_s]  if entry[:draft_kind]
       argv += Array(entry[:extra_args])
       argv
     end

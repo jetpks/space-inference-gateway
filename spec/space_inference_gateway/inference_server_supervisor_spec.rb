@@ -180,6 +180,92 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
     end
   end
 
+  # ── AC1 — exact mlx-vlm argv ──────────────────────────────────────────────
+
+  describe "#build_argv — mlx-vlm engine (AC1)" do
+    let(:mlx_vlm_entry) do
+      {
+        engine:          "mlx-vlm",
+        venv:            "/home/user/.venv-mlx-vlm/bin/mlx_vlm.server",
+        model:           "mlx-community/Qwen3.8-27B-mxfp8",
+        port:            8080,
+        enable_thinking: true,
+        draft_model:     "mlx-community/Qwen3.8-27B-MTP-mxfp8",
+        draft_kind:      "mtp",
+      }
+    end
+
+    it "builds exact mlx_vlm.server argv for qwen3.8-27b-mxfp8 entry" do
+      expect(supervisor.send(:build_argv, mlx_vlm_entry)).to eq([
+                                                                  "/home/user/.venv-mlx-vlm/bin/mlx_vlm.server",
+                                                                  "--model", "mlx-community/Qwen3.8-27B-mxfp8",
+                                                                  "--host", "127.0.0.1",
+                                                                  "--port", "8080",
+                                                                  "--enable-thinking",
+                                                                  "--draft-model", "mlx-community/Qwen3.8-27B-MTP-mxfp8",
+                                                                  "--draft-kind", "mtp",
+                                                                ])
+    end
+
+    it "invokes venv directly with no interpreter prefix (no -m, no mlx_lm.server)" do
+      argv = supervisor.send(:build_argv, mlx_vlm_entry)
+      expect(argv.first).to eq(mlx_vlm_entry[:venv])
+      expect(argv).not_to include("-m")
+      expect(argv).not_to include("mlx_lm.server")
+    end
+
+    it "omits --enable-thinking, --draft-model, --draft-kind when their keys are absent" do
+      argv = supervisor.send(:build_argv, mlx_vlm_entry.except(:enable_thinking, :draft_model, :draft_kind))
+      expect(argv).not_to include("--enable-thinking")
+      expect(argv).not_to include("--draft-model")
+      expect(argv).not_to include("--draft-kind")
+    end
+
+    it "omits --draft-model when only draft_kind is present" do
+      argv = supervisor.send(:build_argv, mlx_vlm_entry.except(:draft_model))
+      expect(argv).not_to include("--draft-model")
+      expect(argv).to include("--draft-kind", "mtp")
+    end
+  end
+
+  # ── AC2 — unrecognized engine fails loudly ────────────────────────────────
+
+  describe "#build_argv — unrecognized engine (AC2)" do
+    it "raises for an engine that is neither a recognized kind nor absent" do
+      entry = { engine: "definitely-not-an-engine", model: "M", port: 8080, venv: "/tmp/x/bin/python" }
+      expect { supervisor.send(:build_argv, entry) }.to raise_error(StandardError)
+    end
+
+    it "does not silently fall back to building mlx_lm.server argv for an unknown engine" do
+      entry = { engine: "vllm", model: "M", port: 8080, venv: "/tmp/x/bin/python" }
+      expect { supervisor.send(:build_argv, entry) }.to raise_error(StandardError)
+    end
+  end
+
+  # ── AC4 — environment derived from the registry entry ────────────────────
+
+  describe "#build_env (AC4)" do
+    it "maps apc_enabled and apc_exact_cache_entries to APC_ENABLED and APC_EXACT_CACHE_ENTRIES" do
+      entry = { engine: "mlx-vlm", apc_enabled: true, apc_exact_cache_entries: 16 }
+      expect(supervisor.send(:build_env, entry)).to eq("APC_ENABLED" => "1", "APC_EXACT_CACHE_ENTRIES" => "16")
+    end
+
+    it "leaves the environment unchanged when neither key is present" do
+      entry = { engine: "mlx", model: "M", port: 8080, venv: "/tmp/x/bin/python" }
+      expect(supervisor.send(:build_env, entry)).to eq({})
+    end
+
+    it "omits APC_EXACT_CACHE_ENTRIES when apc_exact_cache_entries is absent" do
+      entry = { engine: "mlx-vlm", apc_enabled: true }
+      expect(supervisor.send(:build_env, entry)).to eq("APC_ENABLED" => "1")
+    end
+
+    it "omits APC_ENABLED when apc_enabled is absent" do
+      entry = { engine: "mlx-vlm", apc_exact_cache_entries: 16 }
+      expect(supervisor.send(:build_env, entry)).to eq("APC_EXACT_CACHE_ENTRIES" => "16")
+    end
+  end
+
   # ── ModelRegistry — mlx fields ─────────────────────────────────────────────
 
   describe "ModelRegistry — mlx fields" do
@@ -194,10 +280,11 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
       expect(registry.resolve("no-such-model")).to be_nil
     end
 
-    it "config/models.yml has optiq default and carries mlx + optiq aliases" do
+    it "config/models.yml has qwen3.8-27b-mxfp8 default and carries mlx + optiq + mlx-vlm aliases" do
       loaded = SpaceInferenceGateway::ModelRegistry.load
-      expect(loaded.default_alias).to eq("qwen3-27b-optiq")
-      expect(loaded.aliases).to include("qwen3-27b-optiq", "hermes-4-70b", "qwen3-122b-a10b", "qwen3-35b-a3b")
+      expect(loaded.default_alias).to eq("qwen3.8-27b-mxfp8")
+      expect(loaded.aliases).to include("qwen3.8-27b-mxfp8", "qwen3-27b-optiq", "hermes-4-70b",
+                                        "qwen3-122b-a10b", "qwen3-35b-a3b",)
 
       optiq_entry = loaded.resolve("qwen3-27b-optiq")
       expect(optiq_entry[:engine]).to eq("optiq")
@@ -210,6 +297,14 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
       mlx_entry = loaded.resolve("qwen3-122b-a10b")
       expect(mlx_entry[:engine]).to eq("mlx")
       expect(mlx_entry[:model]).to be_a(String)
+
+      mlx_vlm_entry = loaded.resolve("qwen3.8-27b-mxfp8")
+      expect(mlx_vlm_entry[:engine]).to eq("mlx-vlm")
+      expect(mlx_vlm_entry[:model]).to eq("mlx-community/Qwen3.8-27B-mxfp8")
+      expect(mlx_vlm_entry[:apc_enabled]).to eq(true)
+      expect(mlx_vlm_entry[:apc_exact_cache_entries]).to eq(16)
+      expect(mlx_vlm_entry[:draft_model]).to eq("mlx-community/Qwen3.8-27B-MTP-mxfp8")
+      expect(mlx_vlm_entry[:draft_kind]).to eq("mtp")
     end
 
     it "venv has ~ expanded; model is the repo id (not path-expanded)" do

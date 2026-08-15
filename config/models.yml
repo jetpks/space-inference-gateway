@@ -3,11 +3,33 @@
 # For the mlx engine, it is also the value the proxy rewrites the request "model"
 # field to (mlx validates this field). For the optiq engine, the model field is a
 # label — optiq's single-model mode serves any value, so no rewrite is needed.
-# `venv` for mlx is the python interpreter; for optiq it is the optiq binary path.
-# Both may start with `~` (expanded to HOME by the registry).
-default: qwen3-27b-optiq
+# `venv` for mlx is the python interpreter; for optiq and mlx-vlm it is the
+# engine's console-script binary path, invoked directly. All may start with
+# `~` (expanded to HOME by the registry).
+default: qwen3.8-27b-mxfp8
 
 models:
+  # mlx-vlm engine, MTP speculative decoding, automatic prefix cache (APC).
+  # APC has no CLI flag — it's environment-only (see the supervisor's
+  # build_env) — so apc_enabled/apc_exact_cache_entries must both be set or
+  # the child runs with caching silently off. apc_exact_cache_entries: 16 is
+  # 2 x concurrent conversations (each request stores two cache snapshots);
+  # undersizing it degrades to a 0% cache hit rate silently — measured
+  # 2026-08-15, not theoretical. readiness_timeout is omitted: the default
+  # comfortably covers the measured 4-7s load. decode_concurrency /
+  # prompt_concurrency are omitted: they're mlx_lm-specific and mean nothing
+  # to this engine.
+  qwen3.8-27b-mxfp8:
+    engine: mlx-vlm
+    model: mlx-community/Qwen3.8-27B-mxfp8
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    enable_thinking: true
+    apc_enabled: true
+    apc_exact_cache_entries: 16
+    draft_model: mlx-community/Qwen3.8-27B-MTP-mxfp8
+    draft_kind: mtp
+    supports_reasoning: true
   # Qwen3.6 27B OptiQ-4bit with MTP depth 2 (optiq engine).
   # optiq's single-model mode: the request "model" field is a label — any value
   # is accepted, so the proxy does not rewrite it for this engine.
