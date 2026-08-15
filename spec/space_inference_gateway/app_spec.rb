@@ -80,13 +80,15 @@ RSpec.describe SpaceInferenceGateway::App do
       expect(sent["model"]).to eq("mlx-community/Qwen3.5-35B-A3B-4bit")
     end
 
-    it "passes model field through unchanged for unknown alias on optiq default (single-model)" do
-      # The default alias (qwen3-27b-optiq, engine: optiq) does not rewrite the
-      # "model" field — optiq's single-model mode accepts any label value.
+    it "rewrites the model field to the mlx-vlm repo id for unknown alias (mlx-vlm default)" do
+      # The default alias (qwen3.8-27b-mxfp8, engine: mlx-vlm) is what an unknown
+      # alias falls back to. mlx-vlm validates the "model" field against its
+      # loaded model the same way mlx does, so the fallback must rewrite it too —
+      # forwarding the unresolved alias would evict the resident checkpoint.
       body = JSON.generate({ model: "no-such-alias", messages: [{ role: "user", content: "hi" }] })
       post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
       sent = JSON.parse(forwarded.first[:body])
-      expect(sent["model"]).to eq("no-such-alias")
+      expect(sent["model"]).to eq("mlx-community/Qwen3.8-27B-mxfp8")
     end
 
     it "normalizes the OpenAI 'developer' role to 'system' (mlx rejects developer)" do
@@ -169,6 +171,50 @@ RSpec.describe SpaceInferenceGateway::App do
     it "routes /v1/messages for optiq to /v1/chat/completions (OAI synthesis)" do
       body = JSON.generate({
                              model: "qwen3-27b-optiq",
+        messages: [{ role: "user", content: "hi" }],
+        max_tokens: 100,
+                           })
+      post "/v1/messages", body, "CONTENT_TYPE" => "application/json"
+      expect(last_response.status).to eq(200)
+      expect(forwarded.first[:path]).to eq("/v1/chat/completions")
+    end
+  end
+
+  # ── I04: mlx-vlm joins the OAI-upstream engine class ──────────────────────
+  describe "mlx-vlm engine — OAI + ANT paths (I04)" do
+    let(:forwarded) { [] }
+    let(:upstream_fn) do
+      lambda do |path, body|
+        forwarded << { path: path, body: body }
+        [fixture("oai_ns.json"), 200, {}]
+      end
+    end
+
+    it "rewrites the alias to the mlx-vlm repo id" do
+      body = JSON.generate({ model: "qwen3.8-27b-mxfp8", messages: [{ role: "user", content: "hi" }] })
+      post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
+      expect(last_response.status).to eq(200)
+      sent = JSON.parse(forwarded.first[:body])
+      expect(sent["model"]).to eq("mlx-community/Qwen3.8-27B-mxfp8")
+    end
+
+    it "normalizes the OpenAI 'developer' role to 'system' (mlx-vlm rejects developer)" do
+      body = JSON.generate({
+                             model: "qwen3.8-27b-mxfp8",
+        messages: [
+          { role: "developer", content: "you are helpful" },
+          { role: "user", content: "hi" },
+        ],
+                           })
+      post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
+      sent = JSON.parse(forwarded.first[:body])
+      roles = sent["messages"].map { |m| m["role"] }
+      expect(roles).to eq(%w[system user])
+    end
+
+    it "routes /v1/messages for mlx-vlm to /v1/chat/completions (ANT synthesis)" do
+      body = JSON.generate({
+                             model: "qwen3.8-27b-mxfp8",
         messages: [{ role: "user", content: "hi" }],
         max_tokens: 100,
                            })
