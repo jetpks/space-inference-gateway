@@ -16,8 +16,17 @@ mise_ruby_bin: "{{ ansible_facts.env.HOME }}/.local/share/mise/installs/ruby/{{ 
 python_bin: /opt/homebrew/bin/python3.12
 optiq_venv: "{{ ansible_facts.env.HOME }}/.venv-optiq"
 mlx_venv: "{{ ansible_facts.env.HOME }}/.venv-vllm-metal"
+mlx_vlm_venv: "{{ ansible_facts.env.HOME }}/.venv-mlx-vlm"
 mlx_optiq_version: "0.3.5"
 mlx_lm_version: "0.31.3"
+mlx_vlm_version: "0.6.13"
+
+# --- MTP drafter ---
+# The speculative-decoding drafter for the mlx-vlm alias, passed to the engine
+# as --draft-model. Its quantization and hidden_size match the served
+# checkpoint; the served checkpoint declares mtp_num_hidden_layers but ships no
+# mtp.* tensors, so the head is a second artifact to provision, not a flag.
+mlx_vlm_draft_model: mlx-community/Qwen3.8-27B-MTP-mxfp8
 
 # --- Caddy ---
 # xcaddy is installed via `go install` (the caddyserver homebrew tap is deprecated

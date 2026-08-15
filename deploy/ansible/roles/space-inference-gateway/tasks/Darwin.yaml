@@ -72,9 +72,43 @@
     virtualenv: "{{ mlx_venv }}"
     virtualenv_python: "{{ python_bin }}"
 
+# ── 7a. mlx-vlm venv (~/.venv-mlx-vlm) ───────────────────────────────────────
+# Deliberately its own venv rather than ~/.venv-vllm-metal: mlx-vlm resolves its
+# own mlx-lm and transformers, and a transitive bump inside the shared venv would
+# put the eight aliases that run on it at risk. Path matches config/models.yml
+# venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server.
+
+- name: space-inference-gateway | install mlx-vlm in mlx-vlm venv
+  ansible.builtin.pip:
+    name: "mlx-vlm=={{ mlx_vlm_version }}"
+    virtualenv: "{{ mlx_vlm_venv }}"
+    virtualenv_python: "{{ python_bin }}"
+
+# ── 7b. HF cache + MTP drafter ───────────────────────────────────────────────
+# Ahead of the launchd section for the same reason the venvs are: the gateway's
+# default alias launches with --draft-model, which resolves through the hub, so
+# an unprovisioned box would first-fetch the drafter while the supervisor's
+# readiness clock runs — and a drafter that fails to load is silent, answering
+# requests at baseline decode rather than erroring.
+#
+# The served checkpoint itself is NOT fetched here — it is moved into place by
+# manual ops (operator one-time mv from another user's cache); the playbook only
+# ensures the directory exists.
+
+- name: space-inference-gateway | ensure huggingface hub cache directory exists
+  ansible.builtin.file:
+    path: "{{ ansible_facts.env.HOME }}/.cache/huggingface/hub"
+    state: directory
+    mode: "0755"
+
+- name: space-inference-gateway | pre-fetch the MTP drafter into the huggingface cache
+  ansible.builtin.command:
+    cmd: "{{ mlx_vlm_venv }}/bin/hf download {{ mlx_vlm_draft_model }}"
+    creates: "{{ ansible_facts.env.HOME }}/.cache/huggingface/hub/models--{{ mlx_vlm_draft_model | replace('/', '--') }}"
+
 # ── 8. Gateway launchd KeepAlive agent ───────────────────────────────────────
-# Runs after the optiq/mlx venv sections so a first apply has the engine
-# venvs in place before the gateway agent starts.
+# Runs after the engine venv and drafter sections so a first apply has both in
+# place before the gateway agent starts.
 
 - name: space-inference-gateway | ensure ~/Library/Logs exists
   ansible.builtin.file:
@@ -106,17 +140,7 @@
     name: "{{ gateway_label }}"
     state: started
 
-# ── 9. HF cache directory ────────────────────────────────────────────────────
-# Model artifacts are moved by manual ops (operator one-time mv from another
-# user's cache). The playbook only ensures the directory exists.
-
-- name: space-inference-gateway | ensure huggingface hub cache directory exists
-  ansible.builtin.file:
-    path: "{{ ansible_facts.env.HOME }}/.cache/huggingface/hub"
-    state: directory
-    mode: "0755"
-
-# ── 10. Caddy (xcaddy build + DO plugin + launchd agent) ─────────────────────
+# ── 9. Caddy (xcaddy build + DO plugin + launchd agent) ──────────────────────
 
 # xcaddy is installed via `go install` because the caddyserver homebrew tap is
 # gone (404 on GitHub) and xcaddy is not in homebrew-core. The binary lands in
