@@ -31,7 +31,7 @@ RSpec.describe "Stream lifecycle (I02 AC2-AC7, AC9)" do
         upstream.accept { |_sock| @task.sleep(60) } # never responds
 
         client = SpaceInferenceGateway::UpstreamClient.new(
-          base_url: upstream.base_url, idle_timeout: 30, buffered_timeout: 1,
+          base_url: upstream.base_url, idle_timeout: 30, buffered_timeout: 0.2,
         )
 
         t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -55,7 +55,7 @@ RSpec.describe "Stream lifecycle (I02 AC2-AC7, AC9)" do
         end
 
         client = SpaceInferenceGateway::UpstreamClient.new(
-          base_url: upstream.base_url, idle_timeout: 30, buffered_timeout: 1,
+          base_url: upstream.base_url, idle_timeout: 30, buffered_timeout: 0.2,
         )
 
         t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
@@ -64,28 +64,6 @@ RSpec.describe "Stream lifecycle (I02 AC2-AC7, AC9)" do
 
         expect(status).to eq(504)
         expect(elapsed).to be < 3
-      ensure
-        upstream.stop
-      end
-    end
-
-    it "a continuously-emitting body never times out, despite exceeding the idle timeout in total" do
-      @task.with_timeout(5) do
-        upstream = FakeUpstreamServer::RawUpstream.new(@task)
-        upstream.accept do |sock|
-          sock.write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n")
-          3.times do
-            @task.sleep(0.08) # < 0.2s idle timeout, but 3 * 0.08s = 0.24s > 0.2s total
-            http_chunk(sock, "x")
-          end
-          end_chunks(sock)
-        end
-
-        client = SpaceInferenceGateway::UpstreamClient.new(base_url: upstream.base_url, idle_timeout: 0.2)
-        body, status, = client.call("POST", "/v1/chat/completions", "{}")
-
-        expect(status).to eq(200)
-        expect(body).to eq("xxx")
       ensure
         upstream.stop
       end
@@ -134,6 +112,36 @@ RSpec.describe "Stream lifecycle (I02 AC2-AC7, AC9)" do
           proxy_bound.close
           upstream.stop
         end
+      end
+    end
+  end
+
+  # ── AC4 — streaming path idle-gap timeout resets on activity ───────────────
+  # #call has no idle-gap bound (its buffered_timeout is an end-to-end budget on
+  # a path that emits nothing until generation completes) — this property only
+  # holds on #open_stream, whose idle_timeout resets on every successful read.
+
+  describe "AC4 — streaming path idle-gap timeout" do
+    it "a continuously-emitting body never times out, despite exceeding the idle timeout in total" do
+      @task.with_timeout(5) do
+        upstream = FakeUpstreamServer::RawUpstream.new(@task)
+        upstream.accept do |sock|
+          sse_headers(sock)
+          3.times do
+            @task.sleep(0.08) # < 0.2s idle timeout, but 3 * 0.08s = 0.24s > 0.2s total
+            http_chunk(sock, "x")
+          end
+          end_chunks(sock)
+        end
+
+        client = SpaceInferenceGateway::UpstreamClient.new(base_url: upstream.base_url, idle_timeout: 0.2)
+        response, http_client = client.open_stream("/v1/chat/completions", "{}")
+
+        expect(response.status).to eq(200)
+        expect(response.read).to eq("xxx")
+      ensure
+        http_client&.close
+        upstream.stop
       end
     end
   end
