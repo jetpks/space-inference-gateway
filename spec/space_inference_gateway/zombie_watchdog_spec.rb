@@ -37,10 +37,7 @@ RSpec.describe "Zombie watchdog (I04 AC3)" do
   include FakeUpstreamServer
 
   around do |example|
-    Async do |task|
-      @task = task
-      example.run
-    end
+    run_in_reactor(example)
   end
 
   before { SpaceInferenceGateway::Metrics.reset_all }
@@ -200,7 +197,7 @@ RSpec.describe "Zombie watchdog (I04 AC3)" do
           body = fixture("oai_ns.json")
           sock.write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: #{body.bytesize}\r\n\r\n#{body}")
         end
-        ok_client = SpaceInferenceGateway::UpstreamClient.new(base_url: ok_upstream.base_url, idle_timeout: 5)
+        ok_client = SpaceInferenceGateway::UpstreamClient.new(base_url: ok_upstream.base_url, buffered_timeout: 5)
         ok_app = SpaceInferenceGateway::App.new(upstream_client: ok_client, controller: controller)
         ok_resp = call_app(ok_app, "POST", "/v1/chat/completions", JSON.generate({ model: "any", messages: [] }))
         expect(ok_resp.status).to eq(200) # reset to 0

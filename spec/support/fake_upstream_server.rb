@@ -20,9 +20,10 @@ module FakeUpstreamServer
   # connection (the cancellation signal optiq relies on).
   class RawUpstream
     def initialize(task)
-      @task   = task
-      @server = TCPServer.new("127.0.0.1", 0)
-      @port   = @server.local_address.ip_port
+      @task         = task
+      @server       = TCPServer.new("127.0.0.1", 0)
+      @port         = @server.local_address.ip_port
+      @accept_tasks = []
     end
 
     attr_reader :port
@@ -32,9 +33,11 @@ module FakeUpstreamServer
     end
 
     # Accepts exactly one connection, drains the request head, then yields
-    # the raw socket to the block to script the response.
+    # the raw socket to the block to script the response. Callable more than
+    # once per instance — each call gets its own tracked accept task, so
+    # #stop tears all of them down, not just the most recent.
     def accept
-      @accept_task = @task.async do
+      @accept_tasks << @task.async do
         sock = @server.accept
         drain_request_head(sock)
         yield sock
@@ -50,7 +53,7 @@ module FakeUpstreamServer
     end
 
     def stop
-      @accept_task&.stop
+      @accept_tasks.each(&:stop)
       @server.close
     end
 
@@ -61,6 +64,30 @@ module FakeUpstreamServer
       head << sock.readpartial(4096) until head.include?("\r\n\r\n")
       head
     end
+  end
+
+  # Runs +example+ inside a fresh reactor, exposed to the example as +@task+.
+  # A leaked accept task (the RawUpstream bug this harness guards against)
+  # holds the reactor open until its sleep expires rather than failing fast,
+  # so once the example returns, any live non-transient child left on +@task+
+  # is an orphan: stop it so the reactor closes promptly, then fail loudly
+  # instead of letting the leak pass silently. Raising has to happen after
+  # the Async block returns — an exception raised inside the task's own
+  # block is caught by Async::Task and stored on its promise, never reaching
+  # RSpec.
+  def run_in_reactor(example)
+    orphans = nil
+
+    Async do |task|
+      @task = task
+      example.run
+      orphans = task.children.to_a.reject(&:transient?)
+      orphans.each(&:stop)
+    end
+
+    return unless orphans&.any?
+
+    raise "leaked #{orphans.size} async task(s) still alive after the example: #{orphans.join(", ")}"
   end
 
   def sse_headers(sock)
