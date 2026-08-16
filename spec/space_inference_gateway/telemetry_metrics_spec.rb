@@ -82,10 +82,7 @@ RSpec.describe "Telemetry metrics (I09)" do
 
   describe "phase lifecycle + TTFT (real streaming)" do
     around do |example|
-      Async do |task|
-        @task = task
-        example.run
-      end
+      run_in_reactor(example)
     end
 
     it "open->prefill+1, first delta->decode (TTFT observed once), close decrements decode" do
@@ -129,7 +126,7 @@ RSpec.describe "Telemetry metrics (I09)" do
     end
 
     it "abandon while still in prefill (no delta ever arrives) decrements prefill only" do
-      stub_const("SpaceInferenceGateway::App::KEEPALIVE_INTERVAL", 1)
+      stub_const("SpaceInferenceGateway::App::KEEPALIVE_INTERVAL", 0.2)
 
       @task.with_timeout(5) do
         upstream = FakeUpstreamServer::RawUpstream.new(@task)

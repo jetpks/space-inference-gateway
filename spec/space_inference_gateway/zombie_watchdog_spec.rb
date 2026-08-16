@@ -37,10 +37,7 @@ RSpec.describe "Zombie watchdog (I04 AC3)" do
   include FakeUpstreamServer
 
   around do |example|
-    Async do |task|
-      @task = task
-      example.run
-    end
+    run_in_reactor(example)
   end
 
   before { SpaceInferenceGateway::Metrics.reset_all }
