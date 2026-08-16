@@ -22,15 +22,17 @@ RSpec.describe "Stream lifecycle (I02 AC2-AC7, AC9)" do
     end
   end
 
-  # ── AC4 — buffered (non-stream) idle-gap timeout ────────────────────────────
+  # ── AC4 — buffered (non-stream) path timeout ─────────────────────────────────
 
-  describe "AC4 — buffered path idle-gap timeout" do
+  describe "AC4 — buffered path timeout" do
     it "never-responding upstream yields 504 in OAI flavor within the configured budget" do
       @task.with_timeout(5) do
         upstream = FakeUpstreamServer::RawUpstream.new(@task)
         upstream.accept { |_sock| @task.sleep(60) } # never responds
 
-        client = SpaceInferenceGateway::UpstreamClient.new(base_url: upstream.base_url, idle_timeout: 0.2)
+        client = SpaceInferenceGateway::UpstreamClient.new(
+          base_url: upstream.base_url, idle_timeout: 30, buffered_timeout: 1,
+        )
 
         t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
         body, status, = client.call("POST", "/v1/chat/completions", "{}")
@@ -52,7 +54,9 @@ RSpec.describe "Stream lifecycle (I02 AC2-AC7, AC9)" do
           @task.sleep(60) # headers arrive, body never does
         end
 
-        client = SpaceInferenceGateway::UpstreamClient.new(base_url: upstream.base_url, idle_timeout: 0.2)
+        client = SpaceInferenceGateway::UpstreamClient.new(
+          base_url: upstream.base_url, idle_timeout: 30, buffered_timeout: 1,
+        )
 
         t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
         _body, status, = client.call("POST", "/v1/chat/completions", "{}")

@@ -6,20 +6,26 @@
 # `venv` for mlx is the python interpreter; for optiq and mlx-vlm it is the
 # engine's console-script binary path, invoked directly. All may start with
 # `~` (expanded to HOME by the registry).
-default: qwen3.8-27b-mxfp8
+default: qwen3.8-27b-mxfp8-concurrent1
 
 models:
-  # mlx-vlm engine, MTP speculative decoding, automatic prefix cache (APC).
-  # APC has no CLI flag — it's environment-only (see the supervisor's
-  # build_env) — so apc_enabled/apc_exact_cache_entries must both be set or
-  # the child runs with caching silently off. apc_exact_cache_entries: 16 is
-  # 2 x concurrent conversations (each request stores two cache snapshots);
-  # undersizing it degrades to a 0% cache hit rate silently — measured
-  # 2026-08-15, not theoretical. readiness_timeout is omitted: the default
-  # comfortably covers the measured 4-7s load. decode_concurrency /
-  # prompt_concurrency are omitted: they're mlx_lm-specific and mean nothing
-  # to this engine.
-  qwen3.8-27b-mxfp8:
+  # mlx-vlm engine, two operating points over the same checkpoint (same port
+  # 8080 — the supervisor is single-flight and swaps between them). APC has
+  # no CLI flag — it's environment-only (see the supervisor's build_env) — so
+  # apc_enabled/apc_exact_cache_entries must both be set or the child runs
+  # with caching silently off. apc_exact_cache_entries: 16 is 2 x concurrent
+  # conversations (each request stores two cache snapshots); undersizing it
+  # degrades to a 0% cache hit rate silently — measured 2026-08-15, not
+  # theoretical. readiness_timeout is omitted: the default comfortably
+  # covers the measured 4-7s load. decode_concurrency / prompt_concurrency
+  # are omitted: they're mlx_lm-specific and mean nothing to this engine.
+  #
+  # -concurrent1 wins single-stream (22.5 tok/s @ concurrency 1) but
+  # collapses under load (~12.5 tok/s aggregate @ concurrency >= 2) —
+  # speculative decoding and continuous batching compete for the same
+  # compute slack. No thinking_budget: mlx-vlm rejects draft_model +
+  # thinking_budget together, per request.
+  qwen3.8-27b-mxfp8-concurrent1:
     engine: mlx-vlm
     model: mlx-community/Qwen3.8-27B-mxfp8
     port: 8080
@@ -29,6 +35,24 @@ models:
     apc_exact_cache_entries: 16
     draft_model: mlx-community/Qwen3.8-27B-MTP-mxfp8
     draft_kind: mtp
+    max_num_seqs: 1
+    supports_reasoning: true
+  # -concurrent4 drops the drafter and wins batch (14.8/30.0/37.6/40.7 tok/s
+  # aggregate @ concurrency 1-4) — it's also the only config where
+  # thinking_budget works at all (see -concurrent1's comment). max_num_seqs:
+  # 4 is a measured guard: above concurrency 4 the engine produced a
+  # 16,384-token runaway and finish_reason: stop responses with 1-5
+  # completion tokens and content: null — both measured 2026-08-15.
+  qwen3.8-27b-mxfp8-concurrent4:
+    engine: mlx-vlm
+    model: mlx-community/Qwen3.8-27B-mxfp8
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    enable_thinking: true
+    apc_enabled: true
+    apc_exact_cache_entries: 16
+    max_num_seqs: 4
+    thinking_budget: 512
     supports_reasoning: true
   # Qwen3.6 27B OptiQ-4bit with MTP depth 2 (optiq engine).
   # optiq's single-model mode: the request "model" field is a label — any value
