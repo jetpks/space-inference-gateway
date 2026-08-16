@@ -291,7 +291,7 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
 
     it "delivers a `: keepalive` comment within the keepalive interval while upstream holds" do
       # Shorten the keepalive interval for the test so it runs fast.
-      stub_const("SpaceInferenceGateway::App::KEEPALIVE_INTERVAL", 1)
+      stub_const("SpaceInferenceGateway::App::KEEPALIVE_INTERVAL", 0.2)
 
       Async do |task|
         barrier = Async::Condition.new
@@ -329,7 +329,7 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
           expect(response.status).to eq(200)
 
           # The first chunk should be a keepalive comment, arriving within ~2s
-          # (KEEPALIVE_INTERVAL=1 + slack), NOT the 30s+ the upstream holds.
+          # (KEEPALIVE_INTERVAL=0.2 + slack), NOT the 30s+ the upstream holds.
           first = nil
           task.with_timeout(5) { first = response.body.read }
           expect(first).to include(": keepalive")
