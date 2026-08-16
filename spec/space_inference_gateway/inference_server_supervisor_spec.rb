@@ -195,7 +195,7 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
       }
     end
 
-    it "builds exact mlx_vlm.server argv for qwen3.8-27b-mxfp8 entry" do
+    it "builds exact mlx_vlm.server argv for qwen3.8-27b-mxfp8-concurrent1 entry" do
       expect(supervisor.send(:build_argv, mlx_vlm_entry)).to eq([
                                                                   "/home/user/.venv-mlx-vlm/bin/mlx_vlm.server",
                                                                   "--model", "mlx-community/Qwen3.8-27B-mxfp8",
@@ -264,6 +264,23 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
       entry = { engine: "mlx-vlm", apc_exact_cache_entries: 16 }
       expect(supervisor.send(:build_env, entry)).to eq("APC_EXACT_CACHE_ENTRIES" => "16")
     end
+
+    it "maps thinking_budget and max_num_seqs to MLX_VLM_THINKING_BUDGET and MLX_VLM_MAX_NUM_SEQS" do
+      entry = { engine: "mlx-vlm", thinking_budget: 512, max_num_seqs: 4 }
+      expect(supervisor.send(:build_env, entry)).to eq(
+        "MLX_VLM_THINKING_BUDGET" => "512", "MLX_VLM_MAX_NUM_SEQS" => "4",
+      )
+    end
+
+    it "omits MLX_VLM_THINKING_BUDGET when thinking_budget is absent" do
+      entry = { engine: "mlx-vlm", max_num_seqs: 1 }
+      expect(supervisor.send(:build_env, entry)).to eq("MLX_VLM_MAX_NUM_SEQS" => "1")
+    end
+
+    it "omits MLX_VLM_MAX_NUM_SEQS when max_num_seqs is absent" do
+      entry = { engine: "mlx-vlm", thinking_budget: 512 }
+      expect(supervisor.send(:build_env, entry)).to eq("MLX_VLM_THINKING_BUDGET" => "512")
+    end
   end
 
   # ── ModelRegistry — mlx fields ─────────────────────────────────────────────
@@ -280,11 +297,11 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
       expect(registry.resolve("no-such-model")).to be_nil
     end
 
-    it "config/models.yml has qwen3.8-27b-mxfp8 default and carries mlx + optiq + mlx-vlm aliases" do
+    it "config/models.yml has qwen3.8-27b-mxfp8-concurrent1 default and carries mlx + optiq + mlx-vlm aliases" do
       loaded = SpaceInferenceGateway::ModelRegistry.load
-      expect(loaded.default_alias).to eq("qwen3.8-27b-mxfp8")
-      expect(loaded.aliases).to include("qwen3.8-27b-mxfp8", "qwen3-27b-optiq", "hermes-4-70b",
-                                        "qwen3-122b-a10b", "qwen3-35b-a3b",)
+      expect(loaded.default_alias).to eq("qwen3.8-27b-mxfp8-concurrent1")
+      expect(loaded.aliases).to include("qwen3.8-27b-mxfp8-concurrent1", "qwen3.8-27b-mxfp8-concurrent4",
+                                        "qwen3-27b-optiq", "hermes-4-70b", "qwen3-122b-a10b", "qwen3-35b-a3b",)
 
       optiq_entry = loaded.resolve("qwen3-27b-optiq")
       expect(optiq_entry[:engine]).to eq("optiq")
@@ -298,13 +315,25 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
       expect(mlx_entry[:engine]).to eq("mlx")
       expect(mlx_entry[:model]).to be_a(String)
 
-      mlx_vlm_entry = loaded.resolve("qwen3.8-27b-mxfp8")
-      expect(mlx_vlm_entry[:engine]).to eq("mlx-vlm")
-      expect(mlx_vlm_entry[:model]).to eq("mlx-community/Qwen3.8-27B-mxfp8")
-      expect(mlx_vlm_entry[:apc_enabled]).to eq(true)
-      expect(mlx_vlm_entry[:apc_exact_cache_entries]).to eq(16)
-      expect(mlx_vlm_entry[:draft_model]).to eq("mlx-community/Qwen3.8-27B-MTP-mxfp8")
-      expect(mlx_vlm_entry[:draft_kind]).to eq("mtp")
+      concurrent1 = loaded.resolve("qwen3.8-27b-mxfp8-concurrent1")
+      expect(concurrent1[:engine]).to eq("mlx-vlm")
+      expect(concurrent1[:model]).to eq("mlx-community/Qwen3.8-27B-mxfp8")
+      expect(concurrent1[:apc_enabled]).to eq(true)
+      expect(concurrent1[:apc_exact_cache_entries]).to eq(16)
+      expect(concurrent1[:draft_model]).to eq("mlx-community/Qwen3.8-27B-MTP-mxfp8")
+      expect(concurrent1[:draft_kind]).to eq("mtp")
+      expect(concurrent1[:max_num_seqs]).to eq(1)
+      expect(concurrent1[:thinking_budget]).to be_nil
+
+      concurrent4 = loaded.resolve("qwen3.8-27b-mxfp8-concurrent4")
+      expect(concurrent4[:engine]).to eq("mlx-vlm")
+      expect(concurrent4[:model]).to eq("mlx-community/Qwen3.8-27B-mxfp8")
+      expect(concurrent4[:apc_enabled]).to eq(true)
+      expect(concurrent4[:apc_exact_cache_entries]).to eq(16)
+      expect(concurrent4[:draft_model]).to be_nil
+      expect(concurrent4[:draft_kind]).to be_nil
+      expect(concurrent4[:max_num_seqs]).to eq(4)
+      expect(concurrent4[:thinking_budget]).to eq(512)
     end
 
     it "venv has ~ expanded; model is the repo id (not path-expanded)" do

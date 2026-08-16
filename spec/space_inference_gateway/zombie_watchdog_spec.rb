@@ -142,7 +142,9 @@ RSpec.describe "Zombie watchdog (I04 AC3)" do
           upstream = FakeUpstreamServer::RawUpstream.new(@task)
           upstream.accept { |_sock| @task.sleep(60) } # never responds
 
-          upstream_client = SpaceInferenceGateway::UpstreamClient.new(base_url: upstream.base_url, idle_timeout: 0.3)
+          upstream_client = SpaceInferenceGateway::UpstreamClient.new(
+            base_url: upstream.base_url, idle_timeout: 30, buffered_timeout: 0.3,
+          )
           app = SpaceInferenceGateway::App.new(upstream_client: upstream_client, controller: controller)
 
           resp = call_app(app, "POST", "/v1/chat/completions", JSON.generate({ model: "any", messages: [] }))
@@ -164,7 +166,9 @@ RSpec.describe "Zombie watchdog (I04 AC3)" do
         upstream = FakeUpstreamServer::RawUpstream.new(@task)
         upstream.accept { |_sock| @task.sleep(60) } # never responds
 
-        upstream_client = SpaceInferenceGateway::UpstreamClient.new(base_url: upstream.base_url, idle_timeout: 0.3)
+        upstream_client = SpaceInferenceGateway::UpstreamClient.new(
+          base_url: upstream.base_url, idle_timeout: 30, buffered_timeout: 0.3,
+        )
         app = SpaceInferenceGateway::App.new(upstream_client: upstream_client, controller: controller)
 
         resp = call_app(app, "POST", "/v1/chat/completions", JSON.generate({ model: "any", messages: [] }))
@@ -183,7 +187,9 @@ RSpec.describe "Zombie watchdog (I04 AC3)" do
 
         upstream = FakeUpstreamServer::RawUpstream.new(@task)
         upstream.accept { |_sock| @task.sleep(60) } # never responds
-        upstream_client = SpaceInferenceGateway::UpstreamClient.new(base_url: upstream.base_url, idle_timeout: 0.3)
+        upstream_client = SpaceInferenceGateway::UpstreamClient.new(
+          base_url: upstream.base_url, idle_timeout: 30, buffered_timeout: 0.3,
+        )
         app = SpaceInferenceGateway::App.new(upstream_client: upstream_client, controller: controller)
         resp = call_app(app, "POST", "/v1/chat/completions", JSON.generate({ model: "any", messages: [] }))
         expect(resp.status).to eq(504) # streak 1
@@ -202,7 +208,9 @@ RSpec.describe "Zombie watchdog (I04 AC3)" do
 
         upstream2 = FakeUpstreamServer::RawUpstream.new(@task)
         upstream2.accept { |_sock| @task.sleep(60) } # never responds
-        upstream_client2 = SpaceInferenceGateway::UpstreamClient.new(base_url: upstream2.base_url, idle_timeout: 0.3)
+        upstream_client2 = SpaceInferenceGateway::UpstreamClient.new(
+          base_url: upstream2.base_url, idle_timeout: 30, buffered_timeout: 0.3,
+        )
         app2 = SpaceInferenceGateway::App.new(upstream_client: upstream_client2, controller: controller)
         resp2 = call_app(app2, "POST", "/v1/chat/completions", JSON.generate({ model: "any", messages: [] }))
         expect(resp2.status).to eq(504) # streak 1 again (below threshold 2)

@@ -81,7 +81,7 @@ RSpec.describe SpaceInferenceGateway::App do
     end
 
     it "rewrites the model field to the mlx-vlm repo id for unknown alias (mlx-vlm default)" do
-      # The default alias (qwen3.8-27b-mxfp8, engine: mlx-vlm) is what an unknown
+      # The default alias (qwen3.8-27b-mxfp8-concurrent1, engine: mlx-vlm) is what an unknown
       # alias falls back to. mlx-vlm validates the "model" field against its
       # loaded model the same way mlx does, so the fallback must rewrite it too —
       # forwarding the unresolved alias would evict the resident checkpoint.
@@ -191,7 +191,7 @@ RSpec.describe SpaceInferenceGateway::App do
     end
 
     it "rewrites the alias to the mlx-vlm repo id" do
-      body = JSON.generate({ model: "qwen3.8-27b-mxfp8", messages: [{ role: "user", content: "hi" }] })
+      body = JSON.generate({ model: "qwen3.8-27b-mxfp8-concurrent1", messages: [{ role: "user", content: "hi" }] })
       post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
       expect(last_response.status).to eq(200)
       sent = JSON.parse(forwarded.first[:body])
@@ -200,7 +200,7 @@ RSpec.describe SpaceInferenceGateway::App do
 
     it "normalizes the OpenAI 'developer' role to 'system' (mlx-vlm rejects developer)" do
       body = JSON.generate({
-                             model: "qwen3.8-27b-mxfp8",
+                             model: "qwen3.8-27b-mxfp8-concurrent1",
         messages: [
           { role: "developer", content: "you are helpful" },
           { role: "user", content: "hi" },
@@ -214,7 +214,7 @@ RSpec.describe SpaceInferenceGateway::App do
 
     it "routes /v1/messages for mlx-vlm to /v1/chat/completions (ANT synthesis)" do
       body = JSON.generate({
-                             model: "qwen3.8-27b-mxfp8",
+                             model: "qwen3.8-27b-mxfp8-concurrent1",
         messages: [{ role: "user", content: "hi" }],
         max_tokens: 100,
                            })

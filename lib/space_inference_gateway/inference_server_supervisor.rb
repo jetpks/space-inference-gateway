@@ -17,9 +17,7 @@ module SpaceInferenceGateway
       # stop_grace; probe_timeout (connect+read bound on a single /health or
       # port-liveness check) defaults to 5s. Both overridable, but every
       # existing caller that only names the original three fields keeps working.
-      def initialize(readiness:, stop_grace:, poll_interval:, kill_grace: stop_grace, probe_timeout: 5)
-        super
-      end
+      def initialize(readiness:, stop_grace:, poll_interval:, kill_grace: stop_grace, probe_timeout: 5) = super
 
       def self.default = new(readiness: 120, stop_grace: 5, poll_interval: 0.5)
     end
@@ -120,13 +118,14 @@ module SpaceInferenceGateway
       end
     end
 
-    # APC (automatic prefix cache) has no CLI flag on mlx-vlm — it is
-    # configured only via environment, so a child spawned with an unset
-    # environment would silently run with caching off. An entry declaring
-    # neither key leaves the child's environment unchanged.
+    # APC, thinking_budget and max_num_seqs all have no CLI flag on mlx-vlm —
+    # environment-only, so an entry declaring none of them leaves the
+    # child's environment unchanged.
     def build_env(entry)
       { "APC_ENABLED" => (entry[:apc_enabled] ? "1" : nil),
-        "APC_EXACT_CACHE_ENTRIES" => entry[:apc_exact_cache_entries]&.to_s, }.compact
+        "APC_EXACT_CACHE_ENTRIES" => entry[:apc_exact_cache_entries]&.to_s,
+        "MLX_VLM_THINKING_BUDGET" => entry[:thinking_budget]&.to_s,
+        "MLX_VLM_MAX_NUM_SEQS" => entry[:max_num_seqs]&.to_s, }.compact
     end
 
     def build_mlx_argv(entry)
