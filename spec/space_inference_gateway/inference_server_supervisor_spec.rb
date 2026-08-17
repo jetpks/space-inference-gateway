@@ -319,7 +319,7 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
       expect(concurrent1[:engine]).to eq("mlx-vlm")
       expect(concurrent1[:model]).to eq("mlx-community/Qwen3.8-27B-mxfp8")
       expect(concurrent1[:apc_enabled]).to eq(true)
-      expect(concurrent1[:apc_exact_cache_entries]).to eq(16)
+      expect(concurrent1[:apc_exact_cache_entries]).to eq(4)
       expect(concurrent1[:draft_model]).to eq("mlx-community/Qwen3.8-27B-MTP-mxfp8")
       expect(concurrent1[:draft_kind]).to eq("mtp")
       expect(concurrent1[:max_num_seqs]).to eq(1)

@@ -1,3 +1,9 @@
 /.bundle/
 /pkg/
 *.gem
+
+# Rendered by the ansible role into gateway_src_dir (templates/*.j2) — an
+# artifact of a deploy, not source. Untracked here so `git pull` on the studio
+# runtime checkout stays clean.
+/run-gateway.sh
+/run-caddy.sh
