@@ -17,9 +17,9 @@ RSpec.describe SpaceInferenceGateway::UpstreamClient do
   end
 
   describe "timeout constants (AC4)" do
-    it "UPSTREAM_IDLE_TIMEOUT defaults to 600 (env-overridable via UPSTREAM_IDLE_TIMEOUT)" do
+    it "UPSTREAM_IDLE_TIMEOUT defaults to 1400 (env-overridable via UPSTREAM_IDLE_TIMEOUT)" do
       expect(ENV.fetch("UPSTREAM_IDLE_TIMEOUT", nil)).to be_nil
-      expect(described_class::UPSTREAM_IDLE_TIMEOUT).to eq(600)
+      expect(described_class::UPSTREAM_IDLE_TIMEOUT).to eq(1400)
     end
 
     it "UPSTREAM_BUFFERED_TIMEOUT defaults to 1800 (env-overridable via UPSTREAM_BUFFERED_TIMEOUT)" do

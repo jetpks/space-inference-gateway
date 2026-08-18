@@ -12,7 +12,15 @@ module SpaceInferenceGateway
     # tokens never times out. Applied via Async::HTTP::Endpoint's timeout:
     # option, which sets IO#timeout= on the connection socket. Governs
     # #open_stream only — see UPSTREAM_BUFFERED_TIMEOUT for the buffered path.
-    UPSTREAM_IDLE_TIMEOUT = Integer(ENV.fetch("UPSTREAM_IDLE_TIMEOUT", "600"))
+    #
+    # Sized to cover a full-context prefill, not a token gap: the engine emits
+    # zero bytes until prefill completes, so an entire prefill counts as one
+    # idle gap. A 262144-token context at the studio's measured ~200 tok/s
+    # cold-prefill rate needs ~1300s. At the previous 600 anything above
+    # ~120k prompt tokens could never stream — it timed out mid-prefill, and
+    # a cancelled prefill stores no cache snapshot, so each retry restarted
+    # from cached_tokens=0 and re-timed-out identically.
+    UPSTREAM_IDLE_TIMEOUT = Integer(ENV.fetch("UPSTREAM_IDLE_TIMEOUT", "1400"))
 
     # Wall-clock bound on waiting for the upstream's response status line +
     # headers in #open_stream (streaming opens only) — enforced via
@@ -28,7 +36,7 @@ module SpaceInferenceGateway
     # upstream headers arrive only after full generation, so unlike the
     # idle-gap timeout above this bounds the whole request, not a per-read
     # gap. Independent of it — a wedged mid-stream #open_stream connection is
-    # still killed by UPSTREAM_IDLE_TIMEOUT after 600s, not this one. 1800
+    # still killed by UPSTREAM_IDLE_TIMEOUT after 1400s, not this one. 1800
     # matches canary's own STUDIO_READ_TIMEOUT.
     UPSTREAM_BUFFERED_TIMEOUT = Integer(ENV.fetch("UPSTREAM_BUFFERED_TIMEOUT", "1800"))
 

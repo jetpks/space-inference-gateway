@@ -131,7 +131,7 @@ curl -sN -X POST http://localhost:3001/v1/chat/completions \
 
 SSE chunks stream out with `reasoning_content` deltas first, then `content`
 deltas, then a `finish_reason` chunk and `data: [DONE]`. If the engine goes
-quiet for 45 s (long prompts spend a while in prefill), you'll see
+quiet for 8 s (long prompts spend a while in prefill), you'll see
 `: keepalive` comment lines — SSE-legal, ignored by client SDKs, and the
 reason idle HTTP timers don't kill long generations.
 

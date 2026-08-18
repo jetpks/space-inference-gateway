@@ -22,7 +22,7 @@ module SpaceInferenceGateway
       "x-accel-buffering" => "no",
     }.freeze
 
-    KEEPALIVE_INTERVAL = 45 # seconds — well under pi's 300s HTTP idle timeout
+    KEEPALIVE_INTERVAL = 8 # seconds — well under pi's 300s HTTP idle timeout
     KEEPALIVE_COMMENT = ": keepalive\n\n"
 
     # Streaming Rack body for SSE generation paths.

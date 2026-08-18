@@ -13,12 +13,12 @@ surfaces: environment variables (process-level) and `config/models.yml`
 | `MODEL_CONFIG_PATH` | `config/models.yml` (in the gem) | registry file location |
 | `ENGINE_LOG_DIR` | `~/Library/Logs/space-inference-gateway` | per-alias engine child logs (`<alias>.log`) — deliberately not a tmpdir, so crash forensics have somewhere stable to look |
 | `ZOMBIE_RESTART_THRESHOLD` | `2` | consecutive no-response generation failures before the watchdog restarts the child |
-| `UPSTREAM_IDLE_TIMEOUT` | `600` (s) | per-socket-operation idle gap to the engine; resets on every read/write, so a stream that keeps emitting never times out |
+| `UPSTREAM_IDLE_TIMEOUT` | `1400` (s) | per-socket-operation idle gap to the engine; resets on every read/write, so a stream that keeps emitting never times out |
 | `UPSTREAM_HEADERS_TIMEOUT` | `300` (s) | wall-clock bound on waiting for response headers when opening a stream |
 | `UPSTREAM_BUFFERED_TIMEOUT` | `1800` (s) | end-to-end deadline for a buffered (non-streaming) call; independent of the streaming idle-gap above |
 
 Fixed constants worth knowing (not env-tunable): SSE keepalive comments after
-**45 s** of upstream silence (`App::KEEPALIVE_INTERVAL`, chosen well under
+**8 s** of upstream silence (`App::KEEPALIVE_INTERVAL`, chosen well under
 pi's 300 s idle timeout); supervisor timeouts below.
 
 ## The model registry

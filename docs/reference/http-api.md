@@ -156,7 +156,7 @@ progress; byte counts are placeholders):
   transition, and a swap requested while any generation is in flight is
   refused with 409. The in-flight count is held for the *entire* stream
   lifetime — from stream open to the client closing the response body.
-- **SSE keepalive**: after 45 s of upstream silence the gateway emits a
+- **SSE keepalive**: after 8 s of upstream silence the gateway emits a
   `: keepalive` comment line (SSE-legal; ignored by the OpenAI and Anthropic
   SDK decoders). optiq can spend minutes in prompt prefill emitting zero
   bytes; without this, client idle timers would abort the stream.
@@ -164,7 +164,7 @@ progress; byte counts are placeholders):
   within `UPSTREAM_HEADERS_TIMEOUT` (300 s) fails 504; a buffered call that
   times out with no response likewise. Both feed the
   [zombie watchdog](configuration.md#supervisor-timeouts-and-the-zombie-watchdog).
-  Mid-stream, an idle gap over `UPSTREAM_IDLE_TIMEOUT` (600 s) ends the
+  Mid-stream, an idle gap over `UPSTREAM_IDLE_TIMEOUT` (1400 s) ends the
   stream; the SSE response is already 200, so the end is silent on the wire
   but counted as a 504 in `sig_upstream_errors_total`.
 

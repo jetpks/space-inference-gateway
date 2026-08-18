@@ -181,12 +181,12 @@ exist purely to keep long generations alive and observable:
 
 - **Keepalive comments.** optiq can spend minutes in prompt prefill emitting
   zero bytes; client HTTP idle timers (pi defaults to 300 s) would abort the
-  stream. After 45 s of upstream silence the gateway emits a `: keepalive`
+  stream. After 8 s of upstream silence the gateway emits a `: keepalive`
   SSE comment — spec-legal, and verified ignored by the OpenAI and Anthropic
   SDK decoders.
 - **Two-phase upstream timeouts.** Opening a stream is bounded by a headers
   timeout (300 s — this is what catches zombies); once streaming, only an
-  idle *gap* over 600 s times out, so a stream that keeps emitting never
+  idle *gap* over 1400 s times out, so a stream that keeps emitting never
   dies. A mid-stream timeout can't carry a 5xx on an already-200 SSE
   response, so it ends silently on the wire but is counted in
   `sig_upstream_errors_total` — observable even when invisible.
