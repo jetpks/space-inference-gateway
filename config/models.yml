@@ -61,10 +61,19 @@ models:
     max_num_seqs: 4
     thinking_budget: 512
     supports_reasoning: true
+  # ⛔ NOT FIT TO SERVE as of 2026-08-27 — kept for the measured configuration,
+  # not because it works. The engine-side settings below are sound and the
+  # model fits the box comfortably (86.69 GiB peak, 375 tok/s prefill, 27.6
+  # tok/s decode, no swap). The *output is incoherent*: "What is 2+2?" returns
+  # things like 'Hiii' and '</tool_call> How'. Vontra's oQ4 (104 GiB) is
+  # equally incoherent, so this is not the 3-bit quantization; both are that
+  # publisher's conversions of the same BF16 checkpoint, run through mlx-vlm
+  # 0.6.17's qwen4_exp, which shipped 2026-08-26 — one day before the test.
+  # The defect is in one of those two and this registry cannot tell which.
+  # Route nothing here until that is resolved upstream.
+  #
   # Qwen3.8-Flash-Next — qwen4_exp, a 120B/A6B sparse-MoE VLM driven text-only,
-  # in Vontra's oQ3 mixed-precision quant (86.2 GiB on disk). Measured
-  # 2026-08-27; the oQ4 quant at 104 GiB loads but thrashes on any real prompt,
-  # so 3-bit is the operating point this box actually supports.
+  # in Vontra's oQ3 mixed-precision quant (86.2 GiB on disk).
   #
   # ⚠️ Requires the local sanitize() patch in mlx_vlm/models/qwen4_exp.py.
   # Stock 0.6.17 filters `mtp.*` but the checkpoint names them
@@ -82,8 +91,8 @@ models:
   # and make_prompt_cache defers to that and ignores max_kv_size entirely.
   # Setting it would read as a guard while doing nothing.
   #
-  # No kv_bits: unquantized KV fits. ~84.7 GiB resident after the MTP strip
-  # leaves ~27 GiB under the 112 GiB wired limit, and the cache is cheap here —
+  # No kv_bits: unquantized KV fits. Measured 86.69 GiB peak leaves ~25 GiB
+  # under the 112 GiB wired limit, and the cache is cheap here —
   # only 12 of 48 layers hold one, at 24 KiB/token (6.0 GiB at the full 262k).
   # The binding constraint is APC, whose snapshots scale with prompt depth: two
   # per in-flight request, so apc_exact_cache_entries: 2 is one conversation.
@@ -114,6 +123,7 @@ models:
     apc_exact_cache_entries: 2
     max_num_seqs: 1
     # 86 GiB off a cold page cache is well past the default 120s budget.
+    # (Measured ~30s warm; the budget is for the cold case.)
     readiness_timeout: 600
   # Qwen3.6 27B OptiQ-4bit with MTP depth 2 (optiq engine).
   # optiq's single-model mode: the request "model" field is a label — any value
