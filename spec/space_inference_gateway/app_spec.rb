@@ -127,6 +127,69 @@ RSpec.describe SpaceInferenceGateway::App do
     end
   end
 
+  # ── Flash-Next reasoning controls ─────────────────────────────────────────
+  describe "reasoning_effort coercion and thinking history (mlx-vlm)" do
+    let(:forwarded) { [] }
+    let(:upstream_fn) do
+      lambda do |path, body|
+        forwarded << { path: path, body: body }
+        [fixture("oai_ns.json"), 200, {}]
+      end
+    end
+
+    def sent_for(body)
+      post "/v1/chat/completions", JSON.generate(body), "CONTENT_TYPE" => "application/json"
+      JSON.parse(forwarded.first[:body])
+    end
+
+    it "injects the alias default when the client asks for no particular effort" do
+      sent = sent_for({ model: "qwen3.8-flash-next-oq3", messages: [{ role: "user", content: "hi" }] })
+      expect(sent["reasoning_effort"]).to eq("medium")
+    end
+
+    it "passes through an effort the model's template accepts" do
+      sent = sent_for({ model: "qwen3.8-flash-next-oq3", messages: [{ role: "user", content: "hi" }],
+                        reasoning_effort: "xhigh", })
+      expect(sent["reasoning_effort"]).to eq("xhigh")
+    end
+
+    it "coerces an OpenAI effort the template would raise on, rather than relaying a 500" do
+      sent = sent_for({ model: "qwen3.8-flash-next-oq3", messages: [{ role: "user", content: "hi" }],
+                        reasoning_effort: "high", })
+      expect(sent["reasoning_effort"]).to eq("medium")
+    end
+
+    it "coerces the nested Responses-API form too, which mlx-vlm reads first" do
+      sent = sent_for({ model: "qwen3.8-flash-next-oq3", messages: [{ role: "user", content: "hi" }],
+                        reasoning: { effort: "high" }, })
+      expect(sent["reasoning"]["effort"]).to eq("medium")
+      expect(sent["reasoning_effort"]).to eq("medium")
+    end
+
+    it "leaves a disable request alone so a client can still turn thinking off" do
+      sent = sent_for({ model: "qwen3.8-flash-next-oq3", messages: [{ role: "user", content: "hi" }],
+                        reasoning_effort: "none", })
+      expect(sent["reasoning_effort"]).to eq("none")
+    end
+
+    it "drops reasoning_content from assistant history when preserve_thinking is false" do
+      sent = sent_for({ model: "qwen3.8-flash-next-oq3",
+                        messages: [
+                          { role: "user", content: "first" },
+                          { role: "assistant", content: "answer", reasoning_content: "long chain of thought" },
+                          { role: "user", content: "second" },
+                        ], })
+      assistant = sent["messages"][1]
+      expect(assistant).not_to have_key("reasoning_content")
+      expect(assistant["content"]).to eq("answer")
+    end
+
+    it "leaves aliases without a reasoning_effort default untouched" do
+      sent = sent_for({ model: "qwen3.8-27b-mxfp8-concurrent1", messages: [{ role: "user", content: "hi" }] })
+      expect(sent).not_to have_key("reasoning_effort")
+    end
+  end
+
   # ── AC3: optiq engine path ────────────────────────────────────────────────
   describe "optiq engine — OAI path (AC3)" do
     let(:forwarded) { [] }

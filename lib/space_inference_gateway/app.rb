@@ -167,6 +167,11 @@ module SpaceInferenceGateway
     # itself and never forwards /v1/messages to them: "mlx", "optiq", "mlx-vlm".
     OAI_UPSTREAM_ENGINES = %w[mlx optiq mlx-vlm].freeze
 
+    # Efforts that mean "no reasoning at all" rather than "less of it".
+    # mlx-vlm reads these as a request to disable thinking, so they are a
+    # legitimate client choice and pass through uncoerced.
+    DISABLED_REASONING_EFFORTS = %w[none off disabled false 0].freeze
+
     private
 
     def handle_oai(env)
@@ -561,6 +566,58 @@ module SpaceInferenceGateway
       body["stop"] = (existing + Array(stop_tokens)).uniq
     end
 
+    # mlx-vlm forwards reasoning_effort straight into apply_chat_template, so
+    # the accepted vocabulary is the *model template's*, not OpenAI's.
+    # Qwen3.8-Flash-Next raises on anything but xhigh/medium/low, which turns
+    # a stock client's reasoning_effort: "high" into a 500 rather than a
+    # degradation. An entry declares what its template accepts
+    # (reasoning_effort_values) and what to fall back to (reasoning_effort);
+    # an unsupported value is coerced to the fallback instead of relayed.
+    #
+    # Entries without a reasoning_effort default are untouched — this must
+    # stay a no-op for every alias that predates it.
+    def inject_reasoning_effort(parsed, entry)
+      fallback = entry && entry[:reasoning_effort]
+      return unless fallback
+
+      requested = requested_reasoning_effort(parsed)
+      return if requested && DISABLED_REASONING_EFFORTS.include?(requested.downcase)
+
+      allowed = Array(entry[:reasoning_effort_values]).map(&:to_s)
+      effort  = requested && (allowed.empty? || allowed.include?(requested)) ? requested : fallback.to_s
+      apply_reasoning_effort(parsed, effort)
+    end
+
+    # A client may express effort as either the flat reasoning_effort field or
+    # the nested Responses-API reasoning: {effort:}. mlx-vlm checks the nested
+    # form first, so both are read here and both are rewritten below.
+    def requested_reasoning_effort(parsed)
+      nested = parsed["reasoning"].is_a?(Hash) ? parsed["reasoning"]["effort"] : nil
+      (parsed["reasoning_effort"] || nested)&.to_s
+    end
+
+    def apply_reasoning_effort(parsed, effort)
+      parsed["reasoning_effort"] = effort
+      parsed["reasoning"]["effort"] = effort if parsed["reasoning"].is_a?(Hash)
+    end
+
+    # Qwen-family templates replay each prior assistant turn's full
+    # chain-of-thought back into the prompt unless preserve_thinking is false —
+    # and it defaults true. That grows context by every past turn's reasoning
+    # rather than by its answer, which is the wrong trade on a box where the
+    # weights already own most of the wired limit. mlx-vlm does not forward
+    # preserve_thinking to the template, so the equivalent is done here:
+    # with the field gone, the template renders an empty think block for
+    # history and the answers survive intact.
+    def strip_history_reasoning(parsed)
+      messages = parsed["messages"]
+      return unless messages.is_a?(Array)
+
+      messages.each do |message|
+        message.delete("reasoning_content") if message.is_a?(Hash) && message["role"] == "assistant"
+      end
+    end
+
     # Applies OAI-upstream request rewrites (see OAI_UPSTREAM_ENGINES):
     # - mlx and mlx-vlm: rewrites the "model" field to the HF repo id (both
     #   validate this field against their loaded model; optiq single-model
@@ -575,6 +632,8 @@ module SpaceInferenceGateway
       parsed["model"] = mlx_model_id(model_alias) if %w[mlx mlx-vlm].include?(entry&.fetch(:engine, nil))
       (parsed["messages"] || []).each { |m| m["role"] = "system" if m["role"] == "developer" }
       inject_mlx_stop_tokens(parsed, model_alias)
+      inject_reasoning_effort(parsed, entry)
+      strip_history_reasoning(parsed) if entry && entry[:preserve_thinking] == false
       JSON.generate(parsed)
     end
 

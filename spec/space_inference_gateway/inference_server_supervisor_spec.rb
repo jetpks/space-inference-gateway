@@ -244,6 +244,42 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
 
   # ── AC4 — environment derived from the registry entry ────────────────────
 
+  describe "#build_argv — mlx-vlm tuning flags" do
+    let(:tunable) do
+      {
+        engine: "mlx-vlm",
+        venv:   "/home/user/.venv-mlx-vlm/bin/mlx_vlm.server",
+        model:  "Vontra/Qwen3.8-Flash-Next-MLX-oQ3-MTP",
+        port:   8080,
+      }
+    end
+
+    it "emits nothing extra when no tuning key is declared" do
+      expect(supervisor.send(:build_argv, tunable)).to eq([
+                                                            "/home/user/.venv-mlx-vlm/bin/mlx_vlm.server",
+                                                            "--model", "Vontra/Qwen3.8-Flash-Next-MLX-oQ3-MTP",
+                                                            "--host", "127.0.0.1",
+                                                            "--port", "8080",
+                                                          ])
+    end
+
+    it "emits the kv-cache and context knobs in a stable order" do
+      argv = supervisor.send(:build_argv,
+                             tunable.merge(kv_bits: 4, kv_quant_scheme: "uniform", max_kv_size: 131_072),)
+      expect(argv.last(6)).to eq(["--max-kv-size", "131072", "--kv-bits", "4", "--kv-quant-scheme", "uniform"])
+    end
+
+    it "emits quantized_kv_start: 0 rather than dropping it as falsey" do
+      argv = supervisor.send(:build_argv, tunable.merge(quantized_kv_start: 0))
+      expect(argv.last(2)).to eq(["--quantized-kv-start", "0"])
+    end
+
+    it "keeps extra_args last so an operator override still wins" do
+      argv = supervisor.send(:build_argv, tunable.merge(kv_bits: 4, extra_args: ["--kv-bits", "8"]))
+      expect(argv.last(2)).to eq(["--kv-bits", "8"])
+    end
+  end
+
   describe "#build_env (AC4)" do
     it "maps apc_enabled and apc_exact_cache_entries to APC_ENABLED and APC_EXACT_CACHE_ENTRIES" do
       entry = { engine: "mlx-vlm", apc_enabled: true, apc_exact_cache_entries: 16 }

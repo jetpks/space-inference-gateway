@@ -61,6 +61,60 @@ models:
     max_num_seqs: 4
     thinking_budget: 512
     supports_reasoning: true
+  # Qwen3.8-Flash-Next — qwen4_exp, a 120B/A6B sparse-MoE VLM driven text-only,
+  # in Vontra's oQ3 mixed-precision quant (86.2 GiB on disk). Measured
+  # 2026-08-27; the oQ4 quant at 104 GiB loads but thrashes on any real prompt,
+  # so 3-bit is the operating point this box actually supports.
+  #
+  # ⚠️ Requires the local sanitize() patch in mlx_vlm/models/qwen4_exp.py.
+  # Stock 0.6.17 filters `mtp.*` but the checkpoint names them
+  # `language_model.mtp.*`, so all 76 reach load_weights(strict=True) and the
+  # load fails outright. `pip install --upgrade mlx-vlm` silently reverts it —
+  # backup at qwen4_exp.py.orig-0.6.17.
+  #
+  # No draft_model, deliberately: Flash-Next's hidden dims differ from the 27B's
+  # so that drafter must not be attached, and mlx-vlm has no qwen4_exp entry in
+  # MTP_SPLITTERS, so the checkpoint's own MTP block cannot be split out either.
+  # The -MTP weights are stripped at load and cost nothing but disk.
+  #
+  # No max_kv_size, deliberately: it is inert for this architecture. The model
+  # defines make_cache() (12 full-attention QSAKVCache + 36 linear ArraysCache),
+  # and make_prompt_cache defers to that and ignores max_kv_size entirely.
+  # Setting it would read as a guard while doing nothing.
+  #
+  # No kv_bits: unquantized KV fits. ~84.7 GiB resident after the MTP strip
+  # leaves ~27 GiB under the 112 GiB wired limit, and the cache is cheap here —
+  # only 12 of 48 layers hold one, at 24 KiB/token (6.0 GiB at the full 262k).
+  # The binding constraint is APC, whose snapshots scale with prompt depth: two
+  # per in-flight request, so apc_exact_cache_entries: 2 is one conversation.
+  # If deep-context APC is ever wanted, quantize with kv_quant_scheme: uniform —
+  # QSAKVCache carries the QSA indexer's unprojected keys, and turboquant/hybrid
+  # schemes silently leave this cache in float rather than erroring.
+  #
+  # reasoning_effort is the *template's* vocabulary, not OpenAI's: this template
+  # raises on anything but xhigh/medium/low, which would turn a stock client's
+  # "high" into a 500. The gateway coerces to reasoning_effort_values, defaulting
+  # to medium — the template's own default is xhigh, which is a lot of reasoning
+  # to spend by accident on a box this size.
+  qwen3.8-flash-next-oq3:
+    engine: mlx-vlm
+    model: Vontra/Qwen3.8-Flash-Next-MLX-oQ3-MTP
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    enable_thinking: true
+    supports_reasoning: true
+    reasoning_effort: medium
+    reasoning_effort_values: [xhigh, medium, low]
+    # Qwen templates replay each prior turn's full chain-of-thought into the
+    # prompt unless told otherwise, growing context by reasoning rather than by
+    # answers. mlx-vlm does not forward preserve_thinking, so the gateway drops
+    # reasoning_content from history instead.
+    preserve_thinking: false
+    apc_enabled: true
+    apc_exact_cache_entries: 2
+    max_num_seqs: 1
+    # 86 GiB off a cold page cache is well past the default 120s budget.
+    readiness_timeout: 600
   # Qwen3.6 27B OptiQ-4bit with MTP depth 2 (optiq engine).
   # optiq's single-model mode: the request "model" field is a label — any value
   # is accepted, so the proxy does not rewrite it for this engine.

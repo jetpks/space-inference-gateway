@@ -28,7 +28,7 @@ default: qwen3-27b-optiq   # served when a request names no known alias and noth
 
 models:
   <alias>:                 # what clients send, what /v1/models lists
-    engine: mlx | optiq    # which child the supervisor spawns
+    engine: mlx | optiq | mlx-vlm    # which child the supervisor spawns
     model: <HF repo id>    # passed to --model verbatim (never ~-expanded)
     port: 8080             # child's listen port
     venv: <path>           # mlx: python interpreter; optiq: the optiq binary
@@ -44,12 +44,73 @@ models:
     mtp: true|false
     mtp_depth: <int>
     max_concurrent: <int>
+    # mlx-vlm only — environment-backed (no CLI flag on the child):
+    apc_enabled: true|false
+    apc_exact_cache_entries: <int>   # 2 x concurrent conversations
+    thinking_budget: <int>           # max tokens inside a think block
+    max_num_seqs: <int>              # continuous-batch width
+    # mlx-vlm only — argv flags (see MlxVlmFlags::TUNING):
+    enable_thinking: true|false
+    draft_model: <HF repo id>
+    draft_kind: dflash | eagle3 | mtp
+    draft_block_size: <int>
+    max_tokens: <int>
+    prefill_step_size: <int>
+    vision_cache_size: <int>
+    max_kv_size: <int>               # tokens; see the caveat below
+    kv_bits: <int>                   # and kv_key_bits / kv_value_bits
+    kv_quant_scheme: uniform | turboquant   # and kv_key_scheme / kv_value_scheme
+    kv_group_size: <int>
+    quantized_kv_start: <int>
+    thinking_start_token: <str>
+    thinking_end_token: <str>
+    # mlx-vlm only — applied by the gateway to the request, not the child:
+    reasoning_effort: <str>              # default effort injected per request
+    reasoning_effort_values: [<str>, …]  # what this model's template accepts
+    preserve_thinking: true|false        # false drops reasoning_content from history
 ```
 
 Path-valued keys (`venv`, plus legacy `gguf`/`binary`) get `~` expanded to an
 absolute path — argv goes straight to exec, which never expands a shell `~`.
 `model` is deliberately **not** expanded: it's an HF repo id (or local path)
 that must pass through verbatim.
+
+### KV-cache keys are architecture-dependent
+
+`max_kv_size` and the `kv_*` family are handed to the child, but whether they do
+anything depends on the model. `make_prompt_cache` defers to the model's own
+`make_cache` when it defines one, **ignoring `max_kv_size` entirely** — so on a
+hybrid-attention model like `qwen4_exp` (Qwen3.8-Flash-Next), which builds its
+own mix of per-layer cache types, `max_kv_size` is inert. Setting it there reads
+as a memory guard while doing nothing. Check the model before relying on it.
+
+Where it *is* honoured, note it is a `RotatingKVCache`: it silently discards the
+oldest tokens past the bound rather than erroring, so it trades context for
+memory rather than enforcing a limit.
+
+KV quantization has its own architecture caveat: `qwen4_exp`'s `QSAKVCache`
+carries the QSA indexer's unprojected keys, and only the **uniform** scheme has
+a matching quantized cache. `turboquant` and hybrid schemes leave that cache in
+float — quantization silently does nothing rather than failing.
+
+### Reasoning controls
+
+`reasoning_effort` is passed by mlx-vlm straight into `apply_chat_template`, so
+the accepted vocabulary belongs to the **model's template**, not to OpenAI.
+Qwen3.8-Flash-Next accepts only `xhigh`/`medium`/`low` and raises on anything
+else, which turns a stock client's `reasoning_effort: "high"` into a 500. An
+entry declares what its template accepts (`reasoning_effort_values`) and what to
+fall back to (`reasoning_effort`); the gateway coerces anything outside the set,
+rewriting both the flat field and the nested `reasoning: {effort:}` form, since
+mlx-vlm reads the nested one first. Efforts meaning "off" (`none`, `off`,
+`disabled`, `false`, `0`) pass through so a client can still disable thinking.
+Entries with no `reasoning_effort` are untouched.
+
+`preserve_thinking: false` drops `reasoning_content` from assistant history
+before forwarding. Qwen templates otherwise replay every prior turn's full
+chain-of-thought into the prompt, growing context by reasoning rather than by
+answers; mlx-vlm does not forward the template's own `preserve_thinking`, so the
+gateway does the equivalent.
 
 `supports_reasoning: false` is for models whose chat template emits content
 only (e.g. `hermes-4-70b`): it keeps the normalizer from misreading a literal
@@ -73,6 +134,17 @@ optiq (`venv` is the optiq binary):
 <venv> serve --model <model> --host 127.0.0.1 --port <port>
        [--mtp [--mtp-depth N]] --no-auth [--max-concurrent N] <extra_args…>
 ```
+
+mlx-vlm (`venv` is the `mlx_vlm.server` console script, invoked directly):
+
+```
+<venv> --model <model> --host 127.0.0.1 --port <port>
+       [--enable-thinking] [--draft-model X] [--draft-kind K]
+       [tuning flags, in MlxVlmFlags::TUNING order] <extra_args…>
+```
+
+`extra_args` is appended last for every engine, so it overrides anything the
+typed keys emitted — the escape hatch for a flag the registry has no key for.
 
 Children always bind loopback. stdout+stderr append to
 `$ENGINE_LOG_DIR/<alias>.log`.
@@ -114,12 +186,32 @@ zombied child dooms in-flight generations anyway). Restarts appear in
 | Path | What |
 |---|---|
 | `~/src/space-inference-gateway` | runtime checkout (Ansible-managed) |
-| `~/src/space-inference-gateway/run-gateway.sh` | launchd launcher (templated; sets `PORT=9292`) |
-| `~/Library/LaunchAgents/com.slushsystems.space-inference-gateway.plist` | gateway launchd agent |
-| `~/Library/Logs/space-inference-gateway.log` | gateway stdout/stderr |
+| `~/src/space-inference-gateway/run-gateway.sh` | launcher (templated; sets `PORT=9292`) |
+| `~/Library/LaunchAgents/com.slushsystems.space-inference-gateway.plist` | launchd agent — installed, but see below |
+| `~/Library/Logs/space-inference-gateway.log` | gateway stdout/stderr under launchd |
+| `~/Library/Logs/space-inference-gateway-nohup.log` | gateway stdout/stderr under nohup |
 | `~/Library/Logs/space-inference-gateway/<alias>.log` | engine child logs |
-| `~/.venv-optiq`, `~/.venv-vllm-metal` | engine venvs (paths matched by `models.yml`) |
+| `~/.venv-optiq`, `~/.venv-vllm-metal`, `~/.venv-mlx-vlm` | engine venvs (paths matched by `models.yml`) |
 | `~/.cache/huggingface/hub` | model artifacts |
+
+### launchd vs. nohup
+
+The plist sets `KeepAlive: true`, which is right for unattended serving and
+wrong while measuring a model that can exhaust memory: an OOM-kill gets an
+instant respawn, and the respawned gateway lazily loads an engine again on the
+next request that names one. For that work, bootout the job and run the same
+launcher under `nohup` instead, so a stopped gateway stays stopped:
+
+```sh
+launchctl bootout gui/$(id -u)/com.slushsystems.space-inference-gateway
+launchctl disable gui/$(id -u)/com.slushsystems.space-inference-gateway
+cd ~/src/space-inference-gateway && nohup ./run-gateway.sh \
+  > ~/Library/Logs/space-inference-gateway-nohup.log 2>&1 &
+```
+
+`launchctl enable` + `bootstrap gui/$(id -u) <plist>` puts it back. Note the
+`gui/` domain is only reachable from a login-session shell — an agent or a
+non-GUI context gets `125: Domain does not support specified action`.
 
 ## Boot path
 
