@@ -49,6 +49,7 @@ models:
     apc_exact_cache_entries: <int>   # 2 x concurrent conversations
     thinking_budget: <int>           # max tokens inside a think block
     max_num_seqs: <int>              # continuous-batch width
+    token_queue_timeout: <seconds>   # per-token wait; raise for long prefills
     # mlx-vlm only — argv flags (see MlxVlmFlags::TUNING):
     enable_thinking: true|false
     draft_model: <HF repo id>
@@ -88,10 +89,26 @@ Where it *is* honoured, note it is a `RotatingKVCache`: it silently discards the
 oldest tokens past the bound rather than erroring, so it trades context for
 memory rather than enforcing a limit.
 
-KV quantization has its own architecture caveat: `qwen4_exp`'s `QSAKVCache`
-carries the QSA indexer's unprojected keys, and only the **uniform** scheme has
-a matching quantized cache. `turboquant` and hybrid schemes leave that cache in
-float — quantization silently does nothing rather than failing.
+KV quantization is **unusable on `qwen4_exp` today**, and it fails loudly rather
+than silently: with `kv_bits` set, the continuous-batching path builds a
+`BatchQuantizedKVCache`, which has no `update_indexer`, so QSA's indexer raises
+`AttributeError` and every generation 500s. (The architecture does ship a
+`QSAQuantizedKVCache` for the non-batched path, and only the **uniform** scheme
+selects it — `turboquant` and hybrid leave the cache in float — but the server
+does not reach that path.) Measured 2026-08-27 on mlx-vlm 0.6.17.
+
+**`prefill_step_size` is the memory lever that actually works here.** Peak
+memory on this architecture is dominated by prefill working buffers, not by the
+cache. Measured on Flash-Next oQ3, same prompts:
+
+| prompt | `prefill_step_size` 2048 (default) | 512 |
+|---|---|---|
+| 8k | 95.06 GiB | 87.97 GiB |
+| 32k | 120.53 GiB — over the wired limit | 95.15 GiB |
+| 64k | — | 104.65 GiB |
+
+Prefill throughput did not suffer for the reduction. Lower it before reaching
+for anything else when a long-context alias runs out of headroom.
 
 ### Reasoning controls
 

@@ -42,7 +42,8 @@ module SpaceInferenceGateway
       { "APC_ENABLED" => (entry[:apc_enabled] ? "1" : nil),
         "APC_EXACT_CACHE_ENTRIES" => entry[:apc_exact_cache_entries]&.to_s,
         "MLX_VLM_THINKING_BUDGET" => entry[:thinking_budget]&.to_s,
-        "MLX_VLM_MAX_NUM_SEQS" => entry[:max_num_seqs]&.to_s, }.compact
+        "MLX_VLM_MAX_NUM_SEQS" => entry[:max_num_seqs]&.to_s,
+        "MLX_VLM_TOKEN_QUEUE_TIMEOUT" => entry[:token_queue_timeout]&.to_s, }.compact
     end
 
     # Emitted in TUNING order so a given entry always renders the same argv.

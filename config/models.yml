@@ -61,44 +61,49 @@ models:
     max_num_seqs: 4
     thinking_budget: 512
     supports_reasoning: true
-  # ⛔ NOT FIT TO SERVE as of 2026-08-27 — kept for the measured configuration,
-  # not because it works. The engine-side settings below are sound and the
-  # model fits the box comfortably (86.69 GiB peak, 375 tok/s prefill, 27.6
-  # tok/s decode, no swap). The *output is incoherent*: "What is 2+2?" returns
-  # things like 'Hiii' and '</tool_call> How'. Vontra's oQ4 (104 GiB) is
-  # equally incoherent, so this is not the 3-bit quantization; both are that
-  # publisher's conversions of the same BF16 checkpoint, run through mlx-vlm
-  # 0.6.17's qwen4_exp, which shipped 2026-08-26 — one day before the test.
-  # The defect is in one of those two and this registry cannot tell which.
-  # Route nothing here until that is resolved upstream.
-  #
   # Qwen3.8-Flash-Next — qwen4_exp, a 120B/A6B sparse-MoE VLM driven text-only,
-  # in Vontra's oQ3 mixed-precision quant (86.2 GiB on disk).
+  # in Vontra's oQ3 mixed-precision quant (86.2 GiB on disk). Measured and
+  # verified working 2026-08-27.
   #
-  # ⚠️ Requires the local sanitize() patch in mlx_vlm/models/qwen4_exp.py.
-  # Stock 0.6.17 filters `mtp.*` but the checkpoint names them
-  # `language_model.mtp.*`, so all 76 reach load_weights(strict=True) and the
-  # load fails outright. `pip install --upgrade mlx-vlm` silently reverts it —
-  # backup at qwen4_exp.py.orig-0.6.17.
+  # ⚠️ DEPENDS ON TWO LOCAL PATCHES to mlx_vlm/models/qwen4_exp/qwen4_exp.py.
+  # `pip install --upgrade mlx-vlm` silently reverts both; backups alongside
+  # as .orig-0.6.17 and .pre-defold. Without them this alias does not merely
+  # degrade — it fails to load, or generates fluent word salad at HTTP 200.
+  #   1. MTP strip. Stock filters `mtp.*`; the checkpoint names them
+  #      `language_model.mtp.*`, so 76 tensors reach load_weights(strict=True)
+  #      and the load fails outright.
+  #   2. RMSNorm recentering. Qwen4ExpRMSNorm applies (1 + w) and expects
+  #      zero-centered weights; Vontra stores them one-centered (the mlx-lm
+  #      convention), so 148 norms compute ~1.9x instead of ~0.9x. Loads
+  #      clean, logs nothing, generates garbage. This is a checkpoint/runtime
+  #      convention mismatch, not a bad quant — re-check it before swapping
+  #      to another publisher's conversion, which may already be zero-centered.
   #
   # No draft_model, deliberately: Flash-Next's hidden dims differ from the 27B's
   # so that drafter must not be attached, and mlx-vlm has no qwen4_exp entry in
   # MTP_SPLITTERS, so the checkpoint's own MTP block cannot be split out either.
   # The -MTP weights are stripped at load and cost nothing but disk.
   #
-  # No max_kv_size, deliberately: it is inert for this architecture. The model
-  # defines make_cache() (12 full-attention QSAKVCache + 36 linear ArraysCache),
-  # and make_prompt_cache defers to that and ignores max_kv_size entirely.
-  # Setting it would read as a guard while doing nothing.
+  # No max_kv_size: inert here. The model defines make_cache() (12
+  # full-attention QSAKVCache + 36 linear ArraysCache) and make_prompt_cache
+  # defers to it, ignoring the bound. Setting it would read as a guard while
+  # doing nothing.
   #
-  # No kv_bits: unquantized KV fits. Measured 86.69 GiB peak leaves ~25 GiB
-  # under the 112 GiB wired limit, and the cache is cheap here —
-  # only 12 of 48 layers hold one, at 24 KiB/token (6.0 GiB at the full 262k).
-  # The binding constraint is APC, whose snapshots scale with prompt depth: two
-  # per in-flight request, so apc_exact_cache_entries: 2 is one conversation.
-  # If deep-context APC is ever wanted, quantize with kv_quant_scheme: uniform —
-  # QSAKVCache carries the QSA indexer's unprojected keys, and turboquant/hybrid
-  # schemes silently leave this cache in float rather than erroring.
+  # No kv_bits: it 500s. With quantization on, the continuous-batching path
+  # builds a BatchQuantizedKVCache, which has no update_indexer, and QSA's
+  # indexer raises on every generation.
+  #
+  # prefill_step_size is the lever that works — peak memory here is dominated
+  # by prefill buffers, not the cache. Measured, same prompts:
+  #     prompt   default 2048    512
+  #        8k     95.06 GiB    87.97 GiB
+  #       32k    120.53 GiB    95.15 GiB   <- default exceeds the wired limit
+  #       64k          —      104.65 GiB
+  # Throughput did not suffer for the reduction.
+  #
+  # ⚠️ Practical context ceiling is ~64k, not the model's 262k: 64k peaks at
+  # 104.65 GiB against a 112 GiB wired limit, and 128k thrashes and times out.
+  # Keep clients under that.
   #
   # reasoning_effort is the *template's* vocabulary, not OpenAI's: this template
   # raises on anything but xhigh/medium/low, which would turn a stock client's
@@ -119,12 +124,17 @@ models:
     # answers. mlx-vlm does not forward preserve_thinking, so the gateway drops
     # reasoning_content from history instead.
     preserve_thinking: false
+    prefill_step_size: 512
     apc_enabled: true
     apc_exact_cache_entries: 2
     max_num_seqs: 1
+    # A 64k prefill runs ~370s at the measured 173.7 tok/s; the 600s default
+    # leaves little margin, and it is a per-token wait, not a total budget.
+    token_queue_timeout: 1200
     # 86 GiB off a cold page cache is well past the default 120s budget.
     # (Measured ~30s warm; the budget is for the cold case.)
     readiness_timeout: 600
+
   # Qwen3.6 27B OptiQ-4bit with MTP depth 2 (optiq engine).
   # optiq's single-model mode: the request "model" field is a label — any value
   # is accepted, so the proxy does not rewrite it for this engine.
