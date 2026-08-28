@@ -387,14 +387,15 @@ module SpaceInferenceGateway
 
     def init_oai_to_ant_state
       {
-        started:       false,
-        in_reasoning:  false,
-        in_text:       false,
-        next_index:    0,
-        reasoning_idx: nil,
-        text_idx:      nil,
-        id:            nil,
-        tool_calls:    {}, # oai tool_calls[].index => { ant_index:, started: }
+        started:          false,
+        in_reasoning:     false,
+        in_text:          false,
+        next_index:       0,
+        reasoning_idx:    nil,
+        text_idx:         nil,
+        id:               nil,
+        tool_calls:       {}, # oai tool_calls[].index => { ant_index:, started: }
+        reasoning_parser: @supports_reasoning ? ReasoningParser.new : nil,
       }
     end
 
@@ -424,9 +425,32 @@ module SpaceInferenceGateway
         observer&.on_delta(:reasoning)
         emit_oai_reasoning_delta(state, reasoning_text, block)
       elsif !content_text.nil?
-        observer&.on_delta(:content)
-        emit_oai_content_delta(state, content_text, block)
+        emit_oai_inline_content_delta(state, content_text, block, observer)
       end
+    end
+
+    # No native reasoning field on this chunk: when supports_reasoning, run
+    # delta.content through the stream's ReasoningParser to lift inline
+    # <think>...</think> (parity with OaiNormalizer#emit_content_delta); the
+    # parser holds back a few chars at a chunk boundary, so it emits nothing
+    # some calls and both channels others. Passthrough (no parser) is untouched.
+    def emit_oai_inline_content_delta(state, text, block, observer)
+      parser = state[:reasoning_parser]
+      unless parser
+        observer&.on_delta(:content)
+        emit_oai_content_delta(state, text, block)
+        return
+      end
+
+      r = parser.push(text)
+      unless r[:thinking].empty?
+        observer&.on_delta(:reasoning)
+        emit_oai_reasoning_delta(state, r[:thinking], block)
+      end
+      return if r[:visible].empty?
+
+      observer&.on_delta(:content)
+      emit_oai_content_delta(state, r[:visible], block)
     end
 
     def emit_oai_message_start(state, block)
@@ -514,6 +538,8 @@ module SpaceInferenceGateway
     end
 
     def close_oai_text_blocks(state, block)
+      flush_reasoning_parser(state, block)
+
       if state[:in_reasoning]
         state[:in_reasoning] = false
         emit_ant(block, "content_block_stop", {
@@ -526,6 +552,18 @@ module SpaceInferenceGateway
       emit_ant(block, "content_block_stop", {
                  "type" => "content_block_stop", "index" => state[:text_idx],
                })
+    end
+
+    # Drains the ReasoningParser's chunk-boundary hold (parity with
+    # OaiNormalizer's end-of-stream #flush) before a block close, so no
+    # trailing character is ever silently dropped.
+    def flush_reasoning_parser(state, block)
+      parser = state[:reasoning_parser]
+      return unless parser
+
+      r = parser.flush
+      emit_oai_reasoning_delta(state, r[:thinking], block) unless r[:thinking].empty?
+      emit_oai_content_delta(state, r[:visible], block) unless r[:visible].empty?
     end
 
     # AC5: records the raw OAI finish_reason verbatim (not the ant-mapped
