@@ -8,6 +8,7 @@ require "async/http/endpoint"
 require "async/http/body/writable"
 require "protocol/http/middleware"
 require "uri"
+require_relative "../support/fake_upstream_server"
 
 # Minimal fake supervisor double — reports the given alias as already active
 # so ensure_active_if_known is a no-op Success; no subprocess spawns.
@@ -22,6 +23,8 @@ FakeSupervisor = Struct.new(:active_alias) do
 end
 
 RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
+  include FakeUpstreamServer
+
   # ── helpers ────────────────────────────────────────────────────────────────
 
   # Boot a Falcon/Rack proxy on an ephemeral port using pre-bound sockets.
@@ -81,6 +84,67 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
     supervisor = FakeSupervisor.new("diffusiongemma")
     controller = SpaceInferenceGateway::ModelController.new(registry: registry, supervisor: supervisor)
     SpaceInferenceGateway::App.new(upstream_client: upstream_client, controller: controller)
+  end
+
+  # ── Granularity helpers (AC6) ────────────────────────────────────────────
+  # The upstream-event builders below deliberately use plain text — no
+  # <think> tag — so these examples stay correct regardless of the block
+  # shape the concurrent reasoning-parity lane is changing inside
+  # AntNormalizer, whose native tag-lifting lives entirely inside
+  # <think>-tagged spans.
+
+  def ant_sse_event(event, data)
+    "event: #{event}\ndata: #{JSON.generate(data)}\n\n"
+  end
+
+  # Four upstream "sends" — message_start; a full text content block
+  # (start+delta+stop); message_delta; message_stop — for the sustained-
+  # granularity examples.
+  def ant_staged_events
+    [
+      ant_sse_event("message_start", {
+                      "type" => "message_start",
+        "message" => { "id" => "m1", "type" => "message", "role" => "assistant", "content" => [],
+                        "model" => "x", "stop_reason" => nil, "stop_sequence" => nil,
+                        "usage" => { "input_tokens" => 0, "output_tokens" => 0 }, },
+                    }),
+      ant_sse_event("content_block_start", { "type" => "content_block_start", "index" => 0,
+        "content_block" => { "type" => "text", "text" => "" }, }) +
+        ant_sse_event("content_block_delta", { "type" => "content_block_delta", "index" => 0,
+          "delta" => { "type" => "text_delta", "text" => "hello there" }, }) +
+        ant_sse_event("content_block_stop", { "type" => "content_block_stop", "index" => 0 }),
+      ant_sse_event("message_delta", { "type" => "message_delta",
+        "delta" => { "stop_reason" => "end_turn", "stop_sequence" => nil }, "usage" => { "output_tokens" => 2 }, }),
+      ant_sse_event("message_stop", { "type" => "message_stop" }),
+    ]
+  end
+
+  def event_types(reads)
+    reads.join.scan(/^event: (\S+)$/).flatten
+  end
+
+  def oai_sse_event(delta, finish_reason: nil)
+    payload = { "id" => "c1", "object" => "chat.completion.chunk", "created" => 1, "model" => "x",
+                "choices" => [{ "index" => 0, "delta" => delta, "finish_reason" => finish_reason }], }
+    "data: #{JSON.generate(payload)}\n\n"
+  end
+
+  # Four upstream "sends" — role delta; two content deltas; finish+[DONE] —
+  # for the OAI-flavor sustained-granularity example.
+  def oai_staged_events
+    [
+      oai_sse_event({ "role" => "assistant" }),
+      oai_sse_event({ "content" => "hello " }),
+      oai_sse_event({ "content" => "world" }),
+      "#{oai_sse_event({}, finish_reason: "stop")}data: [DONE]\n\n",
+    ]
+  end
+
+  # The control-example discriminator (AC6c): fails unless the reads arrived
+  # as distinct, separately-observed chunks — proving the property is
+  # falsifiable rather than vacuously green.
+  def expect_granular_delivery(reads, min_reads:)
+    expect(reads.size).to be >= min_reads
   end
 
   # ── AC1 — Boot + routing over real HTTP ────────────────────────────────────
@@ -279,6 +343,240 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
           proxy_bound.close
           stub_task.stop
           stub_bound.close
+        end
+      end
+    end
+  end
+
+  # ── AC6 — Granularity covered end to end, on both flavors ─────────────────
+  # AC3 above proves only that the FIRST event escapes before upstream EOF —
+  # every other streaming assertion in the suite (including AC3's own tail)
+  # concatenates the emitted chunks and byte-compares the joined string, so a
+  # change that emitted the first event and then buffered the rest would
+  # still pass all of them. These examples close that gap: AC6a gives the ANT
+  # flavor (POST /v1/messages) the same real-HTTP streaming coverage AC3
+  # gives OAI; AC6b asserts sustained granularity — event counts and arrival
+  # ordering across the whole stream, not just the first event; AC6c is the
+  # control that proves AC6b's assertion actually rejects a coalescing body.
+
+  describe "AC6a — ANT flavor: streaming relays first event before EOF, full output matches normalize_stream_to_sse" do
+    it "delivers first event within 3 s while upstream holds, then full output matches normalize_stream_to_sse" do
+      Async do |task|
+        barrier = Async::Condition.new
+
+        ant_fixture = fixture("ant_s.txt")
+        events = ant_fixture.split(/(?<=\n\n)/).reject(&:empty?)
+
+        stub_handler = lambda do |req|
+          case req.path
+          when "/v1/messages"
+            body = Protocol::HTTP::Body::Writable.new
+            task.async do
+              body.write(events.first)
+              barrier.wait
+              events[1..].each { |ev| body.write(ev) }
+              body.close_write
+            end
+            Protocol::HTTP::Response[200, { "content-type" => "text/event-stream" }, body]
+          else
+            Protocol::HTTP::Response[404, {}, []]
+          end
+        end
+
+        stub_port, stub_task, stub_bound = boot_stub(stub_handler)
+        upstream = SpaceInferenceGateway::UpstreamClient.new(base_url: "http://localhost:#{stub_port}")
+        app      = make_app(upstream_client: upstream)
+        proxy_port, proxy_task, proxy_bound = boot_proxy(app)
+        client = client_for(proxy_port)
+
+        request_body = JSON.generate({ model: "diffusiongemma", messages: [], stream: true })
+
+        begin
+          response = client.post(
+            "/v1/messages",
+            [["content-type", "application/json"]],
+            request_body,
+          )
+          expect(response.status).to eq(200)
+
+          chunks = []
+
+          # First chunk must arrive within 3 s while upstream is still open.
+          task.with_timeout(3) do
+            first = response.body.read
+            expect(first).not_to be_nil
+            expect(first).to include("data:")
+            chunks << first
+          end
+
+          # Release the upstream barrier now that first event arrived.
+          barrier.signal
+
+          # Read the rest of the body.
+          while (chunk = response.body.read)
+            chunks << chunk
+          end
+
+          full_output = chunks.join
+          normalizer  = SpaceInferenceGateway::AntNormalizer.new(
+            advertised_model:   "diffusiongemma",
+            supports_reasoning: true,
+          )
+          expected = normalizer.normalize_stream_to_sse(ant_fixture)
+
+          expect(full_output).to eq(expected)
+        ensure
+          begin
+            response&.body&.close
+          rescue StandardError
+            nil
+          end
+          client.close
+          proxy_task.stop
+          proxy_bound.close
+          stub_task.stop
+          stub_bound.close
+        end
+      end
+    end
+  end
+
+  describe "AC6b — sustained granularity: multiple upstream sends arrive as multiple distinct reads, in order" do
+    it "ANT flavor — four staged upstream sends, each after a real gap, arrive as (at least) four separate reads in order" do
+      Async do |task|
+        task.with_timeout(5) do
+          upstream = FakeUpstreamServer::RawUpstream.new(task)
+          upstream.accept do |sock|
+            sse_headers(sock)
+            ant_staged_events.each do |stage|
+              http_chunk(sock, stage)
+              task.sleep(0.1)
+            end
+            end_chunks(sock)
+          end
+
+          upstream_client = SpaceInferenceGateway::UpstreamClient.new(base_url: upstream.base_url)
+          app = make_app(upstream_client: upstream_client)
+          proxy_port, proxy_task, proxy_bound = boot_proxy(app)
+          client = client_for(proxy_port)
+
+          request_body = JSON.generate({ model: "diffusiongemma", messages: [], stream: true })
+
+          begin
+            response = client.post("/v1/messages", [["content-type", "application/json"]], request_body)
+            expect(response.status).to eq(200)
+
+            reads = []
+            while (chunk = response.body.read)
+              reads << chunk
+            end
+
+            expect_granular_delivery(reads, min_reads: 3)
+            expect(event_types(reads)).to eq(
+              %w[message_start content_block_start content_block_delta content_block_stop message_delta
+                 message_stop],
+            )
+          ensure
+            begin
+              response&.body&.close
+            rescue StandardError
+              nil
+            end
+            client.close
+            proxy_task.stop
+            proxy_bound.close
+            upstream.stop
+          end
+        end
+      end
+    end
+
+    it "OAI flavor — four staged upstream sends, each after a real gap, arrive as (at least) four separate reads" do
+      Async do |task|
+        task.with_timeout(5) do
+          upstream = FakeUpstreamServer::RawUpstream.new(task)
+          upstream.accept do |sock|
+            sse_headers(sock)
+            oai_staged_events.each do |stage|
+              http_chunk(sock, stage)
+              task.sleep(0.1)
+            end
+            end_chunks(sock)
+          end
+
+          upstream_client = SpaceInferenceGateway::UpstreamClient.new(base_url: upstream.base_url)
+          app = make_app(upstream_client: upstream_client)
+          proxy_port, proxy_task, proxy_bound = boot_proxy(app)
+          client = client_for(proxy_port)
+
+          request_body = JSON.generate({ model: "diffusiongemma", messages: [], stream: true })
+
+          begin
+            response = client.post("/v1/chat/completions", [["content-type", "application/json"]], request_body)
+            expect(response.status).to eq(200)
+
+            reads = []
+            while (chunk = response.body.read)
+              reads << chunk
+            end
+
+            expect_granular_delivery(reads, min_reads: 3)
+          ensure
+            begin
+              response&.body&.close
+            rescue StandardError
+              nil
+            end
+            client.close
+            proxy_task.stop
+            proxy_bound.close
+            upstream.stop
+          end
+        end
+      end
+    end
+  end
+
+  describe "AC6c — control: the granularity assertion rejects a deliberately coalescing body" do
+    it "the same upstream events, written in a single burst with no inter-send gap, fail the granularity assertion" do
+      Async do |task|
+        task.with_timeout(5) do
+          upstream = FakeUpstreamServer::RawUpstream.new(task)
+          upstream.accept do |sock|
+            sse_headers(sock)
+            http_chunk(sock, ant_staged_events.join) # no gap between sends — the coalescing case
+            end_chunks(sock)
+          end
+
+          upstream_client = SpaceInferenceGateway::UpstreamClient.new(base_url: upstream.base_url)
+          app = make_app(upstream_client: upstream_client)
+          proxy_port, proxy_task, proxy_bound = boot_proxy(app)
+          client = client_for(proxy_port)
+
+          request_body = JSON.generate({ model: "diffusiongemma", messages: [], stream: true })
+
+          begin
+            response = client.post("/v1/messages", [["content-type", "application/json"]], request_body)
+            expect(response.status).to eq(200)
+
+            reads = []
+            while (chunk = response.body.read)
+              reads << chunk
+            end
+
+            expect { expect_granular_delivery(reads, min_reads: 3) }
+              .to raise_error(RSpec::Expectations::ExpectationNotMetError)
+          ensure
+            begin
+              response&.body&.close
+            rescue StandardError
+              nil
+            end
+            client.close
+            proxy_task.stop
+            proxy_bound.close
+            upstream.stop
+          end
         end
       end
     end
