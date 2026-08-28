@@ -514,6 +514,63 @@ RSpec.describe SpaceInferenceGateway::AntNormalizer do
     end
   end
 
+  # ── this iteration: inline <think> parity for stream_to_sse_from_oai ─────
+  # oai_s.txt (shared with oai_normalizer_spec.rb) carries <think>...</think>
+  # in delta.content with no reasoning-field key anywhere in the stream —
+  # exactly the deepseek-r1-70b / nemotron-3-super shape (config/models.yml).
+  describe "#stream_to_sse_from_oai — unsloth oai_s.txt inline <think> in delta.content" do
+    let(:raw_content) do
+      fixture("oai_s.txt").lines.each_with_object(+"") do |l, buf|
+        next unless l.start_with?("data:")
+
+        d = JSON.parse(l.sub(/\Adata:\s*/, ""))
+        next if d["type"] == "diffusion_frame"
+
+        buf << d.dig("choices", 0, "delta", "content").to_s
+      rescue JSON::ParserError
+        nil
+      end
+    end
+
+    context "with supports_reasoning: true (AC1/AC2/AC3)" do
+      let(:events)            { normalizer.normalize_stream_events_from_oai(fixture("oai_s.txt")) }
+      let(:expected_thinking) { raw_content[%r{<think>(.*)</think>}m, 1] }
+      let(:expected_visible)  { raw_content.sub(%r{<think>.*</think>}m, "") }
+
+      it "lifts the <think> span into thinking_delta events (AC1)" do
+        thinking = events.select { |e| e[:data].dig("delta", "type") == "thinking_delta" }
+                         .map { |e| e[:data].dig("delta", "thinking") }.join
+        expect(thinking).to eq(expected_thinking)
+      end
+
+      it "no emitted delta carries a tag fragment (AC2)" do
+        joined = events.filter_map { |e| e[:data].dig("delta", "thinking") || e[:data].dig("delta", "text") }.join
+        expect(joined).not_to include("think>")
+      end
+
+      it "visible text_delta is lossless against the tag-stripped upstream content (AC3)" do
+        visible = events.select { |e| e[:data].dig("delta", "type") == "text_delta" }
+                        .map { |e| e[:data].dig("delta", "text") }.join
+        expect(visible).to eq(expected_visible)
+      end
+    end
+
+    context "with supports_reasoning: false (AC5 regression guard)" do
+      subject(:normalizer) { described_class.new(advertised_model: "test-model", supports_reasoning: false) }
+      let(:events) { normalizer.normalize_stream_events_from_oai(fixture("oai_s.txt")) }
+
+      it "emits no thinking_delta" do
+        expect(events.none? { |e| e[:data].dig("delta", "type") == "thinking_delta" }).to be(true)
+      end
+
+      it "text_delta is byte-identical to the upstream content, tags included" do
+        visible = events.select { |e| e[:data].dig("delta", "type") == "text_delta" }
+                        .map { |e| e[:data].dig("delta", "text") }.join
+        expect(visible).to eq(raw_content)
+      end
+    end
+  end
+
   # ── I10: tool_calls (request-side translation is app_spec/app.rb; these
   # cover the OAI tool_calls -> ANT tool_use response synthesis). optiq's real
   # tool_calls SSE shape could not be captured live (the optiq binary is not
