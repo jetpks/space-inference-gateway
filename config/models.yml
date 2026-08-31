@@ -119,6 +119,19 @@ models:
     supports_reasoning: true
     reasoning_effort: medium
     reasoning_effort_values: [xhigh, medium, low]
+    # Anthropic's five effort levels land on this template's three (used by
+    # the ANT path's output_config.effort translation). high -> medium is
+    # deliberate: Claude Code sends "high" when CLAUDE_CODE_EFFORT_LEVEL is
+    # unset, so this is what an out-of-the-box claude-local turn gets, and
+    # medium is this alias's own chosen default above. max -> xhigh is the
+    # one case plain reasoning_effort_values coercion gets wrong (it would
+    # land on medium).
+    reasoning_effort_map:
+      low: low
+      medium: medium
+      high: medium
+      xhigh: xhigh
+      max: xhigh
     # Qwen templates replay each prior turn's full chain-of-thought into the
     # prompt unless told otherwise, growing context by reasoning rather than by
     # answers. mlx-vlm does not forward preserve_thinking, so the gateway drops

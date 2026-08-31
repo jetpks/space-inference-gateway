@@ -68,6 +68,8 @@ models:
     # mlx-vlm only — applied by the gateway to the request, not the child:
     reasoning_effort: <str>              # default effort injected per request
     reasoning_effort_values: [<str>, …]  # what this model's template accepts
+    reasoning_effort_map:                # Anthropic effort -> template effort (ANT path)
+      <low|medium|high|xhigh|max>: <str>
     preserve_thinking: true|false        # false drops reasoning_content from history
 ```
 
@@ -122,6 +124,23 @@ rewriting both the flat field and the nested `reasoning: {effort:}` form, since
 mlx-vlm reads the nested one first. Efforts meaning "off" (`none`, `off`,
 `disabled`, `false`, `0`) pass through so a client can still disable thinking.
 Entries with no `reasoning_effort` are untouched.
+
+On the Anthropic (`/v1/messages`) path, the client has no `reasoning_effort`
+field to set — Claude Code sends `output_config.effort` (Anthropic's own
+five-level vocabulary: `low`/`medium`/`high`/`xhigh`/`max`) or, to disable
+thinking outright, `thinking: {"type": "disabled"}`. The gateway resolves
+these, first match wins: a disabled `thinking` block always forces
+`reasoning_effort: "none"`; otherwise `output_config.effort` is translated
+through the alias's `reasoning_effort_map` (falling through to the
+`reasoning_effort_values` coercion above for a value with no map entry); with
+neither present, the alias's `reasoning_effort` fallback is used, exactly as
+on the OpenAI path. The absence of `thinking` is *not* treated as a disable
+signal — Claude Code omits it under `MAX_THINKING_TOKENS=0` while still
+sending `output_config.effort`. `reasoning_effort_map` lets an alias's three
+template-level efforts differ from Anthropic's five, e.g. Qwen3.8-Flash-Next
+above maps `high -> medium` (what an out-of-the-box `claude-local` turn sends)
+and `max -> xhigh` (the one case the plain `reasoning_effort_values` coercion
+gets wrong).
 
 `preserve_thinking: false` drops `reasoning_content` from assistant history
 before forwarding. Qwen templates otherwise replay every prior turn's full
