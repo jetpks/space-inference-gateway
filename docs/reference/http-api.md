@@ -75,6 +75,13 @@ Request translation:
   text following as a `user` message.
 - `max_tokens`, `stream`, `temperature`, `top_p` map through;
   `stop_sequences` → `stop`, with registry `stop_tokens` merged in.
+- `output_config.effort` → `reasoning_effort`, translated through the alias's
+  `reasoning_effort_map` when declared (see the
+  [configuration reference](configuration.md)); a `thinking: {"type":
+  "disabled"}` block forces `reasoning_effort: "none"` regardless of
+  `output_config`; with neither present, the alias's `reasoning_effort`
+  fallback is used, matching `/v1/chat/completions`. Aliases with no
+  `reasoning_effort` default are untouched.
 
 Response synthesis:
 

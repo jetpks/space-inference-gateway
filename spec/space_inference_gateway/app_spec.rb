@@ -190,6 +190,64 @@ RSpec.describe SpaceInferenceGateway::App do
     end
   end
 
+  # ── I03: ANT-path reasoning effort passthrough ────────────────────────────
+  describe "reasoning effort passthrough for the ANT path (mlx-vlm)" do
+    let(:forwarded) { [] }
+    let(:upstream_fn) do
+      lambda do |path, body|
+        forwarded << { path: path, body: body }
+        [fixture("oai_ns.json"), 200, {}]
+      end
+    end
+
+    def sent_for(body)
+      post "/v1/messages", JSON.generate(body), "CONTENT_TYPE" => "application/json"
+      JSON.parse(forwarded.last[:body])
+    end
+
+    it "translates output_config.effort through the alias's reasoning_effort_map" do
+      { "low" => "low", "medium" => "medium", "high" => "medium", "xhigh" => "xhigh", "max" => "xhigh" }.each do |req, expected|
+        sent = sent_for({ model: "qwen3.8-flash-next-oq3", messages: [{ role: "user", content: "hi" }],
+                          output_config: { effort: req }, })
+        expect(sent["reasoning_effort"]).to eq(expected)
+      end
+    end
+
+    it "injects the alias default when the client sends no output_config" do
+      sent = sent_for({ model: "qwen3.8-flash-next-oq3", messages: [{ role: "user", content: "hi" }] })
+      expect(sent["reasoning_effort"]).to eq("medium")
+    end
+
+    it "maps thinking: disabled to reasoning_effort none, taking priority over output_config" do
+      sent = sent_for({ model: "qwen3.8-flash-next-oq3", messages: [{ role: "user", content: "hi" }],
+                        thinking: { type: "disabled" }, output_config: { effort: "xhigh" }, })
+      expect(sent["reasoning_effort"]).to eq("none")
+    end
+
+    it "leaves aliases without a reasoning_effort default untouched" do
+      sent = sent_for({ model: "qwen3.8-27b-mxfp8-concurrent1", messages: [{ role: "user", content: "hi" }],
+                        output_config: { effort: "high" }, })
+      expect(sent).not_to have_key("reasoning_effort")
+    end
+
+    it "does not replay assistant thinking history upstream, but keeps the text" do
+      sent = sent_for({
+                        model: "qwen3.8-flash-next-oq3",
+        messages: [
+          { role: "user", content: "a" },
+          { role: "assistant", content: [
+            { type: "thinking", thinking: "long chain of thought" },
+            { type: "text", text: "answer" },
+          ], },
+          { role: "user", content: "b" },
+        ],
+                      })
+      assistant = sent["messages"].find { |m| m["role"] == "assistant" }
+      expect(assistant["content"]).to eq("answer")
+      expect(JSON.generate(sent)).not_to include("long chain of thought")
+    end
+  end
+
   # ── AC3: optiq engine path ────────────────────────────────────────────────
   describe "optiq engine — OAI path (AC3)" do
     let(:forwarded) { [] }

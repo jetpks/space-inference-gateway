@@ -236,7 +236,10 @@ module SpaceInferenceGateway
       # message), and it only touches the registry — never the active/busy
       # decision — so nothing is lost by translating ahead of
       # ensure_active_if_known.
-      oai_body = ant_to_oai(body_str, mlx_model_id(model_alias), stop_tokens: mlx_stop_tokens(model_alias)) if mlx
+      if mlx
+        entry    = resolve_mlx_entry(model_alias)
+        oai_body = ant_to_oai(body_str, entry, stop_tokens: entry[:stop_tokens])
+      end
 
       unless @upstream_fn # legacy test seam injects upstream directly; skip the supervisor
         swap_r = @controller.ensure_active_if_known(model_alias)
@@ -525,12 +528,19 @@ module SpaceInferenceGateway
       @controller.registry.resolve(alias_name) ? alias_name : @advertised_model
     end
 
+    # The registry entry for alias_name, falling back to the default alias's
+    # entry for an unknown/unset alias (same fallback ensure_active_if_known
+    # would resolve to, so the mlx-facing rewrites agree with what actually
+    # loads).
+    def resolve_mlx_entry(alias_name)
+      @controller.registry.resolve(alias_name) ||
+        @controller.registry.resolve(@controller.registry.default_alias)
+    end
+
     # True when the entry for alias_name (or the default) uses one of the
     # OAI-upstream engines — see OAI_UPSTREAM_ENGINES.
     def mlx_engine?(alias_name)
-      entry = @controller.registry.resolve(alias_name) ||
-              @controller.registry.resolve(@controller.registry.default_alias)
-      OAI_UPSTREAM_ENGINES.include?(entry&.fetch(:engine, nil))
+      OAI_UPSTREAM_ENGINES.include?(resolve_mlx_entry(alias_name)&.fetch(:engine, nil))
     end
 
     # The model id the mlx child expects in the request body's "model" field —
@@ -539,17 +549,13 @@ module SpaceInferenceGateway
     # HuggingFace, so the alias cannot be forwarded as-is (unlike llama-server,
     # which ignores it).
     def mlx_model_id(alias_name)
-      entry = @controller.registry.resolve(alias_name) ||
-              @controller.registry.resolve(@controller.registry.default_alias)
-      entry[:model]
+      resolve_mlx_entry(alias_name)[:model]
     end
 
     # Stop tokens from the registry entry (optional). Workaround for the
     # mlx_lm 0.31.3 eos-token-id stop bug — see models.yml comment.
     def mlx_stop_tokens(alias_name)
-      entry = @controller.registry.resolve(alias_name) ||
-              @controller.registry.resolve(@controller.registry.default_alias)
-      entry[:stop_tokens]
+      resolve_mlx_entry(alias_name)[:stop_tokens]
     end
 
     # Merge registry stop_tokens into the request's existing "stop" field,
@@ -583,9 +589,7 @@ module SpaceInferenceGateway
       requested = requested_reasoning_effort(parsed)
       return if requested && DISABLED_REASONING_EFFORTS.include?(requested.downcase)
 
-      allowed = Array(entry[:reasoning_effort_values]).map(&:to_s)
-      effort  = requested && (allowed.empty? || allowed.include?(requested)) ? requested : fallback.to_s
-      apply_reasoning_effort(parsed, effort)
+      apply_reasoning_effort(parsed, coerce_reasoning_effort(requested, entry, fallback))
     end
 
     # A client may express effort as either the flat reasoning_effort field or
@@ -599,6 +603,34 @@ module SpaceInferenceGateway
     def apply_reasoning_effort(parsed, effort)
       parsed["reasoning_effort"] = effort
       parsed["reasoning"]["effort"] = effort if parsed["reasoning"].is_a?(Hash)
+    end
+
+    # Shared by inject_reasoning_effort (OAI) and ant_reasoning_effort (ANT):
+    # a requested effort passes through if the template accepts it (or the
+    # entry declares no allowlist); otherwise it coerces to the fallback.
+    def coerce_reasoning_effort(requested, entry, fallback)
+      allowed = Array(entry[:reasoning_effort_values]).map(&:to_s)
+      requested && (allowed.empty? || allowed.include?(requested)) ? requested : fallback.to_s
+    end
+
+    # Anthropic-shape effort resolution for the ANT->OAI translation
+    # (ant_to_oai). The client's opinion arrives as `thinking: {type:}` /
+    # `output_config.effort`, not the OAI reasoning_effort field: disabled
+    # thinking always wins (mlx-vlm turns "none" into enable_thinking=False
+    # before the template's effort validation runs), otherwise a requested
+    # effort is translated through the alias's reasoning_effort_map before
+    # falling back to the shared allowed-values coercion. Entries with no
+    # reasoning_effort default are untouched, matching inject_reasoning_effort.
+    def ant_reasoning_effort(ant, entry)
+      fallback = entry && entry[:reasoning_effort]
+      return unless fallback
+      return "none" if ant.dig("thinking", "type") == "disabled"
+
+      requested = ant.dig("output_config", "effort")&.to_s
+      return fallback.to_s unless requested
+
+      mapped = entry[:reasoning_effort_map] && entry[:reasoning_effort_map][requested]
+      mapped || coerce_reasoning_effort(requested, entry, fallback)
     end
 
     # Qwen-family templates replay each prior assistant turn's full
@@ -627,8 +659,7 @@ module SpaceInferenceGateway
       return body_str unless mlx_engine?(model_alias)
 
       parsed = JSON.parse(body_str)
-      entry  = @controller.registry.resolve(model_alias) ||
-               @controller.registry.resolve(@controller.registry.default_alias)
+      entry  = resolve_mlx_entry(model_alias)
       parsed["model"] = mlx_model_id(model_alias) if %w[mlx mlx-vlm].include?(entry&.fetch(:engine, nil))
       (parsed["messages"] || []).each { |m| m["role"] = "system" if m["role"] == "developer" }
       inject_mlx_stop_tokens(parsed, model_alias)
@@ -641,7 +672,7 @@ module SpaceInferenceGateway
     # mlx/optiq speak OAI only; system becomes messages[0]; fields mapped;
     # tool definitions, tool_result, and tool_use blocks are translated to
     # their OAI equivalents (see ant_message_to_oai / ant_tools_to_oai).
-    def ant_to_oai(body_str, model_name, stop_tokens: nil)
+    def ant_to_oai(body_str, entry, stop_tokens: nil)
       ant  = JSON.parse(body_str)
       msgs = []
       msgs << { "role" => "system", "content" => ant["system"] } if ant["system"]
@@ -654,15 +685,21 @@ module SpaceInferenceGateway
         ant_message_to_oai(m, msgs)
       end
 
-      oai = { "model" => model_name, "messages" => msgs }
+      oai = { "model" => entry[:model], "messages" => msgs }
       oai["tools"]       = ant_tools_to_oai(ant["tools"]) if ant["tools"]
       oai["max_tokens"]  = ant["max_tokens"]  if ant.key?("max_tokens")
       oai["stream"]      = ant["stream"]      if ant.key?("stream")
       oai["temperature"] = ant["temperature"] if ant.key?("temperature")
       oai["top_p"]       = ant["top_p"]       if ant.key?("top_p")
       oai["stop"]        = ant["stop_sequences"] if ant.key?("stop_sequences")
+      apply_ant_reasoning_effort(oai, ant, entry)
       merge_stop_tokens(oai, stop_tokens) if stop_tokens
       JSON.generate(oai)
+    end
+
+    def apply_ant_reasoning_effort(oai, ant, entry)
+      effort = ant_reasoning_effort(ant, entry)
+      oai["reasoning_effort"] = effort if effort
     end
 
     # ANT tools -> OAI tools (AC1). ANT: {name, description, input_schema}.
