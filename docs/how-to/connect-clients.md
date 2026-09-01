@@ -78,9 +78,27 @@ surface:
 ```fish
 function claude-local --description 'Run Claude Code against the local inference gateway'
     ensure-local-proxy
+
+    # Every tier is pinned to one alias on purpose. The mlx-vlm supervisor is
+    # single-flight: distinct aliases share port 8080 and swap the child
+    # process (4-7s each). Leaving a tier unmapped lets a background
+    # classifier or subagent call land on a different alias and thrash the
+    # supervisor mid-session. Since 2026-09-01 an unregistered alias is a 404
+    # rather than a silent fallback, so an unmapped tier fails loudly.
+    set -l model qwen3.8-flash-next-oq3
+    test -n "$CLAUDE_LOCAL_MODEL"; and set model $CLAUDE_LOCAL_MODEL
+
     env ANTHROPIC_BASE_URL=http://127.0.0.1:3001 \
         ANTHROPIC_API_KEY=local-proxy \
         ANTHROPIC_AUTH_TOKEN=local-proxy \
+        ANTHROPIC_MODEL=$model \
+        ANTHROPIC_DEFAULT_OPUS_MODEL=$model \
+        ANTHROPIC_DEFAULT_SONNET_MODEL=$model \
+        ANTHROPIC_DEFAULT_HAIKU_MODEL=$model \
+        ANTHROPIC_DEFAULT_FABLE_MODEL=$model \
+        ANTHROPIC_SMALL_FAST_MODEL=$model \
+        CLAUDE_CODE_SUBAGENT_MODEL=$model \
+        CLAUDE_CODE_BG_CLASSIFIER_MODEL=$model \
         claude $argv
 end
 ```
@@ -115,8 +133,9 @@ opencode reads its provider base URL from config, not the environment. In your
 
 opencode then hits `127.0.0.1:3001/v1/chat/completions`, which the shim
 carries to the studio. Use whatever alias you've registered (e.g.
-`qwen3-27b-optiq`, the current default, or `qwen3.8-flash-next-oq3`) — unknown ids
-are served by the running/default model anyway (see the
+`qwen3-27b-optiq`, the current default, or `qwen3.8-flash-next-oq3`). Since
+2026-09-01 an unregistered id is a `404`, not a silent fallback — name an
+alias `GET /v1/models` lists (see the
 [HTTP API reference](../reference/http-api.md#model-resolution)).
 
 ## 4. Use it

@@ -25,14 +25,42 @@ Every generation request resolves its `model` field against the registry:
 - **Known alias** → lazy auto-swap: if it isn't the active model, the gateway
   stops the current child and starts that one before serving (see the
   concurrency rules below).
-- **Unknown or absent** → served by whatever is running; if nothing is
-  running, the registry's `default:` alias is started. Real clients send
-  their own model names (`claude-…`, etc.), which won't match your aliases —
-  rather than 404, the gateway serves them.
-- The response's `model` field echoes the request's alias when known,
-  otherwise `ADVERTISED_MODEL` (default `local-inference`).
+- **Unknown** → `404` with `code: "model_not_found"` (OAI) or the
+  `{"type":"error"}` envelope (Anthropic). The alias is never substituted.
+- **Absent or blank** → `400`, `invalid_request_error`, `param: "model"`.
+- The response's `model` field echoes the request's alias, which is now always
+  a registered one on a 2xx.
 
-Only the explicit `POST /v1/load` rejects unknown aliases (422).
+Both generation endpoints are strict. `POST /v1/messages/count_tokens` is
+deliberately **not**: it neither selects a model nor produces a completion —
+it returns a char-based estimate — and Claude Code treats a 404 there as the
+model not existing, refusing it before it ever sends a message.
+
+`POST /v1/load` rejects unknown aliases as it always has (422).
+
+### Why this is strict (changed 2026-09-01)
+
+This used to fall back: an unknown or absent alias was served by whatever was
+running, on the argument that "real clients send their own model names
+(`claude-…`) which won't match your aliases." That turned out to be both a
+measurement hazard and a false premise.
+
+The hazard: a request naming an unregistered alias got a **200 and a coherent
+completion from a different model**, with nothing in the response saying so.
+`effective_model` echoed `ADVERTISED_MODEL`, `resolve_mlx_entry` supplied the
+*default* alias's registry entry, and `rewrite_model_for_mlx` forwarded that
+entry's HF repo id upstream — so the requested alias, the echoed model and the
+weights that actually answered could all disagree at once. Measured
+2026-09-01: an eval sweep for an alias the running gateway predated wrote 19
+records answered by `Qwen3.8-27B-mxfp8` before it was caught in the engine log.
+
+The premise: `claude-local` pins every Claude Code tier — `ANTHROPIC_MODEL`,
+the four `ANTHROPIC_DEFAULT_*` tiers, `ANTHROPIC_SMALL_FAST_MODEL`,
+`CLAUDE_CODE_SUBAGENT_MODEL` and `CLAUDE_CODE_BG_CLASSIFIER_MODEL` — to one
+registered alias, precisely so a background classifier cannot land on a
+different alias and thrash the single-flight supervisor. Claude Code has been
+naming real aliases all along, and strictness *defends* that invariant: an
+unmapped tier now fails loudly instead of silently swapping the child.
 
 ## POST /v1/chat/completions
 

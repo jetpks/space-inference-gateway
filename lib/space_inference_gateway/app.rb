@@ -181,6 +181,8 @@ module SpaceInferenceGateway
       model_alias = request["model"]
       streaming   = request["stream"] == true
 
+      return model_resolution_error(model_alias, flavor: :oai) unless model_registered?(model_alias)
+
       # Body rewrite runs before the reservation (AC1/I02): it can raise on a
       # JSON-parseable but ill-shaped body (e.g. a non-hash message), and it
       # only touches the registry — never the active/busy decision — so
@@ -229,17 +231,17 @@ module SpaceInferenceGateway
       request     = JSON.parse(body_str)
       model_alias = request["model"]
       streaming   = request["stream"] == true
-      mlx         = mlx_engine?(model_alias)
+
+      return model_resolution_error(model_alias, flavor: :ant) unless model_registered?(model_alias)
+
+      mlx = mlx_engine?(model_alias)
 
       # ANT->OAI translation runs before the reservation (AC1/I02): it can
       # raise on a JSON-parseable but ill-shaped body (e.g. a non-hash
       # message), and it only touches the registry — never the active/busy
       # decision — so nothing is lost by translating ahead of
       # ensure_active_if_known.
-      if mlx
-        entry    = resolve_mlx_entry(model_alias)
-        oai_body = ant_to_oai(body_str, entry, stop_tokens: entry[:stop_tokens])
-      end
+      oai_body = ant_to_oai_for(body_str, model_alias) if mlx
 
       unless @upstream_fn # legacy test seam injects upstream directly; skip the supervisor
         swap_r = @controller.ensure_active_if_known(model_alias)
@@ -524,6 +526,63 @@ module SpaceInferenceGateway
       end
     end
 
+    # Strict model resolution on the two GENERATION endpoints. An absent or
+    # unregistered alias is refused rather than served by whatever happens to
+    # be running.
+    #
+    # The old fallback was deliberate — reference/http-api.md argued "real
+    # clients send their own model names (claude-...), which won't match your
+    # aliases — rather than 404, the gateway serves them." It is a measurement
+    # hazard that outgrew that rationale. A request naming an unregistered
+    # alias got a 200 and a coherent completion from a DIFFERENT model, with
+    # nothing in the response saying so: `effective_model` echoes
+    # ADVERTISED_MODEL, `resolve_mlx_entry` silently supplies the default
+    # alias's entry, and `rewrite_model_for_mlx` forwards that entry's HF repo
+    # id upstream. The alias, the echoed model and the forwarded weights can
+    # all disagree at once. Measured 2026-09-01: a sweep for an alias the
+    # running gateway predated wrote 19 records answered by Qwen3.8-27B-mxfp8.
+    #
+    # The premise is also no longer true. `claude-local` pins every Claude Code
+    # tier — ANTHROPIC_MODEL, the four ANTHROPIC_DEFAULT_* tiers,
+    # ANTHROPIC_SMALL_FAST_MODEL, CLAUDE_CODE_SUBAGENT_MODEL and
+    # CLAUDE_CODE_BG_CLASSIFIER_MODEL — to one registered alias, precisely so a
+    # background classifier cannot land on a different alias and thrash the
+    # single-flight supervisor. Strictness DEFENDS that invariant: an unmapped
+    # tier now fails loudly instead of silently swapping the child.
+    #
+    # count_tokens is deliberately NOT strict — see handle_count_tokens.
+    def model_registered?(model_alias)
+      named?(model_alias) && !@controller.registry.resolve(model_alias).nil?
+    end
+
+    def named?(model_alias)
+      model_alias.is_a?(String) && !model_alias.strip.empty?
+    end
+
+    def model_resolution_error(model_alias, flavor:)
+      named   = named?(model_alias)
+      status  = named ? 404 : 400
+      message = if named
+                  "Unknown model #{model_alias.inspect}. Name a registered alias; GET /v1/models lists them."
+                else
+                  "The 'model' field is required. Name a registered alias; GET /v1/models lists them."
+                end
+      [status, JSON_HEADERS.dup, [model_error_body(message, status, flavor: flavor)]]
+    end
+
+    # Each surface gets its own vendor's error shape, matching ErrorRelay:
+    # OAI nests under "error" with a code/param a client can branch on; ANT
+    # uses the {type: "error", error: {...}} envelope.
+    def model_error_body(message, status, flavor:)
+      if flavor == :ant
+        JSON.generate({ type: "error", error: { type: "invalid_request_error", message: message } })
+      else
+        error = { message: message, type: "invalid_request_error", param: "model" }
+        error[:code] = "model_not_found" if status == 404
+        JSON.generate({ error: error })
+      end
+    end
+
     def effective_model(alias_name)
       @controller.registry.resolve(alias_name) ? alias_name : @advertised_model
     end
@@ -686,6 +745,14 @@ module SpaceInferenceGateway
       inject_sampling_penalties(parsed, entry)
       strip_history_reasoning(parsed) if entry && entry[:preserve_thinking] == false
       JSON.generate(parsed)
+    end
+
+    # The mlx/optiq path's ANT→OAI translation together with the registry
+    # lookup its stop_tokens come from — one seam so handle_ant states what
+    # happens, not how.
+    def ant_to_oai_for(body_str, model_alias)
+      entry = resolve_mlx_entry(model_alias)
+      ant_to_oai(body_str, entry, stop_tokens: entry[:stop_tokens])
     end
 
     # Minimal ANT→OAI request translation for the mlx/optiq engine path.

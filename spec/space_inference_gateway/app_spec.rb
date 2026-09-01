@@ -38,7 +38,7 @@ RSpec.describe SpaceInferenceGateway::App do
   end
 
   describe "POST /v1/chat/completions (non-stream)" do
-    let(:request_body) { JSON.generate({ model: "any", messages: [{ role: "user", content: "hi" }] }) }
+    let(:request_body) { JSON.generate({ model: "qwen3.8-flash-next-oq3", messages: [{ role: "user", content: "hi" }] }) }
 
     before { post "/v1/chat/completions", request_body, "CONTENT_TYPE" => "application/json" }
 
@@ -80,15 +80,43 @@ RSpec.describe SpaceInferenceGateway::App do
       expect(sent["model"]).to eq("mlx-community/Qwen3.5-35B-A3B-4bit")
     end
 
-    it "rewrites the model field to the mlx-vlm repo id for unknown alias (mlx-vlm default)" do
-      # The default alias (qwen3.8-27b-mxfp8-concurrent1, engine: mlx-vlm) is what an unknown
-      # alias falls back to. mlx-vlm validates the "model" field against its
-      # loaded model the same way mlx does, so the fallback must rewrite it too —
-      # forwarding the unresolved alias would evict the resident checkpoint.
+    # Was: "rewrites the model field to the mlx-vlm repo id for unknown alias
+    # (mlx-vlm default)". That asserted the fallback this replaces — an
+    # unknown alias reaching the engine at all, rewritten to the DEFAULT
+    # alias's repo id, is exactly how a request for one model got answered by
+    # another with a 200 and nothing saying so.
+    it "refuses an unknown alias instead of forwarding it to the default model" do
       body = JSON.generate({ model: "no-such-alias", messages: [{ role: "user", content: "hi" }] })
       post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
-      sent = JSON.parse(forwarded.first[:body])
-      expect(sent["model"]).to eq("mlx-community/Qwen3.8-27B-mxfp8")
+
+      expect(last_response.status).to eq(404)
+      expect(forwarded).to be_empty, "an unknown alias reached the engine"
+      error = JSON.parse(last_response.body)["error"]
+      expect(error["code"]).to eq("model_not_found")
+      expect(error["param"]).to eq("model")
+      expect(error["message"]).to include("no-such-alias")
+    end
+
+    it "refuses a request with no model field at all" do
+      post "/v1/chat/completions", JSON.generate({ messages: [{ role: "user", content: "hi" }] }),
+           "CONTENT_TYPE" => "application/json"
+
+      expect(last_response.status).to eq(400)
+      expect(forwarded).to be_empty
+      expect(JSON.parse(last_response.body).dig("error", "type")).to eq("invalid_request_error")
+    end
+
+    # The Anthropic surface gets its own vendor's envelope, not the OAI shape.
+    it "refuses an unknown alias on /v1/messages in the Anthropic error envelope" do
+      body = JSON.generate({ model: "no-such-alias", messages: [{ role: "user", content: "hi" }],
+                             max_tokens: 100, })
+      post "/v1/messages", body, "CONTENT_TYPE" => "application/json"
+
+      expect(last_response.status).to eq(404)
+      expect(forwarded).to be_empty
+      parsed = JSON.parse(last_response.body)
+      expect(parsed["type"]).to eq("error")
+      expect(parsed.dig("error", "type")).to eq("invalid_request_error")
     end
 
     it "normalizes the OpenAI 'developer' role to 'system' (mlx rejects developer)" do
@@ -646,7 +674,7 @@ RSpec.describe SpaceInferenceGateway::App do
 
   describe "POST /v1/messages/count_tokens" do
     it "returns 200 with an integer input_tokens estimate" do
-      body = JSON.generate({ model: "any", messages: [{ role: "user", content: "a" * 40 }] })
+      body = JSON.generate({ model: "qwen3.8-flash-next-oq3", messages: [{ role: "user", content: "a" * 40 }] })
       post "/v1/messages/count_tokens", body, "CONTENT_TYPE" => "application/json"
       expect(last_response.status).to eq(200)
       parsed = JSON.parse(last_response.body)
@@ -656,7 +684,7 @@ RSpec.describe SpaceInferenceGateway::App do
 
     it "handles string and array content shapes" do
       body = JSON.generate({
-                             model: "any",
+                             model: "qwen3.8-flash-next-oq3",
         system: "eight chars",
         messages: [{ role: "user", content: [{ type: "text", text: "eight more" }] }],
                            })
@@ -667,7 +695,7 @@ RSpec.describe SpaceInferenceGateway::App do
   end
 
   describe "POST /v1/messages (non-stream)" do
-    let(:request_body) { JSON.generate({ model: "any", messages: [{ role: "user", content: "hi" }], max_tokens: 100 }) }
+    let(:request_body) { JSON.generate({ model: "qwen3.8-flash-next-oq3", messages: [{ role: "user", content: "hi" }], max_tokens: 100 }) }
 
     before { post "/v1/messages", request_body, "CONTENT_TYPE" => "application/json" }
 
@@ -702,7 +730,7 @@ RSpec.describe SpaceInferenceGateway::App do
       end
     end
 
-    let(:request_body) { JSON.generate({ model: "any", messages: [], stream: true }) }
+    let(:request_body) { JSON.generate({ model: "qwen3.8-flash-next-oq3", messages: [], stream: true }) }
 
     before { post "/v1/chat/completions", request_body, "CONTENT_TYPE" => "application/json" }
 
@@ -747,7 +775,7 @@ RSpec.describe SpaceInferenceGateway::App do
     before { SpaceInferenceGateway::Metrics.reset_all }
 
     it "increments sig_requests_total for OAI non-stream" do
-      body = JSON.generate({ model: "any", messages: [] })
+      body = JSON.generate({ model: "qwen3.8-flash-next-oq3", messages: [] })
       post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
       expect(SpaceInferenceGateway::Metrics::REQUESTS.get(labels: { flavor: "oai", stream: "false" })).to eq(1)
     end
@@ -755,7 +783,7 @@ RSpec.describe SpaceInferenceGateway::App do
     it "increments sig_requests_total for OAI stream (legacy-seam path)" do
       streaming_fn = ->(_path, _body) { [oai_s_response, 200, {}] }
       streaming_app = described_class.new(upstream_fn: streaming_fn)
-      body = JSON.generate({ model: "any", messages: [], stream: true })
+      body = JSON.generate({ model: "qwen3.8-flash-next-oq3", messages: [], stream: true })
       post_response = Rack::MockRequest.new(streaming_app).post(
         "/v1/chat/completions", input: body, "CONTENT_TYPE" => "application/json",
       )
@@ -764,18 +792,18 @@ RSpec.describe SpaceInferenceGateway::App do
     end
 
     it "increments sig_requests_total for ANT non-stream" do
-      body = JSON.generate({ model: "any", messages: [], max_tokens: 100 })
+      body = JSON.generate({ model: "qwen3.8-flash-next-oq3", messages: [], max_tokens: 100 })
       post "/v1/messages", body, "CONTENT_TYPE" => "application/json"
       expect(SpaceInferenceGateway::Metrics::REQUESTS.get(labels: { flavor: "ant", stream: "false" })).to eq(1)
     end
 
     it "exactly +1 for OAI non-stream and +1 for OAI stream after separate requests (AC2)" do
-      ns_body = JSON.generate({ model: "any", messages: [] })
+      ns_body = JSON.generate({ model: "qwen3.8-flash-next-oq3", messages: [] })
       post "/v1/chat/completions", ns_body, "CONTENT_TYPE" => "application/json"
 
       streaming_fn = ->(_path, _body) { [oai_s_response, 200, {}] }
       streaming_app = described_class.new(upstream_fn: streaming_fn)
-      s_body = JSON.generate({ model: "any", messages: [], stream: true })
+      s_body = JSON.generate({ model: "qwen3.8-flash-next-oq3", messages: [], stream: true })
       Rack::MockRequest.new(streaming_app).post(
         "/v1/chat/completions", input: s_body, "CONTENT_TYPE" => "application/json",
       )
@@ -795,7 +823,7 @@ RSpec.describe SpaceInferenceGateway::App do
 
       before do
         post "/v1/chat/completions",
-             JSON.generate({ model: "any", messages: [] }),
+             JSON.generate({ model: "qwen3.8-flash-next-oq3", messages: [] }),
              "CONTENT_TYPE" => "application/json"
       end
 
@@ -817,7 +845,7 @@ RSpec.describe SpaceInferenceGateway::App do
 
       before do
         post "/v1/messages",
-             JSON.generate({ model: "any", messages: [], max_tokens: 100 }),
+             JSON.generate({ model: "qwen3.8-flash-next-oq3", messages: [], max_tokens: 100 }),
              "CONTENT_TYPE" => "application/json"
       end
 
@@ -840,7 +868,7 @@ RSpec.describe SpaceInferenceGateway::App do
 
       before do
         post "/v1/messages",
-             JSON.generate({ model: "any", messages: [], max_tokens: 100 }),
+             JSON.generate({ model: "qwen3.8-flash-next-oq3", messages: [], max_tokens: 100 }),
              "CONTENT_TYPE" => "application/json"
       end
 
@@ -858,7 +886,7 @@ RSpec.describe SpaceInferenceGateway::App do
 
       before do
         post "/v1/chat/completions",
-             JSON.generate({ model: "any", messages: [] }),
+             JSON.generate({ model: "qwen3.8-flash-next-oq3", messages: [] }),
              "CONTENT_TYPE" => "application/json"
       end
 
@@ -878,7 +906,7 @@ RSpec.describe SpaceInferenceGateway::App do
 
       before do
         post "/v1/messages",
-             JSON.generate({ model: "any", messages: [], max_tokens: 100 }),
+             JSON.generate({ model: "qwen3.8-flash-next-oq3", messages: [], max_tokens: 100 }),
              "CONTENT_TYPE" => "application/json"
       end
 

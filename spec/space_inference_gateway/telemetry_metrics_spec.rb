@@ -169,7 +169,7 @@ RSpec.describe "Telemetry metrics (I09)" do
     let(:app) { SpaceInferenceGateway::App.new(upstream_fn: ->(_p, _b) { [oai_ns_response, 200, {}] }) }
 
     it "leaves both phase labels at 0" do
-      post "/v1/chat/completions", JSON.generate({ model: "any", messages: [] }), "CONTENT_TYPE" => "application/json"
+      post "/v1/chat/completions", JSON.generate({ model: "qwen3.8-flash-next-oq3", messages: [] }), "CONTENT_TYPE" => "application/json"
       expect(metrics::GENERATION_PHASE.get(labels: { phase: "prefill" })).to eq(0)
       expect(metrics::GENERATION_PHASE.get(labels: { phase: "decode" })).to eq(0)
     end
@@ -243,7 +243,7 @@ RSpec.describe "Telemetry metrics (I09)" do
     it "non-stream OAI flavor records finish_reason verbatim (stop)" do
       app = SpaceInferenceGateway::App.new(upstream_fn: ->(_p, _b) { [oai_ns_response, 200, {}] })
       Rack::Test::Session.new(Rack::MockSession.new(app)).post(
-        "/v1/chat/completions", JSON.generate({ model: "any", messages: [] }), "CONTENT_TYPE" => "application/json",
+        "/v1/chat/completions", JSON.generate({ model: "qwen3.8-flash-next-oq3", messages: [] }), "CONTENT_TYPE" => "application/json",
       )
       expect(metrics::GENERATION_STOPS.get(labels: { flavor: "oai", stop_reason: "stop" })).to eq(1)
     end
@@ -264,7 +264,7 @@ RSpec.describe "Telemetry metrics (I09)" do
     it "non-stream OAI flavor increments from upstream usage verbatim" do
       app = SpaceInferenceGateway::App.new(upstream_fn: ->(_p, _b) { [oai_ns_response, 200, {}] })
       Rack::Test::Session.new(Rack::MockSession.new(app)).post(
-        "/v1/chat/completions", JSON.generate({ model: "any", messages: [] }), "CONTENT_TYPE" => "application/json",
+        "/v1/chat/completions", JSON.generate({ model: "qwen3.8-flash-next-oq3", messages: [] }), "CONTENT_TYPE" => "application/json",
       )
       expect(metrics::USAGE_TOKENS.get(labels: { flavor: "oai", kind: "prompt" })).to eq(34)
       expect(metrics::USAGE_TOKENS.get(labels: { flavor: "oai", kind: "completion" })).to eq(246)

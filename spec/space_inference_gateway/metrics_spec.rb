@@ -78,7 +78,7 @@ RSpec.describe SpaceInferenceGateway::Metrics do
 
   describe "request counter" do
     it "increments sig_requests_total for OAI non-stream" do
-      body = JSON.generate({ model: "any", messages: [] })
+      body = JSON.generate({ model: "qwen3.8-flash-next-oq3", messages: [] })
       post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
       expect(described_class::REQUESTS.get(labels: { flavor: "oai", stream: "false" })).to eq(1)
     end
@@ -89,13 +89,13 @@ RSpec.describe SpaceInferenceGateway::Metrics do
       session = Rack::MockSession.new(streaming_app)
       rack_env = Rack::Test::Session.new(session)
 
-      body = JSON.generate({ model: "any", messages: [], stream: true })
+      body = JSON.generate({ model: "qwen3.8-flash-next-oq3", messages: [], stream: true })
       rack_env.post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
       expect(described_class::REQUESTS.get(labels: { flavor: "oai", stream: "true" })).to eq(1)
     end
 
     it "increments sig_requests_total for ANT non-stream" do
-      body = JSON.generate({ model: "any", messages: [], max_tokens: 100 })
+      body = JSON.generate({ model: "qwen3.8-flash-next-oq3", messages: [], max_tokens: 100 })
       post "/v1/messages", body, "CONTENT_TYPE" => "application/json"
       expect(described_class::REQUESTS.get(labels: { flavor: "ant", stream: "false" })).to eq(1)
     end
@@ -132,7 +132,7 @@ RSpec.describe SpaceInferenceGateway::Metrics do
       err_app = SpaceInferenceGateway::App.new(upstream_fn: err_fn)
       session = Rack::MockSession.new(err_app)
       rack_env = Rack::Test::Session.new(session)
-      body = JSON.generate({ model: "any", messages: [] })
+      body = JSON.generate({ model: "qwen3.8-flash-next-oq3", messages: [] })
       rack_env.post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
       expect(described_class::UPSTREAM_ERRORS.get(labels: { status: "502", flavor: "oai" })).to eq(1)
     end
