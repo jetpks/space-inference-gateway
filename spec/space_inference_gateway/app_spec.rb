@@ -189,8 +189,57 @@ RSpec.describe SpaceInferenceGateway::App do
       expect(sent).not_to have_key("reasoning_effort")
     end
 
+    it "leaves aliases that declare no penalties untouched" do
+      sent = sent_for({ model: "qwen3.8-flash-next-oq3", messages: [{ role: "user", content: "hi" }] })
+
+      expect(sent).not_to have_key("repetition_penalty")
+      expect(sent).not_to have_key("repetition_context_size")
+    end
+  end
+
+  # ── Sampling penalty injection ────────────────────────────────────────────
+  # On a fixture registry, not config/models.yml. These assert the BEHAVIOUR of
+  # inject_sampling_penalties, which must keep working whether or not any
+  # shipped alias currently declares penalties — and as of 2026-09-01 none do,
+  # having been dropped from the a3b arms as wrong for code. Binding them to a
+  # production alias is what broke them when that landed.
+  describe "sampling penalty injection" do
+    let(:forwarded) { [] }
+    let(:upstream_fn) do
+      lambda do |path, body|
+        forwarded << { path: path, body: body }
+        [fixture("oai_ns.json"), 200, {}]
+      end
+    end
+
+    let(:registry) do
+      SpaceInferenceGateway::ModelRegistry.new(
+        "default" => "penalty-arm",
+        "models"  => {
+          "penalty-arm" => {
+            "engine" => "mlx-vlm", "model" => "fixture/penalty-arm", "port" => 8080,
+            "penalties" => { "repetition_penalty" => 1.05, "repetition_context_size" => 64 },
+          },
+          "plain-arm" => {
+            "engine" => "mlx-vlm", "model" => "fixture/plain-arm", "port" => 8080,
+          },
+        },
+      )
+    end
+
+    let(:app) do
+      supervisor = FakeUpstreamServer::FakeSupervisor.new("penalty-arm", "http://unused")
+      controller = SpaceInferenceGateway::ModelController.new(registry: registry, supervisor: supervisor)
+      described_class.new(upstream_fn: upstream_fn, controller: controller)
+    end
+
+    def sent_for(body)
+      post "/v1/chat/completions", JSON.generate(body), "CONTENT_TYPE" => "application/json"
+      JSON.parse(forwarded.first[:body])
+    end
+
     it "injects the alias's declared sampling penalties" do
-      sent = sent_for({ model: "qwen3.6-35b-a3b-4bit", messages: [{ role: "user", content: "hi" }] })
+      sent = sent_for({ model: "penalty-arm", messages: [{ role: "user", content: "hi" }] })
 
       expect(sent["repetition_penalty"]).to eq(1.05)
       expect(sent["repetition_context_size"]).to eq(64)
@@ -199,15 +248,15 @@ RSpec.describe SpaceInferenceGateway::App do
     # A declared penalty is a default, not an override: mirrors how
     # reasoning_effort keeps a value the template accepts.
     it "lets a client's own penalty win over the alias default" do
-      sent = sent_for({ model: "qwen3.6-35b-a3b-4bit", messages: [{ role: "user", content: "hi" }],
+      sent = sent_for({ model: "penalty-arm", messages: [{ role: "user", content: "hi" }],
                         repetition_penalty: 1.5, })
 
       expect(sent["repetition_penalty"]).to eq(1.5)
       expect(sent["repetition_context_size"]).to eq(64)
     end
 
-    it "leaves aliases that declare no penalties untouched" do
-      sent = sent_for({ model: "qwen3.8-flash-next-oq3", messages: [{ role: "user", content: "hi" }] })
+    it "leaves an alias declaring no penalties untouched" do
+      sent = sent_for({ model: "plain-arm", messages: [{ role: "user", content: "hi" }] })
 
       expect(sent).not_to have_key("repetition_penalty")
       expect(sent).not_to have_key("repetition_context_size")

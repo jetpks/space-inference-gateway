@@ -375,41 +375,57 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
       expect(concurrent4[:thinking_budget]).to eq(512)
     end
 
-    # The three aliases wired to mlx-vlm 2026-09-01. enable_thinking is the
-    # load-bearing field: on mlx-vlm it is a launch flag, so its presence is
-    # the whole-child thinking switch — absent means off for every request,
-    # and an alias whose supports_reasoning disagrees with it is misconfigured
-    # in a way no request-level assertion would catch.
-    it "config/models.yml serves nemotron, the 122B and coder-next on mlx-vlm" do
+    # Thinking is a two-field contract on mlx-vlm and it is easy to get half
+    # right: enable_thinking is the LAUNCH flag (absent = off for the whole
+    # child), supports_reasoning is what routes the output. An alias with one
+    # and not the other is misconfigured in a way no request-level assertion
+    # would catch — thinking that never happens, or thinking that leaks into
+    # content — so they are asserted together, per alias.
+    it "enables thinking on every alias whose template supports it" do
       loaded = SpaceInferenceGateway::ModelRegistry.load
 
-      nemotron = loaded.resolve("nemotron-3-super")
-      expect(nemotron[:engine]).to eq("mlx-vlm")
-      expect(nemotron[:model]).to eq("mlx-community/NVIDIA-Nemotron-3-Super-120B-A12B-5bit")
-      expect(nemotron[:venv]).to end_with("/.venv-mlx-vlm/bin/mlx_vlm.server")
-      expect(nemotron[:enable_thinking]).to eq(true)
-      expect(nemotron[:supports_reasoning]).to eq(true)
-      expect(nemotron[:max_num_seqs]).to eq(1)
+      %w[nemotron-3-super qwen3-122b-a10b qwen3-35b-a3b
+         qwen3.6-35b-a3b-4bit qwen3.6-35b-a3b-8bit].each do |name|
+        entry = loaded.resolve(name)
+        expect(entry[:engine]).to eq("mlx-vlm"), "#{name} left the mlx-vlm engine"
+        expect(entry[:enable_thinking]).to eq(true), "#{name} would launch with thinking off"
+        expect(entry[:supports_reasoning]).to eq(true), "#{name} would leak reasoning into content"
+      end
 
-      # Both non-reasoning arms leave enable_thinking ABSENT rather than false:
-      # omission is how mlx-vlm is told to disable thinking.
-      a10b = loaded.resolve("qwen3-122b-a10b")
-      expect(a10b[:engine]).to eq("mlx-vlm")
-      expect(a10b[:model]).to eq("mlx-community/Qwen3.5-122B-A10B-4bit")
-      expect(a10b[:enable_thinking]).to be_nil
-      expect(a10b[:supports_reasoning]).to eq(false)
-
+      # qwen3-coder-next is the control: its chat template carries no <think>,
+      # </think> or enable_thinking marker at all, so there is no thinking
+      # channel to gate and enable_thinking must stay absent rather than false.
       coder = loaded.resolve("qwen3-coder-next")
       expect(coder[:engine]).to eq("mlx-vlm")
       expect(coder[:model]).to eq("mlx-community/Qwen3-Coder-Next-6bit")
       expect(coder[:enable_thinking]).to be_nil
       expect(coder[:supports_reasoning]).to eq(false)
-      expect(coder[:penalties]).to be_nil
+    end
 
-      # mlx_lm-only concurrency knobs must not survive the move.
-      [nemotron, a10b, coder].each do |entry|
-        expect(entry[:decode_concurrency]).to be_nil
-        expect(entry[:prompt_concurrency]).to be_nil
+    # These arms are for code. A repetition penalty over a 64-token window
+    # penalises indentation, closing delimiters and an identifier named once
+    # per line — correct output, not degeneration — so the length bound they
+    # were standing in for is expressed as thinking_budget instead. This is
+    # the assertion that a well-meaning re-tune has to argue with.
+    it "bounds the a3b code arms with thinking_budget rather than penalties" do
+      loaded = SpaceInferenceGateway::ModelRegistry.load
+
+      %w[qwen3.6-35b-a3b-4bit qwen3.6-35b-a3b-8bit].each do |name|
+        entry = loaded.resolve(name)
+        expect(entry[:penalties]).to be_nil, "#{name} carries a code-hostile sampling penalty"
+        expect(entry[:thinking_budget]).to eq(4096)
+      end
+    end
+
+    it "drops mlx_lm-only concurrency knobs from every mlx-vlm alias" do
+      loaded = SpaceInferenceGateway::ModelRegistry.load
+
+      loaded.aliases.each do |name|
+        entry = loaded.resolve(name)
+        next unless entry[:engine] == "mlx-vlm"
+
+        expect(entry[:decode_concurrency]).to be_nil, "#{name} kept decode_concurrency"
+        expect(entry[:prompt_concurrency]).to be_nil, "#{name} kept prompt_concurrency"
       end
     end
 
