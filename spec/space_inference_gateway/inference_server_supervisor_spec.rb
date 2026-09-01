@@ -347,7 +347,10 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
       expect(optiq_entry[:mtp_depth]).to eq(2)
       expect(optiq_entry[:max_concurrent]).to eq(8)
 
-      mlx_entry = loaded.resolve("qwen3-122b-a10b")
+      # hermes-4-70b, not qwen3-122b-a10b: the 122B moved to mlx-vlm 2026-09-01.
+      # This assertion wants an alias still on the legacy engine, and hermes is
+      # one deliberately — no native reasoning, so nothing to gain from moving.
+      mlx_entry = loaded.resolve("hermes-4-70b")
       expect(mlx_entry[:engine]).to eq("mlx")
       expect(mlx_entry[:model]).to be_a(String)
 
@@ -370,6 +373,44 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
       expect(concurrent4[:draft_kind]).to be_nil
       expect(concurrent4[:max_num_seqs]).to eq(4)
       expect(concurrent4[:thinking_budget]).to eq(512)
+    end
+
+    # The three aliases wired to mlx-vlm 2026-09-01. enable_thinking is the
+    # load-bearing field: on mlx-vlm it is a launch flag, so its presence is
+    # the whole-child thinking switch — absent means off for every request,
+    # and an alias whose supports_reasoning disagrees with it is misconfigured
+    # in a way no request-level assertion would catch.
+    it "config/models.yml serves nemotron, the 122B and coder-next on mlx-vlm" do
+      loaded = SpaceInferenceGateway::ModelRegistry.load
+
+      nemotron = loaded.resolve("nemotron-3-super")
+      expect(nemotron[:engine]).to eq("mlx-vlm")
+      expect(nemotron[:model]).to eq("mlx-community/NVIDIA-Nemotron-3-Super-120B-A12B-5bit")
+      expect(nemotron[:venv]).to end_with("/.venv-mlx-vlm/bin/mlx_vlm.server")
+      expect(nemotron[:enable_thinking]).to eq(true)
+      expect(nemotron[:supports_reasoning]).to eq(true)
+      expect(nemotron[:max_num_seqs]).to eq(1)
+
+      # Both non-reasoning arms leave enable_thinking ABSENT rather than false:
+      # omission is how mlx-vlm is told to disable thinking.
+      a10b = loaded.resolve("qwen3-122b-a10b")
+      expect(a10b[:engine]).to eq("mlx-vlm")
+      expect(a10b[:model]).to eq("mlx-community/Qwen3.5-122B-A10B-4bit")
+      expect(a10b[:enable_thinking]).to be_nil
+      expect(a10b[:supports_reasoning]).to eq(false)
+
+      coder = loaded.resolve("qwen3-coder-next")
+      expect(coder[:engine]).to eq("mlx-vlm")
+      expect(coder[:model]).to eq("mlx-community/Qwen3-Coder-Next-6bit")
+      expect(coder[:enable_thinking]).to be_nil
+      expect(coder[:supports_reasoning]).to eq(false)
+      expect(coder[:penalties]).to be_nil
+
+      # mlx_lm-only concurrency knobs must not survive the move.
+      [nemotron, a10b, coder].each do |entry|
+        expect(entry[:decode_concurrency]).to be_nil
+        expect(entry[:prompt_concurrency]).to be_nil
+      end
     end
 
     it "venv has ~ expanded; model is the repo id (not path-expanded)" do

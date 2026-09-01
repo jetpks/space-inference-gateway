@@ -326,16 +326,28 @@ models:
     # Same mlx_lm eos-stop bug precaution as hermes-4-70b (Llama-3.3 tokenizer).
     stop_tokens:
       - <|eot_id|>
+  # Qwen3.5-122B-A10B (model_type qwen3_5_moe, 256 experts, 262k text ctx) —
+  # moved from the mlx engine to mlx-vlm 2026-09-01, same rationale as the a3b
+  # arms above: mlx-vlm implements qwen3_5_moe, so the weights load unchanged
+  # and only the serving vocabulary differs.
+  #
+  # enable_thinking is ABSENT rather than false, per the a3b arms: on mlx-vlm
+  # it is a launch flag, so omitting it turns thinking off for the whole child.
+  # Here that also closes a leak. The Qwen template defaults thinking ON, and
+  # this alias has never carried supports_reasoning, so under mlx_lm it emitted
+  # raw <think> tags into content with nothing lifting them. Thinking off at the
+  # template is the honest pairing for supports_reasoning: false.
   qwen3-122b-a10b:
-    engine: mlx
+    engine: mlx-vlm
     model: mlx-community/Qwen3.5-122B-A10B-4bit
     port: 8080
-    venv: ~/.venv-vllm-metal/bin/python
-    decode_concurrency: 32
-    prompt_concurrency: 8
-    # ~122B params — the default 120s readiness budget kills a legitimately
-    # loading model of this size before it's had a chance to come up.
-    readiness_timeout: 300
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    supports_reasoning: false
+    max_num_seqs: 1
+    # 65 GiB off a cold page cache — the same class as the flash-next oQ3 alias
+    # above, whose 600s budget is measured. The 300s here was inherited from the
+    # mlx engine and never measured against a cold load.
+    readiness_timeout: 600
   qwen3-35b-a3b:
     engine: mlx
     model: mlx-community/Qwen3.5-35B-A3B-4bit
@@ -392,18 +404,45 @@ models:
     penalties:
       repetition_penalty: 1.05
       repetition_context_size: 64
-  # MoE 120B/A12B (Nemotron 3 Super, q5). Custom NemotronH architecture —
-  # mlx_lm 0.31.3 ships nemotron_h support. Reasoning model: emits thinking
-  # tags the proxy's parser lifts into the reasoning channel. Registered after
-  # a guided-ops trial 2026-07-18: loaded and served through the TLS edge,
-  # reasoning_content separated, finish_reason stop.
+  # MoE 120B/A12B (Nemotron 3 Super, q5). Custom NemotronH architecture.
+  # Registered after a guided-ops trial 2026-07-18: loaded and served through
+  # the TLS edge, reasoning_content separated, finish_reason stop.
+  #
+  # Moved from the mlx engine to mlx-vlm 2026-09-01: mlx-vlm implements
+  # nemotron_h (mlx_vlm/models/nemotron_h), so the weights load unchanged and
+  # only the serving vocabulary differs.
+  #
+  # enable_thinking is PRESENT here, unlike the a3b arms and the 122B above.
+  # This alias is a reasoning arm today — supports_reasoning: true, tags lifted
+  # by the parser — and on mlx-vlm the flag is the whole-child switch, so
+  # omitting it would silently turn thinking off and change what this alias is.
   nemotron-3-super:
-    engine: mlx
+    engine: mlx-vlm
     model: mlx-community/NVIDIA-Nemotron-3-Super-120B-A12B-5bit
     port: 8080
-    venv: ~/.venv-vllm-metal/bin/python
-    decode_concurrency: 32
-    prompt_concurrency: 8
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    enable_thinking: true
     supports_reasoning: true
-    # ~120B params — see qwen3-122b-a10b's readiness_timeout comment above.
-    readiness_timeout: 300
+    max_num_seqs: 1
+    # 77 GiB cold — see the 122B's readiness_timeout note above.
+    readiness_timeout: 600
+  # Qwen3-Coder-Next, q6 (model_type qwen3_next — 48 layers, 512 experts, 262k
+  # ctx; the same architecture family mlx-vlm already serves for the flash-next
+  # MTP drafter work). Registered 2026-09-01, previously on disk with no alias.
+  #
+  # Coder-specialised instruct model: its chat template carries no <think>,
+  # </think> or enable_thinking markers at all, so supports_reasoning is false
+  # and enable_thinking is absent — there is no thinking channel to gate.
+  #
+  # No `penalties:` block on purpose. A repetition penalty is actively wrong for
+  # code, where repeated tokens — indentation, closing delimiters, an identifier
+  # named once per line — are correct output rather than degeneration.
+  qwen3-coder-next:
+    engine: mlx-vlm
+    model: mlx-community/Qwen3-Coder-Next-6bit
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    supports_reasoning: false
+    max_num_seqs: 1
+    # 60 GiB cold — see the 122B's readiness_timeout note above.
+    readiness_timeout: 600
