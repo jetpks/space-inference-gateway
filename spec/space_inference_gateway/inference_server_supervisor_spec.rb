@@ -385,7 +385,8 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
       loaded = SpaceInferenceGateway::ModelRegistry.load
 
       %w[nemotron-3-super qwen3-122b-a10b qwen3-35b-a3b
-         qwen3.6-35b-a3b-4bit qwen3.6-35b-a3b-8bit].each do |name|
+         qwen3.6-35b-a3b-4bit qwen3.6-35b-a3b-8bit
+         qwen3.5-9b gemma-4-e4b].each do |name|
         entry = loaded.resolve(name)
         expect(entry[:engine]).to eq("mlx-vlm"), "#{name} left the mlx-vlm engine"
         expect(entry[:enable_thinking]).to eq(true), "#{name} would launch with thinking off"
@@ -395,11 +396,20 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
       # qwen3-coder-next is the control: its chat template carries no <think>,
       # </think> or enable_thinking marker at all, so there is no thinking
       # channel to gate and enable_thinking must stay absent rather than false.
-      coder = loaded.resolve("qwen3-coder-next")
-      expect(coder[:engine]).to eq("mlx-vlm")
-      expect(coder[:model]).to eq("mlx-community/Qwen3-Coder-Next-6bit")
-      expect(coder[:enable_thinking]).to be_nil
-      expect(coder[:supports_reasoning]).to eq(false)
+      # The non-thinking controls: no <think>, <|think|> or enable_thinking
+      # marker in any of their templates, so enable_thinking must stay ABSENT
+      # rather than false — absence is how mlx-vlm is told, and a false here
+      # would read as a knob someone chose rather than a channel that does not
+      # exist. gemma-4-e4b above is the counterexample that makes this worth
+      # asserting: it IS a thinking model despite having no <think> tag.
+      %w[qwen3-coder-next ministral-3-8b olmo-3-7b granite-4.1-8b].each do |name|
+        entry = loaded.resolve(name)
+        expect(entry[:engine]).to eq("mlx-vlm"), "#{name} is not on mlx-vlm"
+        expect(entry[:enable_thinking]).to be_nil, "#{name} declares a thinking flag it has no channel for"
+        expect(entry[:supports_reasoning]).to eq(false)
+      end
+
+      expect(loaded.resolve("qwen3-coder-next")[:model]).to eq("mlx-community/Qwen3-Coder-Next-6bit")
     end
 
     # These arms are for code. A repetition penalty over a 64-token window

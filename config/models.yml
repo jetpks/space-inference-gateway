@@ -449,3 +449,73 @@ models:
     max_num_seqs: 1
     # 60 GiB cold — see the 122B's readiness_timeout note above.
     readiness_timeout: 600
+  # ── Small arms, 4-10 GiB, registered 2026-09-01 ───────────────────────────
+  # Pulled to give canary a consumer-class band under the 60-120 GiB arms
+  # above. Deliberately three model FAMILIES rather than three Qwen quants:
+  # canary's thesis is generalization vs memorization, and Qwen-vs-Qwen mostly
+  # measures scale, while Gemma, Mistral, Olmo and Granite carry independent
+  # training mixes. Every arch already ships in the fork.
+  #
+  # No readiness_timeout: all five load well inside the 120s default.
+
+  # Qwen3.5-9B (qwen3_5). Thinking model, standard <think> markers - the small
+  # sibling of the 122B arm, so the pair reads as a size gradient in one family.
+  qwen3.5-9b:
+    engine: mlx-vlm
+    model: mlx-community/Qwen3.5-9B-MLX-4bit
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    enable_thinking: true
+    supports_reasoning: true
+    max_num_seqs: 1
+
+  # Gemma 4 E4B (gemma4, MatFormer "effective 4B"). Thinking model, but NOT via
+  # <think>: its template opens '<|think|>' and renders tool-call reasoning as
+  # '<|channel>thought ... <channel|>'. mlx-vlm handles both natively -
+  # _split_thinking tries the tokenizer's own parse_response first and falls
+  # back to a marker set that already knows this shape (server/app.py's
+  # _count_thinking_tag_tokens names it explicitly).
+  #
+  # Verified live 2026-09-01 rather than assumed, because a non-<think> thinking
+  # model is exactly where the gateway's own ReasoningParser would fail: probed
+  # direct on :8081 with --enable-thinking, reasoning_content came back with 658
+  # characters, content was bare "391", and no marker leaked into content.
+  gemma-4-e4b:
+    engine: mlx-vlm
+    model: mlx-community/gemma-4-e4b-it-4bit
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    enable_thinking: true
+    supports_reasoning: true
+    max_num_seqs: 1
+
+  # Ministral 3 8B (mistral3 - the arch, despite the model name). Non-thinking
+  # instruct: no <think>, <|think|> or enable_thinking marker in its template.
+  ministral-3-8b:
+    engine: mlx-vlm
+    model: mlx-community/Ministral-3-8B-Instruct-2512-4bit
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    supports_reasoning: false
+    max_num_seqs: 1
+
+  # Olmo 3 7B Instruct (olmo3). Non-thinking. Carried for a reason popularity
+  # does not capture: it is the only fully-open-DATA model here, so its Ruby
+  # contamination can be inspected directly rather than inferred - see canary's
+  # docs/CONTAMINATION.md.
+  olmo-3-7b:
+    engine: mlx-vlm
+    model: mlx-community/Olmo-3-7B-Instruct-4bit
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    supports_reasoning: false
+    max_num_seqs: 1
+
+  # Granite 4.1 8B (granite). Non-thinking. IBM's current small instruct.
+  granite-4.1-8b:
+    engine: mlx-vlm
+    model: mlx-community/granite-4.1-8b-4bit
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    supports_reasoning: false
+    max_num_seqs: 1
