@@ -303,20 +303,53 @@ models:
     prompt_concurrency: 8
   # Qwen3.6 35B A3B (model_type qwen3_5_moe — same arch family as the 3.5
   # MoE above, runs on the pinned mlx_lm 0.31.3).
+  # Qwen3.6-35B-A3B, both quants — moved from the mlx engine to mlx-vlm
+  # 2026-09-01. model_type is qwen3_5_moe, which mlx-vlm implements
+  # (mlx_vlm/models/qwen3_5_moe), so the weights load unchanged; only the
+  # serving vocabulary differs.
+  #
+  # Why move: these are reasoning models, and under mlx_lm.server the only
+  # lever over their thinking was chat_template_kwargs, forwarded per
+  # request. That left them running past the 16,384-token cap on some
+  # prompts even with thinking off, which is why they have never produced a
+  # usable eval arm. mlx-vlm gives them --enable-thinking, --thinking-budget,
+  # --max-tokens and the sampling penalties below — a stronger stop than
+  # asking the template nicely.
+  #
+  # ⚠️ enable_thinking is deliberately ABSENT, not false: on mlx-vlm it is a
+  # launch flag (generate/dispatch.py builds chat_template_kwargs from
+  # args.enable_thinking), so omitting it turns thinking off for the whole
+  # child. The corollary is that mlx-vlm accepts no chat_template_kwargs
+  # request field at all — any client still sending one to suppress thinking
+  # here is now writing to a field nothing reads.
+  #
+  # decode_concurrency/prompt_concurrency dropped: mlx_lm-specific, and
+  # meaningless to this engine.
+  #
+  # ⚠️ The penalty values below are a STARTING POINT, not a tuned result.
+  # 1.05 over a 64-token window is a conservative anti-loop setting (mlx-vlm
+  # defaults the window to 20, which is short enough to miss a repeating
+  # stanza); nothing here has been measured against this corpus yet. They
+  # change the output distribution, so any arm carrying them is not
+  # comparable to one that does not.
   qwen3.6-35b-a3b-4bit:
-    engine: mlx
+    engine: mlx-vlm
     model: mlx-community/Qwen3.6-35B-A3B-4bit
     port: 8080
-    venv: ~/.venv-vllm-metal/bin/python
-    decode_concurrency: 32
-    prompt_concurrency: 8
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    max_num_seqs: 1
+    penalties:
+      repetition_penalty: 1.05
+      repetition_context_size: 64
   qwen3.6-35b-a3b-8bit:
-    engine: mlx
+    engine: mlx-vlm
     model: mlx-community/Qwen3.6-35B-A3B-8bit
     port: 8080
-    venv: ~/.venv-vllm-metal/bin/python
-    decode_concurrency: 32
-    prompt_concurrency: 8
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    max_num_seqs: 1
+    penalties:
+      repetition_penalty: 1.05
+      repetition_context_size: 64
   # MoE 120B/A12B (Nemotron 3 Super, q5). Custom NemotronH architecture —
   # mlx_lm 0.31.3 ships nemotron_h support. Reasoning model: emits thinking
   # tags the proxy's parser lifts into the reasoning channel. Registered after

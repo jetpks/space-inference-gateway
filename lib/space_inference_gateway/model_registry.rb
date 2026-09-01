@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "yaml"
+require_relative "mlx_vlm_flags"
 
 module SpaceInferenceGateway
   class ModelRegistry
@@ -22,9 +23,28 @@ module SpaceInferenceGateway
       @models  = (config["models"] || {}).transform_values do |v|
         entry = v.transform_keys(&:to_sym)
         PATH_KEYS.each { |k| entry[k] = File.expand_path(entry[k]) if entry[k] }
+        validate_penalties!(entry)
         entry
       end
     end
+
+    # A penalty key the engine does not accept would be dropped in silence,
+    # leaving config that reads as a tuned knob and does nothing - the same
+    # class of untruthful configuration as a declared key that applies on
+    # only one path. Fail at load instead, naming the offender.
+    def validate_penalties!(entry)
+      declared = entry[:penalties]
+      return if declared.nil?
+      raise ArgumentError, "penalties: must be a mapping, got #{declared.class}" unless declared.is_a?(Hash)
+
+      unknown = declared.keys.map(&:to_s) - MlxVlmFlags::REQUEST_PENALTIES
+      return if unknown.empty?
+
+      raise ArgumentError,
+            "unknown penalties key(s): #{unknown.join(", ")}. " \
+            "Known: #{MlxVlmFlags::REQUEST_PENALTIES.join(", ")}"
+    end
+    private :validate_penalties!
 
     # Returns the entry Hash for alias_name, or nil if unknown.
     # Callers that need a Result monad should map nil → Failure(:unknown_model).

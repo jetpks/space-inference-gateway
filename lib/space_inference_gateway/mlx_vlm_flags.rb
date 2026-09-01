@@ -33,6 +33,24 @@ module SpaceInferenceGateway
       thinking_end_token:   "--thinking-end-token",
     }.freeze
 
+    # Sampling penalties mlx-vlm accepts as REQUEST BODY fields
+    # (server/schemas.py), not as CLI flags and not as environment - the
+    # third shape this engine's vocabulary comes in, so it lives here beside
+    # the other two rather than as a literal in the request path.
+    #
+    # Declared per alias under `penalties:` and injected into the upstream
+    # body; ModelRegistry rejects a key outside this set at load time rather
+    # than letting a typo become a silently-dropped knob.
+    #
+    # Each penalty has a matching _context_size (how many recent tokens it
+    # looks back over); mlx-vlm defaults those to 20
+    # (generate/common.py DEFAULT_REPETITION_CONTEXT_SIZE).
+    REQUEST_PENALTIES = %w[
+      repetition_penalty repetition_context_size
+      presence_penalty presence_context_size
+      frequency_penalty frequency_context_size
+    ].freeze
+
     # Registry key → environment variable, for the knobs mlx-vlm exposes no
     # CLI flag for. APC_ENABLED is a presence flag rather than a value, so it
     # is built by hand; the rest are straight stringifications. Keys the entry

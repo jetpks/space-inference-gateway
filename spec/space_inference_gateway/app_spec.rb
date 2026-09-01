@@ -188,6 +188,30 @@ RSpec.describe SpaceInferenceGateway::App do
       sent = sent_for({ model: "qwen3.8-27b-mxfp8-concurrent1", messages: [{ role: "user", content: "hi" }] })
       expect(sent).not_to have_key("reasoning_effort")
     end
+
+    it "injects the alias's declared sampling penalties" do
+      sent = sent_for({ model: "qwen3.6-35b-a3b-4bit", messages: [{ role: "user", content: "hi" }] })
+
+      expect(sent["repetition_penalty"]).to eq(1.05)
+      expect(sent["repetition_context_size"]).to eq(64)
+    end
+
+    # A declared penalty is a default, not an override: mirrors how
+    # reasoning_effort keeps a value the template accepts.
+    it "lets a client's own penalty win over the alias default" do
+      sent = sent_for({ model: "qwen3.6-35b-a3b-4bit", messages: [{ role: "user", content: "hi" }],
+                        repetition_penalty: 1.5, })
+
+      expect(sent["repetition_penalty"]).to eq(1.5)
+      expect(sent["repetition_context_size"]).to eq(64)
+    end
+
+    it "leaves aliases that declare no penalties untouched" do
+      sent = sent_for({ model: "qwen3.8-flash-next-oq3", messages: [{ role: "user", content: "hi" }] })
+
+      expect(sent).not_to have_key("repetition_penalty")
+      expect(sent).not_to have_key("repetition_context_size")
+    end
   end
 
   # ── I03: ANT-path reasoning effort passthrough ────────────────────────────

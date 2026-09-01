@@ -592,6 +592,25 @@ module SpaceInferenceGateway
       apply_reasoning_effort(parsed, coerce_reasoning_effort(requested, entry, fallback))
     end
 
+    # Sampling penalties an alias declares are DEFAULTS, not overrides: a
+    # client that states its own keeps it, matching how reasoning_effort
+    # treats a value its template accepts. An alias declaring none is
+    # untouched, so this stays a no-op for every alias that predates it.
+    #
+    # These reach the engine as request fields, which means they are applied
+    # AFTER a client has recorded what it sent - an evaluation harness
+    # logging its own request body will not see them. Anything comparing runs
+    # across aliases has to read them from here, not from the client's log.
+    def inject_sampling_penalties(parsed, entry)
+      declared = entry && entry[:penalties]
+      return unless declared.is_a?(Hash)
+
+      declared.each do |key, value|
+        name = key.to_s
+        parsed[name] = value unless parsed.key?(name)
+      end
+    end
+
     # A client may express effort as either the flat reasoning_effort field or
     # the nested Responses-API reasoning: {effort:}. mlx-vlm checks the nested
     # form first, so both are read here and both are rewritten below.
@@ -664,6 +683,7 @@ module SpaceInferenceGateway
       (parsed["messages"] || []).each { |m| m["role"] = "system" if m["role"] == "developer" }
       inject_mlx_stop_tokens(parsed, model_alias)
       inject_reasoning_effort(parsed, entry)
+      inject_sampling_penalties(parsed, entry)
       strip_history_reasoning(parsed) if entry && entry[:preserve_thinking] == false
       JSON.generate(parsed)
     end
