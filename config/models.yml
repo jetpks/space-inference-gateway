@@ -241,6 +241,48 @@ models:
     max_num_seqs: 1
     token_queue_timeout: 1200
     readiness_timeout: 600
+  # Qwen3.8-Flash-Next REAM-288 — WaveCut's derivative of the sh0wie REAP-288
+  # build above. Same 288 slots and the same file layout; the 224 non-kept
+  # experts per layer are MERGED into their nearest surviving expert
+  # (arXiv 2604.04356, Samsung SAIL Montreal) rather than dropped. Verified
+  # 2026-08-31 against sh0wie's repo: 35 shards byte-identical, 96 rewritten,
+  # and only the 432 switch_mlp expert tensors differ — every non-expert
+  # tensor, including the RMSNorm fixes, is bit-identical.
+  #
+  # Differs from qwen3.8-flash-next-reap288 in `model` ONLY, deliberately: the
+  # merge-vs-prune comparison is the entire reason this alias exists, so it
+  # must not also differ in sampling. In particular it carries NO penalties,
+  # matching reap288 — adding them here would confound the comparison with
+  # the very knob the a3b arms are testing.
+  #
+  # The publisher's own paired A/B found merge and prune statistically
+  # indistinguishable on HumanEval-164 (89.6 vs 89.0, McNemar p = 1.000) and
+  # GSM8K-200 (58.0 vs 56.0, p = 0.585), with only a small KL edge surviving.
+  # Both are Python/maths benchmarks; whether that holds on a Ruby corpus is
+  # exactly what canary is being pointed at here.
+  qwen3.8-flash-next-ream288:
+    engine: mlx-vlm
+    model: WaveCut/Qwen3.8-Flash-Next-REAM-288-MLX-4bit
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    enable_thinking: true
+    supports_reasoning: true
+    reasoning_effort: medium
+    reasoning_effort_values: [xhigh, medium, low]
+    reasoning_effort_map:
+      low: low
+      medium: medium
+      high: medium
+      xhigh: xhigh
+      max: xhigh
+    preserve_thinking: false
+    prefill_step_size: 512
+    apc_enabled: true
+    apc_exact_cache_entries: 2
+    max_num_seqs: 1
+    token_queue_timeout: 1200
+    readiness_timeout: 600
+
   # Qwen3.6 27B OptiQ-4bit with MTP depth 2 (optiq engine).
   # optiq's single-model mode: the request "model" field is a label — any value
   # is accepted, so the proxy does not rewrite it for this engine.
