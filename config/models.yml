@@ -79,10 +79,31 @@ models:
   #      convention mismatch, not a bad quant — re-check it before swapping
   #      to another publisher's conversion, which may already be zero-centered.
   #
-  # No draft_model, deliberately: Flash-Next's hidden dims differ from the 27B's
-  # so that drafter must not be attached, and mlx-vlm has no qwen4_exp entry in
-  # MTP_SPLITTERS, so the checkpoint's own MTP block cannot be split out either.
-  # The -MTP weights are stripped at load and cost nothing but disk.
+  # No draft_model — now for a MEASURED reason, not a blocked one. The 27B's
+  # drafter still must not be attached (different hidden dims), but mlx-vlm
+  # DOES register qwen4_exp in MTP_SPLITTERS as of the rebase to upstream/main
+  # (mlx_vlm/speculative/drafters/mtp_split.py), so this checkpoint's own 76
+  # `language_model.mtp.*` tensors (1.53 GiB, still stripped at load) CAN be
+  # split out with `python -m mlx_vlm.split_mtp`. It was, and both drafters
+  # were benched engine-direct on this box, 5x256-token decodes each:
+  #
+  #     no drafter                        29.82 tok/s   86 GB
+  #     own split MTP head (1.5 GiB)      22.97 tok/s   88 GB   -23%
+  #     sh0wie bf16 drafter (4.9 GiB)     18.84 tok/s   91 GB   -37%
+  #
+  # Speculation genuinely engaged ("Drafter ready; speculative decoding
+  # enabled"; the engine's own decode= line corroborates each figure). MTP is
+  # a large net LOSS here: the drafter's own forward pass is not cheap next to
+  # this trunk, so the bigger, higher-precision drafter is the WORSE one — the
+  # opposite of the usual "bf16 drafter buys acceptance" reasoning. Measured
+  # 2026-08-31; re-measure on M5-class hardware before assuming it still holds.
+  #
+  # ⚠️ mlx_vlm.split_mtp emits a drafter that does NOT load: it copies the 22
+  # quantized modules' .scales/.biases but writes no `quantization` block to
+  # the output config, so load() builds an unquantized model and rejects them
+  # ("Received 44 parameters not in model"). Reconstructing the block from this
+  # checkpoint's own `language_model.mtp.*` entries fixes it. Upstream bug,
+  # unreported.
   #
   # No max_kv_size: inert here. The model defines make_cache() (12
   # full-attention QSAKVCache + 36 linear ArraysCache) and make_prompt_cache
@@ -171,11 +192,19 @@ models:
   # `norm_weights_are_one_centered` returns false and our un-folding patch
   # correctly no-ops. The patch is still required for the oQ3 alias.
   #
-  # No draft_model yet — deliberately. The checkpoint ships no mtp.* tensors
-  # (verified: 3743 tensors, mtp=0), so speculative decoding needs the separate
-  # sh0wie/Qwen3.8-Flash-Next-MTP-Drafter-MLX-bf16 (4.9 GiB, downloaded). That
-  # is a separate experiment: the publisher calls MTP "roughly break-even on
-  # M4", so it gets measured on its own rather than folded in here.
+  # No draft_model. The checkpoint ships no mtp.* tensors (verified: 3743
+  # tensors, mtp=0), so it could only use the standalone bf16 drafter — and
+  # that was measured on the oq3 alias above and costs 37% of decode. The
+  # publisher's "roughly break-even on M4" is optimistic for this box.
+  #
+  # ⚠️ NOT A GENERAL-PURPOSE ALIAS. On bare prompts with thinking off it
+  # answers "implement this Ruby method" with <tool_call><function=list_files>
+  # and stops at ~61 tokens: 27/30 drift against oq3's 0/30, same engine, same
+  # prompts, k=3 (canary, 2026-08-31). Both rescues are total — thinking on
+  # (6/6 ok) or any system prompt (36/36 ok) — and Claude Code supplies both,
+  # which is why this alias stays. The likely cause is on the publisher's card:
+  # experts pruned by saliency calibrated on ~686K tokens of agentic-coding
+  # traffic, with the stated caveat that retention is not general-domain.
   #
   # ple_storage is declared in the checkpoint's own config
   # ({manifest: ple-store.json, cache_rows: 0}) and PR #2045 is merged in our
