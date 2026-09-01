@@ -148,6 +148,70 @@ models:
     # (Measured ~30s warm; the budget is for the cold case.)
     readiness_timeout: 600
 
+
+  # Qwen3.8-Flash-Next REAP-288 — the same qwen4_exp 125B/A6B sparse-MoE VLM as
+  # the oQ3 alias above, but with 288 of 512 experts per MoE layer pruned out by
+  # REAP saliency (calibrated by the publisher on ~686K tokens of agentic-coding
+  # traffic; source revision f5d08274, kept-expert manifest ships in the repo).
+  # 68.44 GiB on disk against oQ3's 86.15 GiB. Downloaded and integrity-checked
+  # 2026-08-31: 131/131 shards, 3743 tensors, no missing shards.
+  #
+  # Why it is here: MEMORY, not speed. MoE decode is bound by bytes-read-per-
+  # token, and top-k is still 10 — pruning cuts the *total* expert count, not
+  # the per-token read, while 3-bit -> 4-bit raises expert bytes ~33%. The
+  # publisher measures ~28 tok/s on stock mlx-vlm against our measured 29.65 on
+  # oQ3, so expect this alias to be SLOWER. It buys ~87 GB -> ~68 GB resident
+  # (and ~39 GB if PLE streaming engages), at a published 93.9% -> 91.5%
+  # HumanEval. See notes/2026-08-31-reap-288-trial.md in the space.
+  #
+  # NEEDS NO LOADER PATCHES, unlike the oQ3 alias above. The publisher fixed
+  # both conversion defects in the weights (RMSNorm re-centered, shard_N ->
+  # shards.N). Verified against the bytes, not the card: the median mean of its
+  # Qwen4ExpRMSNorm weights is -0.076 (Vontra's is +1.134), so
+  # `norm_weights_are_one_centered` returns false and our un-folding patch
+  # correctly no-ops. The patch is still required for the oQ3 alias.
+  #
+  # No draft_model yet — deliberately. The checkpoint ships no mtp.* tensors
+  # (verified: 3743 tensors, mtp=0), so speculative decoding needs the separate
+  # sh0wie/Qwen3.8-Flash-Next-MTP-Drafter-MLX-bf16 (4.9 GiB, downloaded). That
+  # is a separate experiment: the publisher calls MTP "roughly break-even on
+  # M4", so it gets measured on its own rather than folded in here.
+  #
+  # ple_storage is declared in the checkpoint's own config
+  # ({manifest: ple-store.json, cache_rows: 0}) and PR #2045 is merged in our
+  # mlx-vlm tree, so the n-gram table may stream rather than stay resident —
+  # unmeasured, and the reason to watch phys_footprint on first load.
+  # NEVER re-save a shard of this checkpoint: ple-store.json addresses the
+  # n-gram table by absolute byte offsets that bypass the safetensors header,
+  # so a rewrite yields NaN logits even with bit-identical tensors.
+  #
+  # Every other key below is carried over from qwen3.8-flash-next-oq3 verbatim
+  # (same chat template, so the same three-value reasoning vocabulary applies).
+  # prefill_step_size stays 512 on purpose: its memory table was measured on the
+  # 86 GiB build and wants re-deriving here, but changing it now would confound
+  # the checkpoint swap with a tuning change.
+  qwen3.8-flash-next-reap288:
+    engine: mlx-vlm
+    model: sh0wie/Qwen3.8-Flash-Next-REAP-288-MLX-4bit
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    enable_thinking: true
+    supports_reasoning: true
+    reasoning_effort: medium
+    reasoning_effort_values: [xhigh, medium, low]
+    reasoning_effort_map:
+      low: low
+      medium: medium
+      high: medium
+      xhigh: xhigh
+      max: xhigh
+    preserve_thinking: false
+    prefill_step_size: 512
+    apc_enabled: true
+    apc_exact_cache_entries: 2
+    max_num_seqs: 1
+    token_queue_timeout: 1200
+    readiness_timeout: 600
   # Qwen3.6 27B OptiQ-4bit with MTP depth 2 (optiq engine).
   # optiq's single-model mode: the request "model" field is a label — any value
   # is accepted, so the proxy does not rewrite it for this engine.
