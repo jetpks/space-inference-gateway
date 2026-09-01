@@ -516,8 +516,11 @@ RSpec.describe SpaceInferenceGateway::AntNormalizer do
 
   # ── this iteration: inline <think> parity for stream_to_sse_from_oai ─────
   # oai_s.txt (shared with oai_normalizer_spec.rb) carries <think>...</think>
-  # in delta.content with no reasoning-field key anywhere in the stream —
-  # exactly the deepseek-r1-70b / nemotron-3-super shape (config/models.yml).
+  # in delta.content with no reasoning-field key anywhere in the stream — the
+  # shape any engine produces when it does no server-side reasoning split.
+  # No shipped alias emits it today (deepseek-r1-70b was the last, removed
+  # 2026-09-01), which is exactly why the fixture carries it: the inline path
+  # is still live code on the mlx and optiq engines.
   describe "#stream_to_sse_from_oai — unsloth oai_s.txt inline <think> in delta.content" do
     let(:raw_content) do
       fixture("oai_s.txt").lines.each_with_object(+"") do |l, buf|

@@ -115,7 +115,7 @@ opencode reads its provider base URL from config, not the environment. In your
 
 opencode then hits `127.0.0.1:3001/v1/chat/completions`, which the shim
 carries to the studio. Use whatever alias you've registered (e.g.
-`qwen3-27b-optiq`, the current default, or `deepseek-r1-70b`) — unknown ids
+`qwen3-27b-optiq`, the current default, or `qwen3.8-flash-next-oq3`) — unknown ids
 are served by the running/default model anyway (see the
 [HTTP API reference](../reference/http-api.md#model-resolution)).
 

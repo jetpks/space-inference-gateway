@@ -31,7 +31,7 @@ would be misclassified as reasoning.
 
 **2. Does its tokenizer hit the mlx eos-stop bug?** mlx_lm 0.31.3 has a bug
 where the `eos_token_id`-based stop doesn't fire for some models — observed
-with Llama-3.3-tokenizer models (`hermes-4-70b`, `deepseek-r1-70b`), which
+with Llama-3.3-tokenizer models (`hermes-4-70b`), which
 generate straight past `<|eot_id|>`. String-based stop detection is
 unaffected, so inject the eos token as an explicit stop sequence:
 
