@@ -519,3 +519,48 @@ models:
     venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
     supports_reasoning: false
     max_num_seqs: 1
+
+  # Muse Glimmer 30B (muse_glimmer, mxfp8, 131k ctx). Registered 2026-09-01.
+  #
+  # mxfp8 over the 8bit sibling: both are 8 bits, but mxfp8 is OCP
+  # Microscaling (FP8 elements, one shared power-of-two scale per 32-weight
+  # block) against affine int8 (scale+bias per 64-weight group). That is
+  # 8.25 bits/weight vs 8.5, which the published sizes confirm — 30.27 vs
+  # 31.08 GiB, a ratio of 0.974 against the 0.971 the arithmetic predicts.
+  # Per-element exponents also degrade more gracefully around outliers than
+  # one linear scale shared across 64 weights. And it is the proven path
+  # here: qwen3.8-27b-mxfp8 is this box's default alias.
+  #
+  # An "Onyx ATEM" channel format, NOT a <think> model. Reasoning is addressed
+  # to a recipient — `<|start|>assistant to=self<|message|>…<|eom|>` — and the
+  # answer to `to=user`. Its own config.py declares the delimiters
+  # (thinking_start_token "to=self<|message|>", thinking_end_token "<|eom|>"),
+  # but server/generation.py resolves those as `args.thinking_start_token or
+  # DEFAULT_THINKING_START_TOKEN` and never consults the model config — so on
+  # paper the split should fall back to <think> markers that never appear.
+  #
+  # Measured on :8081 rather than assumed, twice: with and without those
+  # markers passed explicitly. Byte-identical results — reasoning_content
+  # present at 279 chars, content a clean "17 × 23 = 391", zero marker
+  # leakage. tokenizer.parse_response handles it before the marker fallback is
+  # reached, so declaring thinking_start_token/thinking_end_token here would
+  # be a knob that does nothing.
+  #
+  # ⚠️ enable_thinking is ABSENT because this template does not read it.
+  # Reasoning here is a SYSTEM-PROMPT instruction — render_reasoning() emits
+  # the literal "Reasoning strength: {rs}." with rs defaulting to 'high' — so
+  # there is no structural switch to flip, unlike Qwen's enable_thinking which
+  # closes the think block in the template. Measured effort response on one
+  # prompt: high 1777 reasoning chars / 482 completion tokens, low 585 / 189,
+  # none 348 / 129. It modulates but never reaches zero: "none" is a
+  # suggestion this model partly ignores. Any arm comparing it against a
+  # Qwen "none" arm is not comparing like with like.
+  muse-glimmer-30b:
+    engine: mlx-vlm
+    model: mlx-community/Muse-Glimmer-30B-mxfp8
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    supports_reasoning: true
+    max_num_seqs: 1
+    # 30 GiB cold — same class as the arms above, and a deadline costs nothing.
+    readiness_timeout: 600

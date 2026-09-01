@@ -402,6 +402,16 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
       # would read as a knob someone chose rather than a channel that does not
       # exist. gemma-4-e4b above is the counterexample that makes this worth
       # asserting: it IS a thinking model despite having no <think> tag.
+      # muse-glimmer-30b is the case that proves these two fields are genuinely
+      # independent, so it is asserted apart from both groups. It IS a
+      # reasoning model — supports_reasoning routes the reasoning_content
+      # mlx-vlm splits out of its to=self channel — but its template reads no
+      # enable_thinking at all: reasoning there is a system-prompt instruction
+      # ("Reasoning strength: high."), so the launch flag would be inert.
+      muse = loaded.resolve("muse-glimmer-30b")
+      expect(muse[:supports_reasoning]).to eq(true)
+      expect(muse[:enable_thinking]).to be_nil, "muse-glimmer declares a launch flag its template never reads"
+
       %w[qwen3-coder-next ministral-3-8b olmo-3-7b granite-4.1-8b].each do |name|
         entry = loaded.resolve(name)
         expect(entry[:engine]).to eq("mlx-vlm"), "#{name} is not on mlx-vlm"
