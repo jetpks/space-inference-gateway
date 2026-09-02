@@ -705,3 +705,46 @@ models:
     supports_reasoning: true
     max_num_seqs: 1
     readiness_timeout: 600
+
+  # ── The Qwen3.8-27B quant pair: mxfp8 vs mxfp4, one variable ──────────────
+  # Registered 2026-09-01 to make the mx-format story a controlled comparison
+  # instead of two anecdotes.
+  #
+  # Why a "plain" mxfp8 twin exists at all when qwen3.8-27b-mxfp8-concurrent1
+  # already serves these exact weights: that alias carries an MTP DRAFTER and
+  # APC, and concurrent4 carries batching plus a thinking_budget. Speculative
+  # decoding changes decode throughput directly, which is the number the
+  # format question turns on, so reading a bare mxfp4 arm against concurrent1
+  # would confound quantization with speculative decoding. These two differ in
+  # the weights and nothing else.
+  #
+  # APC is dropped from both for symmetry rather than necessity: it caches
+  # shared prompt prefixes, so it moves PREFILL only — it cannot change which
+  # tokens are generated, and does not touch decode tok/s. Correct to control
+  # anyway, but it was never the confound.
+  #
+  # What this pair is for: both mxfp8 arms measured so far decode at 15.8
+  # tok/s while a 77 GiB affine 5-bit Nemotron manages 44-45, yet
+  # gemma-4-26b-a4b (mxfp8, A4B active) hits 77.9 — so the penalty tracks
+  # ACTIVE parameters, not the format alone. Qwen3.8-27B is dense, so it pays
+  # the tax in full, which makes it the sharpest place to ask what halving the
+  # bits actually buys. The Muse Glimmer pair answers the same question on a
+  # 30B; this answers it on a dense 27B.
+  qwen3.8-27b-mxfp8-plain:
+    engine: mlx-vlm
+    model: mlx-community/Qwen3.8-27B-mxfp8
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    enable_thinking: true
+    supports_reasoning: true
+    max_num_seqs: 1
+    readiness_timeout: 600
+  qwen3.8-27b-mxfp4:
+    engine: mlx-vlm
+    model: mlx-community/Qwen3.8-27B-mxfp4
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    enable_thinking: true
+    supports_reasoning: true
+    max_num_seqs: 1
+    readiness_timeout: 600

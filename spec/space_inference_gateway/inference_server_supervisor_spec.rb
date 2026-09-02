@@ -464,6 +464,48 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
       expect(declaring).to eq(["kimi-dev-72b"])
     end
 
+    # The two quant PAIRS exist to isolate format from everything else, so the
+    # thing worth asserting is that each pair differs in weights alone. A
+    # drafter or a cache quietly appearing on one side would confound exactly
+    # the comparison the pair was bought for — and concurrent1, which serves
+    # the same mxfp8 weights, does carry both.
+    # Knobs that would move throughput or output distribution, and so must be
+    # absent from BOTH halves of a pair rather than merely equal.
+    let(:confounding_knobs) { %i[draft_model draft_kind apc_enabled thinking_budget penalties] }
+
+    it "keeps each quant pair differing in weights alone" do
+      loaded = SpaceInferenceGateway::ModelRegistry.load
+
+      {
+        "qwen3.8-27b-mxfp8-plain" => "qwen3.8-27b-mxfp4",
+        "muse-glimmer-30b" => "muse-glimmer-30b-mxfp4",
+      }.each do |a, b|
+        left  = loaded.resolve(a)
+        right = loaded.resolve(b)
+
+        confounding_knobs.each do |knob|
+          expect(left[knob]).to be_nil, "#{a} carries #{knob}, confounding its quant pair"
+          expect(right[knob]).to be_nil, "#{b} carries #{knob}, confounding its quant pair"
+        end
+
+        expect(left[:enable_thinking]).to eq(right[:enable_thinking])
+        expect(left[:supports_reasoning]).to eq(right[:supports_reasoning])
+        expect(left[:max_num_seqs]).to eq(right[:max_num_seqs])
+        expect(left[:model]).not_to eq(right[:model])
+      end
+    end
+
+    # The sibling that proves the twin was needed: same weights as the plain
+    # mxfp8 arm, but speculative decoding attached, which moves decode
+    # throughput — the very number the format comparison turns on.
+    it "keeps the drafter on concurrent1, not on the plain twin" do
+      loaded = SpaceInferenceGateway::ModelRegistry.load
+
+      expect(loaded.resolve("qwen3.8-27b-mxfp8-concurrent1")[:draft_model]).not_to be_nil
+      expect(loaded.resolve("qwen3.8-27b-mxfp8-plain")[:model])
+        .to eq(loaded.resolve("qwen3.8-27b-mxfp8-concurrent1")[:model])
+    end
+
     # These arms are for code. A repetition penalty over a 64-token window
     # penalises indentation, closing delimiters and an identifier named once
     # per line — correct output, not degeneration — so the length bound they
