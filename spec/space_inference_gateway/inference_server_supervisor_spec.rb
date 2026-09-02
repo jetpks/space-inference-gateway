@@ -414,7 +414,8 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
       # Both Muse Glimmer quants: same template, so the same contract. The
       # mxfp4 copy exists to measure what survives 4 bits, and it would be a
       # silent confound if the two arms differed in anything but the weights.
-      %w[muse-glimmer-30b muse-glimmer-30b-mxfp4].each do |name|
+      %w[muse-glimmer-30b muse-glimmer-30b-mxfp4
+         muse-glimmer-30b-8bit muse-glimmer-30b-4bit].each do |name|
         muse = loaded.resolve(name)
         expect(muse[:supports_reasoning]).to eq(true), "#{name} would leak reasoning into content"
         expect(muse[:enable_thinking]).to be_nil, "#{name} declares a launch flag its template never reads"
@@ -476,10 +477,16 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
     it "keeps each quant pair differing in weights alone" do
       loaded = SpaceInferenceGateway::ModelRegistry.load
 
-      {
-        "qwen3.8-27b-mxfp8-plain" => "qwen3.8-27b-mxfp4",
-        "muse-glimmer-30b" => "muse-glimmer-30b-mxfp4",
-      }.each do |a, b|
+      # An array of pairs, not a Hash: the Muse Glimmer square shares the mxfp8
+      # alias across two of its comparisons, and a Hash would silently keep
+      # only the last of those — dropping a check while still passing.
+      [
+        ["qwen3.8-27b-mxfp8-plain", "qwen3.8-27b-mxfp4"],
+        ["muse-glimmer-30b",        "muse-glimmer-30b-mxfp4"],   # mx, 8 -> 4 bits
+        ["muse-glimmer-30b-8bit",   "muse-glimmer-30b-4bit"],    # affine, 8 -> 4 bits
+        ["muse-glimmer-30b",        "muse-glimmer-30b-8bit"],    # 8 bits, mx vs affine
+        ["muse-glimmer-30b-mxfp4",  "muse-glimmer-30b-4bit"],    # 4 bits, mx vs affine
+      ].each do |a, b|
         left  = loaded.resolve(a)
         right = loaded.resolve(b)
 

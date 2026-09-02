@@ -752,3 +752,43 @@ models:
     supports_reasoning: true
     max_num_seqs: 1
     readiness_timeout: 600
+
+  # ── Muse Glimmer 30B: the affine half of a 2x2 (format x bit-width) ───────
+  # With the two mx arms above this completes a controlled square on one dense
+  # model, one uploader, one corpus:
+  #
+  #            4 bits              8 bits
+  #   mx       mxfp4  17.27 GiB    mxfp8  30.27 GiB
+  #   affine   4bit   18.08 GiB    8bit   31.08 GiB
+  #
+  # Reading down a column isolates FORMAT at fixed bit-width; reading across a
+  # row isolates BIT-WIDTH at fixed format. The mxfp4/4bit pair is the sharpest
+  # of the four comparisons, since 17.27 vs 18.08 GiB is under a gigabyte apart
+  # — near-identical memory traffic with the packing scheme as the only
+  # meaningful variable.
+  #
+  # Worth having because the mx penalty measured today is a throughput finding
+  # with no accuracy half. Three dense mxfp8 arms sit at 13.9-15.9 tok/s while
+  # a same-family MoE at the same quant hits 77.9, and mxfp4 recovers 1.85x of
+  # that on this model — but nothing yet says whether mx or affine is BETTER
+  # per bit, which is the question that decides what to serve.
+  #
+  # Naming: the unsuffixed alias is the mxfp8 build and keeps its name for the
+  # committed run recorded under it. mx formats carry an mxfp prefix here,
+  # affine ones a plain bit name, matching the upstream repos.
+  muse-glimmer-30b-8bit:
+    engine: mlx-vlm
+    model: mlx-community/Muse-Glimmer-30B-8bit
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    supports_reasoning: true
+    max_num_seqs: 1
+    readiness_timeout: 600
+  muse-glimmer-30b-4bit:
+    engine: mlx-vlm
+    model: mlx-community/Muse-Glimmer-30B-4bit
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    supports_reasoning: true
+    max_num_seqs: 1
+    readiness_timeout: 600
