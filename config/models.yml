@@ -792,3 +792,31 @@ models:
     supports_reasoning: true
     max_num_seqs: 1
     readiness_timeout: 600
+
+  # nemotron-3-super at LOW reasoning — the control arm for the biggest
+  # confound on the board. Registered 2026-09-02.
+  #
+  # Measured 2026-09-01: of 21 swept arms, Muse Glimmer is the ONLY one that
+  # reasons — ~1,650 characters on 100% of samples, while sixteen arms produce
+  # exactly zero. Its 90.9% is therefore a thinking-enabled result sitting in a
+  # thinking-disabled band, and its 6.2-point lead over nemotron-3-super (84.7%)
+  # cannot be read as a model difference until reasoning is controlled for.
+  #
+  # Same weights and same config as nemotron-3-super; a SECOND alias exists only
+  # because an alias carries one effort fragment, and canary sends "none" to the
+  # original. Everything else must stay identical or the pair measures two
+  # things at once.
+  #
+  # Why "low" rather than "high": Muse Glimmer at its floor still emits ~1,650
+  # characters, so the honest comparison is a modest reasoning budget, not a
+  # maximal one. nemotron is also genuinely gateable — unlike the flash-next
+  # arms its enable_thinking is structural — so "low" means what it says here.
+  nemotron-3-super-low:
+    engine: mlx-vlm
+    model: mlx-community/NVIDIA-Nemotron-3-Super-120B-A12B-5bit
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    enable_thinking: true
+    supports_reasoning: true
+    max_num_seqs: 1
+    readiness_timeout: 600

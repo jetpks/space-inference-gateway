@@ -389,7 +389,7 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
          qwen3.5-9b gemma-4-e4b
          gemma-4-26b-a4b gemma-4-31b
          nemotron-3-nano-30b-a3b nemotron-3.5-lightning-30b-a3b
-         diffusiongemma-26b-a4b].each do |name|
+         diffusiongemma-26b-a4b nemotron-3-super-low].each do |name|
         entry = loaded.resolve(name)
         expect(entry[:engine]).to eq("mlx-vlm"), "#{name} left the mlx-vlm engine"
         expect(entry[:enable_thinking]).to eq(true), "#{name} would launch with thinking off"
@@ -511,6 +511,19 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
       expect(loaded.resolve("qwen3.8-27b-mxfp8-concurrent1")[:draft_model]).not_to be_nil
       expect(loaded.resolve("qwen3.8-27b-mxfp8-plain")[:model])
         .to eq(loaded.resolve("qwen3.8-27b-mxfp8-concurrent1")[:model])
+    end
+
+    # The reasoning control pair: same weights, same config, differing only in
+    # the effort canary sends. If the registry entries ever diverge the arm
+    # stops measuring reasoning and starts measuring whatever else changed.
+    it "keeps nemotron-3-super-low identical to nemotron-3-super but for the alias" do
+      loaded = SpaceInferenceGateway::ModelRegistry.load
+      base = loaded.resolve("nemotron-3-super")
+      low  = loaded.resolve("nemotron-3-super-low")
+
+      %i[model engine enable_thinking supports_reasoning max_num_seqs port].each do |knob|
+        expect(low[knob]).to eq(base[knob]), "nemotron-3-super-low differs from its control on #{knob}"
+      end
     end
 
     # These arms are for code. A repetition penalty over a 64-token window
