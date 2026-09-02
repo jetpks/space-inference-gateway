@@ -386,7 +386,10 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
 
       %w[nemotron-3-super qwen3-122b-a10b qwen3-35b-a3b
          qwen3.6-35b-a3b-4bit qwen3.6-35b-a3b-8bit
-         qwen3.5-9b gemma-4-e4b].each do |name|
+         qwen3.5-9b gemma-4-e4b
+         gemma-4-26b-a4b gemma-4-31b
+         nemotron-3-nano-30b-a3b nemotron-3.5-lightning-30b-a3b
+         diffusiongemma-26b-a4b].each do |name|
         entry = loaded.resolve(name)
         expect(entry[:engine]).to eq("mlx-vlm"), "#{name} left the mlx-vlm engine"
         expect(entry[:enable_thinking]).to eq(true), "#{name} would launch with thinking off"
@@ -412,7 +415,8 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
       expect(muse[:supports_reasoning]).to eq(true)
       expect(muse[:enable_thinking]).to be_nil, "muse-glimmer declares a launch flag its template never reads"
 
-      %w[qwen3-coder-next ministral-3-8b olmo-3-7b granite-4.1-8b].each do |name|
+      %w[qwen3-coder-next ministral-3-8b olmo-3-7b granite-4.1-8b
+         devstral-small-2-24b].each do |name|
         entry = loaded.resolve(name)
         expect(entry[:engine]).to eq("mlx-vlm"), "#{name} is not on mlx-vlm"
         expect(entry[:enable_thinking]).to be_nil, "#{name} declares a thinking flag it has no channel for"
@@ -420,6 +424,39 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
       end
 
       expect(loaded.resolve("qwen3-coder-next")[:model]).to eq("mlx-community/Qwen3-Coder-Next-6bit")
+    end
+
+    # kimi-dev-72b is the only alias that needs custom thinking delimiters, and
+    # the only reason those knobs exist in MlxVlmFlags::TUNING. Kimi emits
+    # ◁think▷ … ◁/think▷ itself — Unicode triangles that appear nowhere in its
+    # chat template and are not special tokens, so nothing in mlx-vlm knows the
+    # shape and the default <think> markers never match.
+    #
+    # Measured 2026-09-01: without them, reasoning_content was ABSENT and 6,027
+    # characters of chain-of-thought landed in content. With them,
+    # reasoning_content held 5,889 characters and content was 120 characters of
+    # clean fenced Ruby. enable_thinking stays absent because the thinking is
+    # intrinsic and explicitly opened, so the splitter must start outside it.
+    it "gives kimi-dev-72b the delimiters its model emits, and no launch flag" do
+      entry = SpaceInferenceGateway::ModelRegistry.load.resolve("kimi-dev-72b")
+
+      expect(entry[:supports_reasoning]).to eq(true)
+      expect(entry[:enable_thinking]).to be_nil
+      expect(entry[:thinking_start_token]).to eq("◁think▷")
+      expect(entry[:thinking_end_token]).to eq("◁/think▷")
+
+      argv = described_class.allocate.send(:build_argv, entry)
+      expect(argv).to include("--thinking-start-token", "◁think▷", "--thinking-end-token", "◁/think▷")
+    end
+
+    # No other alias declares them: on every other thinking arm the engine
+    # either matches <think> or resolves the shape through the tokenizer's own
+    # parse_response, so declaring markers would be a knob that does nothing.
+    it "declares thinking delimiters on kimi-dev-72b alone" do
+      loaded = SpaceInferenceGateway::ModelRegistry.load
+      declaring = loaded.aliases.select { |a| loaded.resolve(a)[:thinking_start_token] }
+
+      expect(declaring).to eq(["kimi-dev-72b"])
     end
 
     # These arms are for code. A repetition penalty over a 64-token window

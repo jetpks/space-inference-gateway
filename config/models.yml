@@ -564,3 +564,120 @@ models:
     max_num_seqs: 1
     # 30 GiB cold — same class as the arms above, and a deadline costs nothing.
     readiness_timeout: 600
+
+  # ── 2026-09-01 second band: families, scale pairs, and one novel architecture ──
+  # Each was smoke-probed on :8081 before registration, after granite-4.1-8b
+  # served 132 samples of token garbage that the harness scored as a clean
+  # 0.0% — a broken quant can look well-behaved to an extractor.
+
+  # Devstral Small 2 24B (mistral3). Mistral's agentic-coding specialist, and
+  # the second coder family here after qwen3-coder-next. 8bit deliberately,
+  # not the far more popular 4bit: coder-next is 6bit, and a 4-vs-6 comparison
+  # would confound quantization with model. Probed: 33 completion tokens for a
+  # correct fenced answer — terser than any arm on the box.
+  devstral-small-2-24b:
+    engine: mlx-vlm
+    model: mlx-community/Devstral-Small-2-24B-Instruct-2512-8bit
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    supports_reasoning: false
+    max_num_seqs: 1
+    readiness_timeout: 600
+
+  # Gemma 4, the two larger shapes. Same gemma4 template family as
+  # gemma-4-e4b, whose <|think|> reasoning split was verified live — these
+  # inherit that path rather than being probed for it individually.
+  # 26b-a4b is the MoE (A4B active) and the direct scale partner to e4b;
+  # 31b is dense and will decode considerably slower.
+  gemma-4-26b-a4b:
+    engine: mlx-vlm
+    model: mlx-community/gemma-4-26b-a4b-it-mxfp8
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    enable_thinking: true
+    supports_reasoning: true
+    max_num_seqs: 1
+    readiness_timeout: 600
+  gemma-4-31b:
+    engine: mlx-vlm
+    model: mlx-community/gemma-4-31b-it-mxfp8
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    enable_thinking: true
+    supports_reasoning: true
+    max_num_seqs: 1
+    readiness_timeout: 600
+
+  # Nemotron, two more points on the family that currently tops this corpus.
+  # Nano is generation 3 like nemotron-3-super, at a quarter the size — the
+  # scale read, though 4bit vs Super's 5bit confounds quant with scale and no
+  # 8bit or mxfp8 Nano exists to fix that. Lightning is generation 3.5 at the
+  # same 30B-A3B size as Nano, so Nano-vs-Lightning is the generation read
+  # with size held fixed. Both nemotron_h with <think>, same path as Super.
+  nemotron-3-nano-30b-a3b:
+    engine: mlx-vlm
+    model: mlx-community/NVIDIA-Nemotron-3-Nano-30B-A3B-4bit
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    enable_thinking: true
+    supports_reasoning: true
+    max_num_seqs: 1
+    readiness_timeout: 600
+  nemotron-3.5-lightning-30b-a3b:
+    engine: mlx-vlm
+    model: mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-mxfp8
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    enable_thinking: true
+    supports_reasoning: true
+    max_num_seqs: 1
+    readiness_timeout: 600
+
+  # DiffusionGemma 26B A4B — a DIFFUSION language model, the only
+  # non-autoregressive arm here. mlx-vlm carries real support for it
+  # (models/diffusion_gemma with its own visualizer, plus diffusion_kwargs and
+  # DEFAULT_DIFFUSION_MAX_DENOISING_STEPS in the server), so it denoises a
+  # canvas rather than emitting tokens left to right.
+  #
+  # Expect the HARNESS to be tested as much as the model: max_tokens,
+  # stop_reason and streaming granularity all assume autoregressive
+  # generation. Probed OK — 44 tokens, correct fenced Ruby.
+  diffusiongemma-26b-a4b:
+    engine: mlx-vlm
+    model: mlx-community/diffusiongemma-26B-A4B-it-8bit
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    enable_thinking: true
+    supports_reasoning: true
+    max_num_seqs: 1
+    readiness_timeout: 600
+
+  # Kimi-Dev 72B (qwen2 arch — a Moonshot finetune of Qwen2.5-72B, so a
+  # distinct coding model but NOT an independent family).
+  #
+  # ⚠️ The first alias on this box that genuinely needs thinking_start_token /
+  # thinking_end_token. Kimi emits its own delimiters, ◁think▷ … ◁/think▷ —
+  # Unicode triangles, not <think>. They appear nowhere in its chat template
+  # and are not special tokens: the MODEL emits them, learned in training.
+  # Nothing in mlx-vlm knows the shape, and its tokenizer has no
+  # parse_response for it, so the default <think> markers never match.
+  #
+  # Measured on :8081, both ways. Defaults: reasoning_content ABSENT, 6,027
+  # characters of content carrying the whole chain of thought plus both
+  # delimiters, 1,637 tokens burned. With the markers below: reasoning_content
+  # 5,889 characters, content 120 characters of clean fenced Ruby, zero
+  # leakage. Same generation, correctly split.
+  #
+  # enable_thinking stays ABSENT: the thinking is intrinsic, emitted with no
+  # flag set and with an explicit opening delimiter, so the splitter must
+  # start OUTSIDE the thinking span. Declaring it would be inert at best.
+  kimi-dev-72b:
+    engine: mlx-vlm
+    model: mlx-community/Kimi-Dev-72B-4bit-DWQ
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    supports_reasoning: true
+    thinking_start_token: "◁think▷"
+    thinking_end_token: "◁/think▷"
+    max_num_seqs: 1
+    readiness_timeout: 600
