@@ -411,9 +411,14 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
       # mlx-vlm splits out of its to=self channel — but its template reads no
       # enable_thinking at all: reasoning there is a system-prompt instruction
       # ("Reasoning strength: high."), so the launch flag would be inert.
-      muse = loaded.resolve("muse-glimmer-30b")
-      expect(muse[:supports_reasoning]).to eq(true)
-      expect(muse[:enable_thinking]).to be_nil, "muse-glimmer declares a launch flag its template never reads"
+      # Both Muse Glimmer quants: same template, so the same contract. The
+      # mxfp4 copy exists to measure what survives 4 bits, and it would be a
+      # silent confound if the two arms differed in anything but the weights.
+      %w[muse-glimmer-30b muse-glimmer-30b-mxfp4].each do |name|
+        muse = loaded.resolve(name)
+        expect(muse[:supports_reasoning]).to eq(true), "#{name} would leak reasoning into content"
+        expect(muse[:enable_thinking]).to be_nil, "#{name} declares a launch flag its template never reads"
+      end
 
       %w[qwen3-coder-next ministral-3-8b olmo-3-7b granite-4.1-8b
          devstral-small-2-24b].each do |name|

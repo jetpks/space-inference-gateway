@@ -681,3 +681,27 @@ models:
     thinking_end_token: "◁/think▷"
     max_num_seqs: 1
     readiness_timeout: 600
+
+  # Muse Glimmer 30B at mxfp4 (17.27 GiB), the same weights as
+  # muse-glimmer-30b above at 4 bits instead of 8. Registered 2026-09-01 after
+  # the mxfp8 copy scored 90.9% — the top arm on this corpus with the tightest
+  # interval — which makes "how much of that survives 4 bits" worth buying.
+  #
+  # The alias above keeps its unsuffixed name rather than being renamed to
+  # …-mxfp8 for symmetry: it has a committed run recorded under that name, and
+  # renaming would leave that arm pointing at no live alias.
+  #
+  # Probed on :8081 before registration: reasoning_content present at 416
+  # chars, clean content, no marker leakage — the to=self split survives the
+  # quant. Decode 23.2 tok/s against the mxfp8 copy's 15.8, so mxfp4 is ~47%
+  # faster at half the bits; less than the ~2x pure bandwidth would predict,
+  # so some kernel cost remains. Isolating that properly wants the affine
+  # 4bit build (18.08 GiB, near-identical size, format the only variable).
+  muse-glimmer-30b-mxfp4:
+    engine: mlx-vlm
+    model: mlx-community/Muse-Glimmer-30B-mxfp4
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    supports_reasoning: true
+    max_num_seqs: 1
+    readiness_timeout: 600
