@@ -363,6 +363,20 @@ models:
   # characters, so the honest comparison is a modest reasoning budget, not a
   # maximal one. nemotron is also genuinely gateable — unlike the flash-next
   # arms its enable_thinking is structural — so "low" means what it says here.
+  muse-glimmer-30b-abliterated-mxfp4:
+    engine: mlx-vlm
+    model: shoemoney/Muse-Glimmer-30B-Abliterated-MLX-mxfp4
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    # Abliterated — refusal training surgically removed (Falcon-style:
+    # the 'refusal direction' zeroed in the residual stream, no
+    # instruction-following or reasoning change). Base is
+    # Blackfrost-AI/Muse-Glimmer-30B-Abliterated-BF16 via mlx-vlm;
+    # same Onyx ATEM channel (to=self→to=user) as the stock
+    # Muse-Glimmer aliases above.
+    supports_reasoning: true
+    max_num_seqs: 1
+    readiness_timeout: 600
   nemotron-3-super-low:
     engine: mlx-vlm
     model: mlx-community/NVIDIA-Nemotron-3-Super-120B-A12B-5bit
