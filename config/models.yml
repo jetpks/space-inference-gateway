@@ -194,6 +194,8 @@ models:
     port: 8080
     venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
     supports_reasoning: true
+    reasoning_effort: medium
+    reasoning_effort_values: [high, medium, low, none]
     max_num_seqs: 1
     # 30 GiB cold — same class as the arms above, and a deadline costs nothing.
     readiness_timeout: 600
@@ -255,6 +257,8 @@ models:
     port: 8080
     venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
     supports_reasoning: true
+    reasoning_effort: medium
+    reasoning_effort_values: [high, medium, low, none]
     max_num_seqs: 1
     readiness_timeout: 600
 
@@ -334,6 +338,8 @@ models:
     port: 8080
     venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
     supports_reasoning: true
+    reasoning_effort: medium
+    reasoning_effort_values: [high, medium, low, none]
     max_num_seqs: 1
     readiness_timeout: 600
   muse-glimmer-30b-4bit:
@@ -342,6 +348,8 @@ models:
     port: 8080
     venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
     supports_reasoning: true
+    reasoning_effort: medium
+    reasoning_effort_values: [high, medium, low, none]
     max_num_seqs: 1
     readiness_timeout: 600
 
@@ -375,6 +383,8 @@ models:
     # same Onyx ATEM channel (to=self→to=user) as the stock
     # Muse-Glimmer aliases above.
     supports_reasoning: true
+    reasoning_effort: medium
+    reasoning_effort_values: [high, medium, low, none]
     max_num_seqs: 1
     readiness_timeout: 600
   nemotron-3-super-low:
