@@ -387,6 +387,25 @@ models:
     reasoning_effort_values: [high, medium, low, none]
     max_num_seqs: 1
     readiness_timeout: 600
+  # Qwen3.8-27B abliterated with BUNDLED MTP — native mtp.safetensors in the
+  # model repo (mtplx format), so draft_model points at the same path as
+  # model (--draft-model help: bundled-MTP checkpoints use the model path).
+  # Registered 2026-10-24 when muse-glimmer-30b-abliterated-mxfp4 proved
+  # unusable; small uploader (Shiftedx, ~325 downloads) — treat as trial.
+  # Abliteration = refusal direction zeroed, arch/tokenizer untouched, so
+  # the mxfp8 default alias's tuning notes (spec-decode vs batching tradeoff)
+  # should carry over at mxfp4 bit-width.
+  qwen3.8-27b-abliterated-mxfp4-mtp:
+    engine: mlx-vlm
+    model: Shiftedx/Qwen3.8-27B-Abliterated-MLX-MXFP4-MTP
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    draft_model: Shiftedx/Qwen3.8-27B-Abliterated-MLX-MXFP4-MTP
+    draft_kind: mtp
+    enable_thinking: true
+    supports_reasoning: true
+    max_num_seqs: 1
+    readiness_timeout: 600
   nemotron-3-super-low:
     engine: mlx-vlm
     model: mlx-community/NVIDIA-Nemotron-3-Super-120B-A12B-5bit
