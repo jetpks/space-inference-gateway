@@ -46,7 +46,7 @@ solved-problem infrastructure documented in the how-to guides.
 ## Stack
 
 Modern async Ruby (`async`, `async-http`, `async-process`, `falcon`) + `dry-rb`
-(`dry-schema`, `dry-monads`) + `prometheus-client`. Fibers, not threads.
+(`dry-schema`, `dry-monads`) + `fast-prometheus`. Fibers, not threads.
 Ruby ≥ 4.0 (4.0.9 in development and production). See
 [`docs/explanation/architecture.md`](docs/explanation/architecture.md) for the why.
 

@@ -219,8 +219,9 @@ encrypted, across the VLAN. This is the one piece that can't move to Ruby.
 
 Everything async-owned is cooperative concurrency on fibers (`async`,
 `async-http`, `async-process`, Falcon) — one process, no threads in our code.
-Model swaps are serialized with `Async::Semaphore(1)`; the single-reactor
-model is also why the Prometheus store can be `SingleThreaded` with no mutex.
+Model swaps are serialized with `Async::Semaphore(1)`; the metrics registry
+(`fast-prometheus`) guards each store at the metric boundary, so the
+single-reactor model needs no global store configuration.
 Control-plane flow uses `dry-monads` `Result`
 (`Success`/`Failure(:busy)`/`Failure(:unknown_model)`/`Failure(:timeout)`)
 rather than exceptions-as-control-flow, and `App` maps failures to HTTP
