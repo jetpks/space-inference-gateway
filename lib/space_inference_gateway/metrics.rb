@@ -1,17 +1,11 @@
 # frozen_string_literal: true
 
-require "prometheus/client"
-require "prometheus/client/formats/text"
-require "prometheus/client/data_stores/single_threaded"
+require "fast/prometheus"
+require "fast/prometheus/formats/text"
 
 module SpaceInferenceGateway
   module Metrics # rubocop:disable Metrics/ModuleLength
-    # SingleThreaded store: no mutex overhead, fiber-safe under async Ruby.
-    # The gateway is single-threaded (one Falcon reactor, cooperative fibers);
-    # metric increments do not await so no concurrent access is possible.
-    Prometheus::Client.config.data_store = Prometheus::Client::DataStores::SingleThreaded.new
-
-    REGISTRY = Prometheus::Client::Registry.new
+    REGISTRY = Fast::Prometheus::Registry.new
 
     REQUESTS = REGISTRY.counter(
       :sig_requests_total,
@@ -114,7 +108,7 @@ module SpaceInferenceGateway
     )
 
     def self.render
-      Prometheus::Client::Formats::Text.marshal(REGISTRY)
+      Fast::Prometheus::Formats::Text.render(REGISTRY.collect)
     end
 
     # Reads the child process RSS in bytes via `ps -o rss= -p <pid>` (macOS/Linux).
@@ -141,8 +135,7 @@ module SpaceInferenceGateway
     # Resets all metric stores to zero. Use in tests to ensure isolation.
     def self.reset_all
       REGISTRY.metrics.each do |m|
-        store = m.instance_variable_get(:@store)
-        store.instance_variable_set(:@internal_store, Hash.new { |h, k| h[k] = 0.0 })
+        m.instance_variable_get(:@store).instance_variable_set(:@data, {})
       end
       @last_info_labels = nil
     end

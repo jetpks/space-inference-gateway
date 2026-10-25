@@ -257,7 +257,7 @@ module SpaceInferenceGateway
       Metrics::CHILD_PID.set((pid || 0).to_f)
       Metrics::CHILD_RSS_BYTES.set(Metrics.child_rss_bytes(pid).to_f)
       update_model_info_metric
-      [200, { "content-type" => Prometheus::Client::Formats::Text::CONTENT_TYPE }, [Metrics.render]]
+      [200, { "content-type" => Fast::Prometheus::Formats::Text::CONTENT_TYPE }, [Metrics.render]]
     end
 
     # begin_generation already ran as part of ensure_active_if_known's

@@ -10,9 +10,9 @@ Two design principles shape what you'll see:
   only counts what the engine reports; a stream whose upstream omits usage
   contributes nothing. For rates, `sig_stream_deltas_total` is the proxy —
   one delta ≈ one token for the token-by-token mlx/optiq upstreams.
-- **The store is `SingleThreaded`** — safe because the gateway is one Falcon
-  reactor of cooperative fibers and metric increments never await; no mutex
-  overhead.
+- **The metrics client is fiber-native** (`fast-prometheus`): one shared
+  registry across the reactor's cooperative fibers, guarded at the store
+  boundary — no global data-store configuration needed.
 
 ## Request traffic
 
