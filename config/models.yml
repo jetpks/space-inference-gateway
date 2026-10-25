@@ -404,6 +404,8 @@ models:
     draft_kind: mtp
     enable_thinking: true
     supports_reasoning: true
+    reasoning_effort: medium
+    reasoning_effort_values: [high, medium, low, none]
     max_num_seqs: 1
     readiness_timeout: 600
   nemotron-3-super-low:
