@@ -7,7 +7,11 @@ gateway_label: com.slushsystems.space-inference-gateway
 
 # --- mise / Ruby ---
 mise_bin: /opt/homebrew/bin/mise
-mise_ruby_version: "4.0.5"
+# Prefix version: mise installs the latest 4.0.x and keeps a `4.0` symlink
+# in installs/ pointing at it, so the derived bin path below is stable across
+# patch releases. The repo's .ruby-version (4.0.9 as of the I01 floor raise)
+# sets the actual floor.
+mise_ruby_version: "4.0"
 # Derived path; override only if mise installs to a non-default location.
 mise_ruby_bin: "{{ ansible_facts.env.HOME }}/.local/share/mise/installs/ruby/{{ mise_ruby_version }}/bin"
 
