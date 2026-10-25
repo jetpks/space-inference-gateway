@@ -29,9 +29,19 @@ RSpec.describe "Telemetry metrics (I09)" do
 
   let(:oai_ns_response) { fixture("oai_ns.json") }
 
-  def as_body(text)
-    Enumerator.new { |y| y << text }
+  # I06: the streaming leg consumes PARSED SSE payloads from the raw surface
+  # (OaiNormalizer#stream_events_to_sse). Build the source exactly the way
+  # the gem's wire does: push the fixture text through Fast::Completions::SSE
+  # — the same codec the gateway now rides — and yield each parsed payload /
+  # DONE sentinel in arrival order.
+  def raw_source(text)
+    lambda do |&sink|
+      Fast::Completions::SSE.new.push(text).each do |item|
+        sink.call(item.equal?(Fast::Completions::SSE::DONE) ? item : JSON.parse(item))
+      end
+    end
   end
+
   before { metrics.reset_all }
 
   # ── AC1 — registry + boot-time initialization ───────────────────────────
@@ -84,8 +94,8 @@ RSpec.describe "Telemetry metrics (I09)" do
           end_chunks(sock)
         end
 
-        upstream_client = SpaceInferenceGateway::UpstreamClient.new(base_url: upstream.base_url, idle_timeout: 5)
-        app = make_app(upstream_client: upstream_client)
+        streamer = SpaceInferenceGateway::RawCompletionsStreamer.new(base_url: upstream.base_url, idle_timeout: 5)
+        app = make_app(raw_streamer: streamer)
         proxy_port, proxy_task, proxy_bound = boot_proxy(app)
         client = client_for(proxy_port)
         body = JSON.generate({ model: "diffusiongemma", messages: [], stream: true })
@@ -125,8 +135,8 @@ RSpec.describe "Telemetry metrics (I09)" do
           @task.sleep(60) # stall in prefill — no delta ever arrives
         end
 
-        upstream_client = SpaceInferenceGateway::UpstreamClient.new(base_url: upstream.base_url, idle_timeout: 30)
-        app = make_app(upstream_client: upstream_client)
+        streamer = SpaceInferenceGateway::RawCompletionsStreamer.new(base_url: upstream.base_url, idle_timeout: 30)
+        app = make_app(raw_streamer: streamer)
         proxy_port, proxy_task, proxy_bound = boot_proxy(app)
         client = client_for(proxy_port)
         body = JSON.generate({ model: "diffusiongemma", messages: [], stream: true })
@@ -166,11 +176,11 @@ RSpec.describe "Telemetry metrics (I09)" do
   # ── AC3 — per-channel delta routing ────────────────────────────────────
 
   describe "sig_stream_deltas_total — channel routing" do
-    it "OAI upstream path (OaiNormalizer#stream_to_sse): reasoning, content, tool_args" do
+    it "OAI upstream path (OaiNormalizer#stream_events_to_sse): reasoning, content, tool_args" do
       normalizer = SpaceInferenceGateway::OaiNormalizer.new(advertised_model: "m")
       observer   = SpaceInferenceGateway::GenerationObserver.new(t0: monotonic_now)
       sse = []
-      normalizer.stream_to_sse(as_body(optiq_tool_stream), observer: observer) { |chunk| sse << chunk }
+      normalizer.stream_events_to_sse(raw_source(optiq_tool_stream), observer: observer) { |chunk| sse << chunk }
 
       expect(metrics::STREAM_DELTAS.get(labels: { channel: "reasoning" })).to be >= 1
       expect(metrics::STREAM_DELTAS.get(labels: { channel: "content" })).to be >= 1
@@ -185,7 +195,7 @@ RSpec.describe "Telemetry metrics (I09)" do
       normalizer = SpaceInferenceGateway::OaiNormalizer.new(advertised_model: "m")
       observer   = SpaceInferenceGateway::GenerationObserver.new(t0: monotonic_now)
       sse = []
-      normalizer.stream_to_sse(as_body(optiq_tool_stream), observer: observer) { |chunk| sse << chunk }
+      normalizer.stream_events_to_sse(raw_source(optiq_tool_stream), observer: observer) { |chunk| sse << chunk }
 
       expect(metrics::GENERATION_STOPS.get(labels: { stop_reason: "tool_calls" })).to eq(1)
     end
@@ -213,7 +223,7 @@ RSpec.describe "Telemetry metrics (I09)" do
       normalizer = SpaceInferenceGateway::OaiNormalizer.new(advertised_model: "m")
       observer   = SpaceInferenceGateway::GenerationObserver.new(t0: monotonic_now)
       sse = []
-      normalizer.stream_to_sse(as_body(optiq_plain_stream), observer: observer) { |chunk| sse << chunk }
+      normalizer.stream_events_to_sse(raw_source(optiq_plain_stream), observer: observer) { |chunk| sse << chunk }
 
       expect(metrics::USAGE_TOKENS.get(labels: { kind: "prompt" })).to eq(25)
       expect(metrics::USAGE_TOKENS.get(labels: { kind: "completion" })).to eq(246)
@@ -223,7 +233,7 @@ RSpec.describe "Telemetry metrics (I09)" do
       normalizer = SpaceInferenceGateway::OaiNormalizer.new(advertised_model: "m")
       observer   = SpaceInferenceGateway::GenerationObserver.new(t0: monotonic_now)
       sse = []
-      normalizer.stream_to_sse(as_body(mlx_stream), observer: observer) { |chunk| sse << chunk }
+      normalizer.stream_events_to_sse(raw_source(mlx_stream), observer: observer) { |chunk| sse << chunk }
 
       expect(metrics::USAGE_TOKENS.get(labels: { kind: "prompt" })).to eq(0)
       expect(metrics::USAGE_TOKENS.get(labels: { kind: "completion" })).to eq(0)

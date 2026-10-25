@@ -76,11 +76,15 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
   # Boot an App with a fixture controller so model-name assertions don't depend
   # on the production config/models.yml. The fake supervisor reports diffusiongemma
   # as already-active so no subprocess spawns in edge tests.
-  def make_app(upstream_client:)
+  def make_app(upstream_client: nil, raw_streamer: nil)
     registry   = fixture_registry
     supervisor = FakeSupervisor.new("diffusiongemma")
     controller = SpaceInferenceGateway::ModelController.new(registry: registry, supervisor: supervisor)
-    SpaceInferenceGateway::App.new(upstream_client: upstream_client, controller: controller)
+    SpaceInferenceGateway::App.new(
+      upstream_client: upstream_client,
+      raw_streamer:    raw_streamer,
+      controller:      controller,
+    )
   end
 
   # ── AC1 — Boot + routing over real HTTP ────────────────────────────────────
@@ -226,8 +230,8 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
         end
 
         stub_port, stub_task, stub_bound = boot_stub(stub_handler)
-        upstream = SpaceInferenceGateway::UpstreamClient.new(base_url: "http://localhost:#{stub_port}")
-        app      = make_app(upstream_client: upstream)
+        streamer = SpaceInferenceGateway::RawCompletionsStreamer.new(base_url: "http://localhost:#{stub_port}")
+        app      = make_app(raw_streamer: streamer)
         proxy_port, proxy_task, proxy_bound = boot_proxy(app)
         client = client_for(proxy_port)
 
@@ -313,8 +317,8 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
         end
 
         stub_port, stub_task, stub_bound = boot_stub(stub_handler)
-        upstream = SpaceInferenceGateway::UpstreamClient.new(base_url: "http://localhost:#{stub_port}")
-        app      = make_app(upstream_client: upstream)
+        streamer = SpaceInferenceGateway::RawCompletionsStreamer.new(base_url: "http://localhost:#{stub_port}")
+        app      = make_app(raw_streamer: streamer)
         proxy_port, proxy_task, proxy_bound = boot_proxy(app)
         client = client_for(proxy_port)
 
@@ -390,8 +394,8 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
           end
 
           stub_port, stub_task, stub_bound = boot_stub(stub_handler)
-          upstream = SpaceInferenceGateway::UpstreamClient.new(base_url: "http://localhost:#{stub_port}")
-          app = make_app(upstream_client: upstream)
+          streamer = SpaceInferenceGateway::RawCompletionsStreamer.new(base_url: "http://localhost:#{stub_port}")
+          app = make_app(raw_streamer: streamer)
           proxy_port, proxy_task, proxy_bound = boot_proxy(app)
           stream_client = client_for(proxy_port)
           swap_client = client_for(proxy_port)
@@ -541,8 +545,8 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
           end
 
           stub_port, stub_task, stub_bound = boot_stub(stub_handler)
-          upstream = SpaceInferenceGateway::UpstreamClient.new(base_url: "http://localhost:#{stub_port}")
-          app = make_app(upstream_client: upstream)
+          streamer = SpaceInferenceGateway::RawCompletionsStreamer.new(base_url: "http://localhost:#{stub_port}")
+          app = make_app(raw_streamer: streamer)
           proxy_port, proxy_task, proxy_bound = boot_proxy(app)
           client = client_for(proxy_port)
           load_resp = nil

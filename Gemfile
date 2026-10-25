@@ -10,6 +10,7 @@ gem "falcon",        "~> 0.55"
 gem "dry-monads", "~> 1.10"
 gem "dry-schema", "~> 1.16"
 
+gem "fast-completions", "~> 0.6"
 gem "fast-prometheus", "~> 0.4"
 
 group :development, :test do

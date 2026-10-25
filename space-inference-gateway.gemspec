@@ -21,6 +21,7 @@ Gem::Specification.new do |spec|
   spec.add_dependency "dry-monads",  "~> 1.10"
   spec.add_dependency "dry-schema",  "~> 1.16"
   spec.add_dependency "falcon",      "~> 0.55"
+  spec.add_dependency "fast-completions", "~> 0.6"
   spec.add_dependency "fast-prometheus", "~> 0.4"
 
   spec.files         = Dir.glob("lib/**/*.rb") + %w[Gemfile config.ru]
