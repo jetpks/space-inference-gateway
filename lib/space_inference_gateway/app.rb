@@ -739,6 +739,13 @@ module SpaceInferenceGateway
       parsed = JSON.parse(body_str)
       entry  = resolve_mlx_entry(model_alias)
       parsed["model"] = mlx_model_id(model_alias) if %w[mlx mlx-vlm].include?(entry&.fetch(:engine, nil))
+      # Modern OAI clients (pi included) send max_completion_tokens; mlx-vlm's
+      # schema only reads max_tokens and silently defaults to 2048 when it's
+      # missing — xhigh thinking exhausts that before the answer begins. Fold
+      # the modern field into the engine's; an explicit max_tokens always wins.
+      if parsed.key?("max_completion_tokens") && !parsed.key?("max_tokens")
+        parsed["max_tokens"] = parsed.delete("max_completion_tokens")
+      end
       (parsed["messages"] || []).each { |m| m["role"] = "system" if m["role"] == "developer" }
       inject_mlx_stop_tokens(parsed, model_alias)
       inject_reasoning_effort(parsed, entry)
