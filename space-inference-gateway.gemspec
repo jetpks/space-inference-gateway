@@ -13,7 +13,7 @@ Gem::Specification.new do |spec|
                        "engines, swaps models, and serves OpenAI + Anthropic flavors"
   spec.executables   = ["space-inference-gateway"]
 
-  spec.required_ruby_version = ">= 3.3"
+  spec.required_ruby_version = ">= 4.0"
 
   spec.add_dependency "async",         "~> 2.0"
   spec.add_dependency "async-http",    "~> 0.75"

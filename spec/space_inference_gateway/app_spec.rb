@@ -428,7 +428,7 @@ RSpec.describe SpaceInferenceGateway::App do
     end
 
     it "message_delta stop_reason is tool_use", :tool_calls do
-      delta = events.reverse.find { |e| e[:event] == "message_delta" }
+      delta = events.rfind { |e| e[:event] == "message_delta" }
       expect(delta[:data].dig("delta", "stop_reason")).to eq("tool_use")
     end
   end

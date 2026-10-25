@@ -7,8 +7,8 @@ gem "async-http",    "~> 0.75"
 gem "async-process", "~> 1.1"
 gem "falcon",        "~> 0.55"
 
-gem "dry-monads",  "~> 1.10"
-gem "dry-schema",  "~> 1.16"
+gem "dry-monads", "~> 1.10"
+gem "dry-schema", "~> 1.16"
 
 gem "prometheus-client", "~> 4.2"
 

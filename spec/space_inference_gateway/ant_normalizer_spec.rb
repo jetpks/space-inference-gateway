@@ -607,7 +607,7 @@ RSpec.describe SpaceInferenceGateway::AntNormalizer do
     end
 
     it "stop_reason is tool_use" do
-      delta_event = events.reverse.find { |e| e[:event] == "message_delta" }
+      delta_event = events.rfind { |e| e[:event] == "message_delta" }
       expect(delta_event[:data].dig("delta", "stop_reason")).to eq("tool_use")
     end
 
