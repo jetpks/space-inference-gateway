@@ -7,9 +7,7 @@ bearer token or API key sent is ignored; the VLAN plus TLS is the boundary.
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/v1/chat/completions` | OpenAI-flavor generation (stream + non-stream) |
-| POST | `/v1/messages` | Anthropic-flavor generation (stream + non-stream) |
-| POST | `/v1/messages/count_tokens` | token estimate for Claude Code's pre-flight |
+| POST | `/v1/chat/completions` | OpenAI chat-completion generation (stream + non-stream) |
 | GET  | `/v1/models` | list registry aliases |
 | POST | `/v1/load` | explicitly load/swap to an alias |
 | POST | `/v1/unload` | stop the running engine child |
@@ -27,8 +25,8 @@ Every generation request resolves its `model` field against the registry:
   concurrency rules below).
 - **Unknown or absent** → served by whatever is running; if nothing is
   running, the registry's `default:` alias is started. Real clients send
-  their own model names (`claude-…`, etc.), which won't match your aliases —
-  rather than 404, the gateway serves them.
+  their own model names, which won't match your aliases — rather than 404,
+  the gateway serves them.
 - The response's `model` field echoes the request's alias when known,
   otherwise `ADVERTISED_MODEL` (default `local-inference`).
 
@@ -56,55 +54,6 @@ present. `usage` is exactly `prompt_tokens` / `completion_tokens` /
 deltas, text as `content` deltas, `tool_calls` deltas pass through verbatim,
 then a `finish_reason` chunk and `data: [DONE]`. All chunks share the
 upstream's first chunk id.
-
-## POST /v1/messages
-
-Standard Anthropic messages request. **The engines speak OpenAI HTTP only —
-this endpoint is never forwarded.** The gateway translates the request
-ANT→OAI, calls the engine's `/v1/chat/completions`, and synthesizes a
-conformant Anthropic response:
-
-Request translation:
-
-- top-level `system` → leading OAI `system` message; mid-conversation
-  `system`-role entries inside `messages[]` (sent by Claude Code ≥ 2.1.214)
-  are demoted to `user`, content preserved (mlx/optiq reject non-leading
-  system messages).
-- `tools` → OAI function tools; assistant `tool_use` blocks → `tool_calls`;
-  user `tool_result` blocks → one `{role: "tool"}` message each, leftover
-  text following as a `user` message.
-- `max_tokens`, `stream`, `temperature`, `top_p` map through;
-  `stop_sequences` → `stop`, with registry `stop_tokens` merged in.
-
-Response synthesis:
-
-- content blocks in order: `thinking` (when reasoning was separated), `text`,
-  then `tool_use` blocks — tool ids get the `toolu_` prefix Claude Code
-  expects to round-trip, and `function.arguments` is parsed into the `input`
-  object (falling back to `{}` on unparseable JSON).
-- `stop_reason` mapping: `stop` → `end_turn`, `length` → `max_tokens`,
-  `tool_calls` → `tool_use`, anything else verbatim.
-- `usage`: `prompt_tokens`/`completion_tokens` → `input_tokens`/`output_tokens`.
-
-**Streaming** — a synthesized, spec-shaped Anthropic event sequence:
-`message_start` → `content_block_start`/`content_block_delta`/
-`content_block_stop` per block (`thinking_delta`, `text_delta`,
-`input_json_delta` for tool arguments) → `message_delta` (with `stop_reason`)
-→ `message_stop`. Block indexes are sequential in order of first appearance.
-
-## POST /v1/messages/count_tokens
-
-Claude Code calls this before sending, to size the prompt; a 404 makes it
-refuse the model. The engines have no native counter, so the gateway returns
-a deliberate estimate: `ceil(total chars / 4)` over `system` + `messages` +
-`tools` (string content and text-block arrays both counted).
-
-```json
-{ "input_tokens": 123 }
-```
-
-Good enough for context-window accounting; not billing-grade, and not meant
-to be.
 
 ## GET /v1/models
 
@@ -157,8 +106,8 @@ progress; byte counts are placeholders):
   refused with 409. The in-flight count is held for the *entire* stream
   lifetime — from stream open to the client closing the response body.
 - **SSE keepalive**: after 8 s of upstream silence the gateway emits a
-  `: keepalive` comment line (SSE-legal; ignored by the OpenAI and Anthropic
-  SDK decoders). optiq can spend minutes in prompt prefill emitting zero
+  `: keepalive` comment line (SSE-legal; ignored by the OpenAI SDK decoders).
+  optiq can spend minutes in prompt prefill emitting zero
   bytes; without this, client idle timers would abort the stream.
 - **Upstream timeouts**: a streaming open that receives no response headers
   within `UPSTREAM_HEADERS_TIMEOUT` (300 s) fails 504; a buffered call that
@@ -180,9 +129,8 @@ progress; byte counts are placeholders):
 | 504 | readiness or headers timeout | `type: "upstream_error"` |
 | 500 | gateway bug | `type: "internal_error"` |
 
-Engine-originated errors are relayed at their upstream status, reshaped into
-the client's flavor: OpenAI callers get `{"error":{"message","type"}}`;
-Anthropic callers get `{"type":"error","error":{"type","message"}}` with the
-type mapped from status (429 → `rate_limit_error`, 5xx → `api_error`, etc.).
-mlx's nonconformant `{"error": "<string>"}` bodies are detected and reshaped
-before relay.
+Engine-originated errors are relayed at their upstream status as conformant
+OpenAI error objects — `{"error":{"message","type"}}` with the type mapped
+from status (429 → `rate_limit_error`, 5xx → `api_error`, etc.). mlx's
+nonconformant `{"error": "<string>"}` bodies are detected and reshaped before
+relay.

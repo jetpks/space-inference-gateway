@@ -13,7 +13,6 @@
 #   GET  /health                → 503 for the first N requests, then 200
 #   GET  /v1/models             → 200 with an empty list
 #   POST /v1/chat/completions   → 200, canned OAI response; records request
-#   POST /v1/messages           → 200, canned Anthropic response; records request
 #   GET  /__requests            → 200, JSON array of recorded {method,path} pairs
 #   SIGTERM                     → graceful shutdown
 
@@ -45,17 +44,6 @@ CANNED_OAI = JSON.generate({
   }],
   "usage" => { "prompt_tokens" => 1, "completion_tokens" => 1, "total_tokens" => 2 },
   "system_fingerprint" => nil,
-                           }).freeze
-
-CANNED_ANT = JSON.generate({
-                             "id" => "msg-fake",
-  "type"          => "message",
-  "role"          => "assistant",
-  "content"       => [{ "type" => "text", "text" => "ok" }],
-  "model"         => "fake",
-  "stop_reason"   => "end_turn",
-  "stop_sequence" => nil,
-  "usage"         => { "input_tokens" => 1, "output_tokens" => 1 },
                            }).freeze
 
 requests_log   = []
@@ -91,13 +79,6 @@ server.mount_proc("/v1/chat/completions") do |req, res|
   res.status       = 200
   res.content_type = "application/json"
   res.body         = CANNED_OAI
-end
-
-server.mount_proc("/v1/messages") do |req, res|
-  requests_mutex.synchronize { requests_log << { "method" => req.request_method, "path" => req.path } }
-  res.status       = 200
-  res.content_type = "application/json"
-  res.body         = CANNED_ANT
 end
 
 server.mount_proc("/__requests") do |_req, res|

@@ -26,24 +26,12 @@ RSpec.describe "Telemetry metrics (I09)" do
   let(:optiq_tool_stream)   { File.read(File.join(File.expand_path("../fixtures/optiq", __dir__), "tool-stream.txt")) }
   let(:optiq_plain_stream)  { File.read(File.join(File.expand_path("../fixtures/optiq", __dir__), "stream.txt")) }
   let(:mlx_stream)          { File.read(File.join(File.expand_path("../fixtures/mlx", __dir__), "stream.txt")) }
-  let(:ant_native_stream)   { fixture("ant_s.txt") }
 
   let(:oai_ns_response) { fixture("oai_ns.json") }
-  let(:ant_ns_response) { fixture("ant_ns.json") }
 
   def as_body(text)
     Enumerator.new { |y| y << text }
   end
-
-  # A controller whose default alias has no mlx/optiq engine, so handle_ant
-  # takes the true ANT-native branch instead of routing through handle_ant_mlx
-  # (config/models.yml's real aliases are all mlx/optiq).
-  def non_mlx_app(upstream_fn)
-    supervisor = FakeUpstreamServer::FakeSupervisor.new("diffusiongemma", "http://unused")
-    controller = SpaceInferenceGateway::ModelController.new(registry: fixture_registry, supervisor: supervisor)
-    SpaceInferenceGateway::App.new(upstream_fn: upstream_fn, controller: controller)
-  end
-
   before { metrics.reset_all }
 
   # ── AC1 — registry + boot-time initialization ───────────────────────────
@@ -114,7 +102,7 @@ RSpec.describe "Telemetry metrics (I09)" do
           expect(metrics::GENERATION_PHASE.get(labels: { phase: "prefill" })).to eq(0)
           expect(metrics::GENERATION_PHASE.get(labels: { phase: "decode" })).to eq(0)
 
-          ttft = metrics::TIME_TO_FIRST_TOKEN.get(labels: { flavor: "oai" })
+          ttft = metrics::TIME_TO_FIRST_TOKEN.get
           expect(ttft["+Inf"]).to eq(1)
         ensure
           client.close
@@ -155,7 +143,7 @@ RSpec.describe "Telemetry metrics (I09)" do
           @task.with_timeout(3) { @task.sleep(0.05) until metrics::ACTIVE_GENERATIONS.get.zero? }
           expect(metrics::GENERATION_PHASE.get(labels: { phase: "prefill" })).to eq(0)
           expect(metrics::GENERATION_PHASE.get(labels: { phase: "decode" })).to eq(0)
-          expect(metrics::TIME_TO_FIRST_TOKEN.get(labels: { flavor: "oai" })["+Inf"]).to eq(0)
+          expect(metrics::TIME_TO_FIRST_TOKEN.get["+Inf"]).to eq(0)
         ensure
           proxy_task.stop
           proxy_bound.close
@@ -175,139 +163,70 @@ RSpec.describe "Telemetry metrics (I09)" do
     end
   end
 
-  # ── AC3 — per-channel delta routing, all three streaming paths ─────────
+  # ── AC3 — per-channel delta routing ────────────────────────────────────
 
   describe "sig_stream_deltas_total — channel routing" do
     it "OAI upstream path (OaiNormalizer#stream_to_sse): reasoning, content, tool_args" do
       normalizer = SpaceInferenceGateway::OaiNormalizer.new(advertised_model: "m")
-      observer   = SpaceInferenceGateway::GenerationObserver.new(flavor: "oai", t0: monotonic_now)
+      observer   = SpaceInferenceGateway::GenerationObserver.new(t0: monotonic_now)
       sse = []
       normalizer.stream_to_sse(as_body(optiq_tool_stream), observer: observer) { |chunk| sse << chunk }
 
-      expect(metrics::STREAM_DELTAS.get(labels: { flavor: "oai", channel: "reasoning" })).to be >= 1
-      expect(metrics::STREAM_DELTAS.get(labels: { flavor: "oai", channel: "content" })).to be >= 1
-      expect(metrics::STREAM_DELTAS.get(labels: { flavor: "oai", channel: "tool_args" })).to be >= 1
-    end
-
-    it "mlx/optiq-derived ANT path (AntNormalizer#stream_to_sse_from_oai): reasoning, content, tool_args" do
-      normalizer = SpaceInferenceGateway::AntNormalizer.new(advertised_model: "m")
-      observer   = SpaceInferenceGateway::GenerationObserver.new(flavor: "ant", t0: monotonic_now)
-      sse = []
-      normalizer.stream_to_sse_from_oai(as_body(optiq_tool_stream), observer: observer) { |chunk| sse << chunk }
-
-      expect(metrics::STREAM_DELTAS.get(labels: { flavor: "ant", channel: "reasoning" })).to be >= 1
-      expect(metrics::STREAM_DELTAS.get(labels: { flavor: "ant", channel: "content" })).to be >= 1
-      expect(metrics::STREAM_DELTAS.get(labels: { flavor: "ant", channel: "tool_args" })).to be >= 1
-    end
-
-    it "ANT-native path (AntNormalizer#stream_to_sse): content" do
-      normalizer = SpaceInferenceGateway::AntNormalizer.new(advertised_model: "m")
-      observer   = SpaceInferenceGateway::GenerationObserver.new(flavor: "ant", t0: monotonic_now)
-      sse = []
-      normalizer.stream_to_sse(as_body(ant_native_stream), observer: observer) { |chunk| sse << chunk }
-
-      expect(metrics::STREAM_DELTAS.get(labels: { flavor: "ant", channel: "content" })).to be >= 1
+      expect(metrics::STREAM_DELTAS.get(labels: { channel: "reasoning" })).to be >= 1
+      expect(metrics::STREAM_DELTAS.get(labels: { channel: "content" })).to be >= 1
+      expect(metrics::STREAM_DELTAS.get(labels: { channel: "tool_args" })).to be >= 1
     end
   end
 
   # ── AC3 — stop reasons, verbatim, streaming + non-stream ────────────────
 
   describe "sig_generation_stops_total" do
-    it "streaming OAI-upstream path records the raw OAI finish_reason verbatim (oai flavor)" do
+    it "streaming path records the raw OAI finish_reason verbatim" do
       normalizer = SpaceInferenceGateway::OaiNormalizer.new(advertised_model: "m")
-      observer   = SpaceInferenceGateway::GenerationObserver.new(flavor: "oai", t0: monotonic_now)
+      observer   = SpaceInferenceGateway::GenerationObserver.new(t0: monotonic_now)
       sse = []
       normalizer.stream_to_sse(as_body(optiq_tool_stream), observer: observer) { |chunk| sse << chunk }
 
-      expect(metrics::GENERATION_STOPS.get(labels: { flavor: "oai", stop_reason: "tool_calls" })).to eq(1)
+      expect(metrics::GENERATION_STOPS.get(labels: { stop_reason: "tool_calls" })).to eq(1)
     end
-
-    it "streaming mlx/optiq-derived ANT path records the raw OAI finish_reason verbatim (ant flavor)" do
-      normalizer = SpaceInferenceGateway::AntNormalizer.new(advertised_model: "m")
-      observer   = SpaceInferenceGateway::GenerationObserver.new(flavor: "ant", t0: monotonic_now)
-      sse = []
-      normalizer.stream_to_sse_from_oai(as_body(optiq_tool_stream), observer: observer) { |chunk| sse << chunk }
-
-      expect(metrics::GENERATION_STOPS.get(labels: { flavor: "ant", stop_reason: "tool_calls" })).to eq(1)
-    end
-
-    it "streaming ANT-native path records the upstream stop_reason verbatim" do
-      normalizer = SpaceInferenceGateway::AntNormalizer.new(advertised_model: "m")
-      observer   = SpaceInferenceGateway::GenerationObserver.new(flavor: "ant", t0: monotonic_now)
-      sse = []
-      normalizer.stream_to_sse(as_body(ant_native_stream), observer: observer) { |chunk| sse << chunk }
-
-      expect(metrics::GENERATION_STOPS.get(labels: { flavor: "ant", stop_reason: "end_turn" })).to eq(1)
-    end
-
-    it "non-stream OAI flavor records finish_reason verbatim (stop)" do
+    it "non-stream path records finish_reason verbatim (stop)" do
       app = SpaceInferenceGateway::App.new(upstream_fn: ->(_p, _b) { [oai_ns_response, 200, {}] })
       Rack::Test::Session.new(Rack::MockSession.new(app)).post(
         "/v1/chat/completions", JSON.generate({ model: "any", messages: [] }), "CONTENT_TYPE" => "application/json",
       )
-      expect(metrics::GENERATION_STOPS.get(labels: { flavor: "oai", stop_reason: "stop" })).to eq(1)
-    end
-
-    it "non-stream ANT-native flavor records stop_reason verbatim (end_turn)" do
-      app = non_mlx_app(->(_p, _b) { [ant_ns_response, 200, {}] })
-      Rack::Test::Session.new(Rack::MockSession.new(app)).post(
-        "/v1/messages", JSON.generate({ model: "diffusiongemma", messages: [], max_tokens: 100 }),
-        "CONTENT_TYPE" => "application/json",
-      )
-      expect(metrics::GENERATION_STOPS.get(labels: { flavor: "ant", stop_reason: "end_turn" })).to eq(1)
+      expect(metrics::GENERATION_STOPS.get(labels: { stop_reason: "stop" })).to eq(1)
     end
   end
 
   # ── AC3 — usage tokens: upstream-reported only, never fabricated ───────
 
   describe "sig_usage_tokens_total" do
-    it "non-stream OAI flavor increments from upstream usage verbatim" do
+    it "non-stream path increments from upstream usage verbatim" do
       app = SpaceInferenceGateway::App.new(upstream_fn: ->(_p, _b) { [oai_ns_response, 200, {}] })
       Rack::Test::Session.new(Rack::MockSession.new(app)).post(
         "/v1/chat/completions", JSON.generate({ model: "any", messages: [] }), "CONTENT_TYPE" => "application/json",
       )
-      expect(metrics::USAGE_TOKENS.get(labels: { flavor: "oai", kind: "prompt" })).to eq(34)
-      expect(metrics::USAGE_TOKENS.get(labels: { flavor: "oai", kind: "completion" })).to eq(246)
+      expect(metrics::USAGE_TOKENS.get(labels: { kind: "prompt" })).to eq(34)
+      expect(metrics::USAGE_TOKENS.get(labels: { kind: "completion" })).to eq(246)
     end
-
-    it "non-stream ANT-native flavor increments from upstream usage verbatim" do
-      app = non_mlx_app(->(_p, _b) { [ant_ns_response, 200, {}] })
-      Rack::Test::Session.new(Rack::MockSession.new(app)).post(
-        "/v1/messages", JSON.generate({ model: "diffusiongemma", messages: [], max_tokens: 100 }),
-        "CONTENT_TYPE" => "application/json",
-      )
-      expect(metrics::USAGE_TOKENS.get(labels: { flavor: "ant", kind: "prompt" })).to eq(29)
-      expect(metrics::USAGE_TOKENS.get(labels: { flavor: "ant", kind: "completion" })).to eq(162)
-    end
-
-    it "streaming optiq upstream carries a final usage chunk — recorded (oai flavor)" do
+    it "streaming optiq upstream carries a final usage chunk — recorded" do
       normalizer = SpaceInferenceGateway::OaiNormalizer.new(advertised_model: "m")
-      observer   = SpaceInferenceGateway::GenerationObserver.new(flavor: "oai", t0: monotonic_now)
+      observer   = SpaceInferenceGateway::GenerationObserver.new(t0: monotonic_now)
       sse = []
       normalizer.stream_to_sse(as_body(optiq_plain_stream), observer: observer) { |chunk| sse << chunk }
 
-      expect(metrics::USAGE_TOKENS.get(labels: { flavor: "oai", kind: "prompt" })).to eq(25)
-      expect(metrics::USAGE_TOKENS.get(labels: { flavor: "oai", kind: "completion" })).to eq(246)
+      expect(metrics::USAGE_TOKENS.get(labels: { kind: "prompt" })).to eq(25)
+      expect(metrics::USAGE_TOKENS.get(labels: { kind: "completion" })).to eq(246)
     end
 
     it "streaming mlx upstream never sends usage — contributes nothing (no fabrication)" do
       normalizer = SpaceInferenceGateway::OaiNormalizer.new(advertised_model: "m")
-      observer   = SpaceInferenceGateway::GenerationObserver.new(flavor: "oai", t0: monotonic_now)
+      observer   = SpaceInferenceGateway::GenerationObserver.new(t0: monotonic_now)
       sse = []
       normalizer.stream_to_sse(as_body(mlx_stream), observer: observer) { |chunk| sse << chunk }
 
-      expect(metrics::USAGE_TOKENS.get(labels: { flavor: "oai", kind: "prompt" })).to eq(0)
-      expect(metrics::USAGE_TOKENS.get(labels: { flavor: "oai", kind: "completion" })).to eq(0)
-    end
-
-    it "streaming ANT-native path reads final usage from message_delta only" do
-      normalizer = SpaceInferenceGateway::AntNormalizer.new(advertised_model: "m")
-      observer   = SpaceInferenceGateway::GenerationObserver.new(flavor: "ant", t0: monotonic_now)
-      sse = []
-      normalizer.stream_to_sse(as_body(ant_native_stream), observer: observer) { |chunk| sse << chunk }
-
-      expect(metrics::USAGE_TOKENS.get(labels: { flavor: "ant", kind: "prompt" })).to eq(24)
-      expect(metrics::USAGE_TOKENS.get(labels: { flavor: "ant", kind: "completion" })).to eq(119)
+      expect(metrics::USAGE_TOKENS.get(labels: { kind: "prompt" })).to eq(0)
+      expect(metrics::USAGE_TOKENS.get(labels: { kind: "completion" })).to eq(0)
     end
   end
 end

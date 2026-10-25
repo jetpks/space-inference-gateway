@@ -16,13 +16,13 @@ module SpaceInferenceGateway
     REQUESTS = REGISTRY.counter(
       :sig_requests_total,
       docstring: "Total inference requests",
-      labels: %i[flavor stream],
+      labels: %i[stream],
     )
 
     REQUEST_DURATION = REGISTRY.histogram(
       :sig_request_duration_seconds,
       docstring: "Inference request duration in seconds",
-      labels: %i[flavor stream],
+      labels: %i[stream],
       buckets: [0.1, 0.5, 1, 2, 5, 10, 30, 60, 120, 300],
     )
 
@@ -71,13 +71,12 @@ module SpaceInferenceGateway
     UPSTREAM_ERRORS = REGISTRY.counter(
       :sig_upstream_errors_total,
       docstring: "Upstream errors relayed to clients",
-      labels: %i[status flavor],
+      labels: %i[status],
     )
 
     KEEPALIVE_COMMENTS = REGISTRY.counter(
       :sig_keepalive_comments_total,
       docstring: "SSE keepalive comments emitted during upstream silence",
-      labels: %i[flavor],
     )
 
     GENERATION_PHASE = REGISTRY.gauge(
@@ -92,13 +91,12 @@ module SpaceInferenceGateway
       :sig_stream_deltas_total,
       docstring: "Streamed delta events by channel; delta approximates a token " \
                  "for the token-by-token mlx/optiq upstreams",
-      labels: %i[flavor channel],
+      labels: %i[channel],
     )
 
     TIME_TO_FIRST_TOKEN = REGISTRY.histogram(
       :sig_time_to_first_token_seconds,
       docstring: "Time from stream open to the first observed delta (prefill duration)",
-      labels: %i[flavor],
       buckets: [0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 600],
     )
 
@@ -106,13 +104,13 @@ module SpaceInferenceGateway
       :sig_usage_tokens_total,
       docstring: "Authoritative upstream-reported token usage; never fabricated " \
                  "(streaming contributes nothing when the upstream omits usage)",
-      labels: %i[flavor kind],
+      labels: %i[kind],
     )
 
     GENERATION_STOPS = REGISTRY.counter(
       :sig_generation_stops_total,
       docstring: "Generation end-of-output events by the upstream's verbatim stop/finish reason",
-      labels: %i[flavor stop_reason],
+      labels: %i[stop_reason],
     )
 
     def self.render

@@ -1,15 +1,15 @@
 # Tutorial: your first end-to-end run
 
 By the end of this page you will have the gateway running locally, supervising
-a real `mlx_lm.server`, and answering both OpenAI-flavor and Anthropic-flavor
-requests — including separated reasoning. Everything happens on one machine;
+a real `mlx_lm.server`, and answering OpenAI-wire requests — including
+separated reasoning. Everything happens on one machine;
 no Caddy, no shim, no deploy.
 
 ## What you need
 
 - An Apple-silicon Mac with enough free disk and RAM for a real model (the
   demo model below is a ~20 GB download and wants ~24 GB of memory headroom).
-- Ruby ≥ 3.3 (`mise use -g ruby@4.0.5` matches production — see
+- Ruby ≥ 4.0 (`mise use -g ruby@4.0.9` matches production — see
   [install dependencies](how-to/install-dependencies.md)).
 - A Python 3.12 venv with mlx-lm at the path the registry expects:
 
@@ -101,7 +101,7 @@ tail -f ~/Library/Logs/space-inference-gateway/qwen3-35b-a3b.log
 
 `GET /v1/load-progress` reports `"phase":"ready"` once it's up.
 
-## 6. First generation — OpenAI flavor
+## 6. First generation
 
 ```sh
 curl -s -X POST http://localhost:3001/v1/chat/completions \
@@ -135,35 +135,7 @@ quiet for 8 s (long prompts spend a while in prefill), you'll see
 `: keepalive` comment lines — SSE-legal, ignored by client SDKs, and the
 reason idle HTTP timers don't kill long generations.
 
-## 8. Same model, Anthropic flavor
-
-```sh
-curl -s -X POST http://localhost:3001/v1/messages \
-  -H 'content-type: application/json' \
-  -d '{
-    "model": "qwen3-35b-a3b",
-    "messages": [{"role": "user", "content": "What is 17 times 23?"}],
-    "max_tokens": 512
-  }' | jq
-```
-
-Here's the trick worth understanding: **the engine never saw an Anthropic
-request**. mlx and optiq speak OpenAI HTTP only, so the gateway translated
-your Anthropic request into an OpenAI one, and synthesized a conformant
-Anthropic response — `thinking` block, `text` block, mapped `stop_reason` —
-from the OpenAI reply. Claude Code also calls
-`POST /v1/messages/count_tokens` before sending; try it:
-
-```sh
-curl -s -X POST http://localhost:3001/v1/messages/count_tokens \
-  -H 'content-type: application/json' \
-  -d '{"model":"x","messages":[{"role":"user","content":"hello there"}]}' | jq
-```
-
-It's a deliberate chars/4 estimate — good enough for the client's
-context-window accounting.
-
-## 9. Peek at the telemetry
+## 8. Peek at the telemetry
 
 ```sh
 curl -s http://localhost:3001/metrics | grep -E '^sig_' | head -20
@@ -172,7 +144,7 @@ curl -s http://localhost:3001/metrics | grep -E '^sig_' | head -20
 Requests, child PID/RSS, generation phases, token usage — the whole
 [metrics surface](reference/metrics.md), no setup required.
 
-## 10. Clean up
+## 9. Clean up
 
 ```sh
 curl -s -X POST http://localhost:3001/v1/unload -H 'content-type: application/json' -d '{}' | jq
@@ -183,7 +155,7 @@ Ctrl-C the gateway; nothing is left running.
 
 ## What you just saw
 
-One supervised engine child served two API dialects, with reasoning separated
+One supervised engine child served the OpenAI wire, with reasoning separated
 and schemas enforced, plus a control plane for loading and swapping models.
 That's the whole idea. From here:
 

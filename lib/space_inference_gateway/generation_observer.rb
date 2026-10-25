@@ -12,8 +12,7 @@ module SpaceInferenceGateway
   # decrements whichever phase the generation is currently in, including a
   # close with zero deltas (abandon-in-prefill).
   class GenerationObserver
-    def initialize(flavor:, t0:)
-      @flavor = flavor.to_s
+    def initialize(t0:)
       @t0     = t0
       @phase  = :prefill
       @closed = false
@@ -23,19 +22,19 @@ module SpaceInferenceGateway
 
     # channel ∈ :reasoning/:content/:tool_args — one call per streamed delta event.
     def on_delta(channel)
-      Metrics::STREAM_DELTAS.increment(labels: { flavor: @flavor, channel: channel.to_s })
+      Metrics::STREAM_DELTAS.increment(labels: { channel: channel.to_s })
       first_delta!
     end
 
     # stop_reason: the upstream's verbatim finish/stop reason.
     def on_finish(stop_reason)
-      Metrics::GENERATION_STOPS.increment(labels: { flavor: @flavor, stop_reason: stop_reason.to_s })
+      Metrics::GENERATION_STOPS.increment(labels: { stop_reason: stop_reason.to_s })
     end
 
     # Upstream-reported usage only; nil (absent upstream) contributes nothing.
     def on_usage(prompt: nil, completion: nil)
-      Metrics::USAGE_TOKENS.increment(by: prompt, labels: { flavor: @flavor, kind: "prompt" }) if prompt
-      Metrics::USAGE_TOKENS.increment(by: completion, labels: { flavor: @flavor, kind: "completion" }) if completion
+      Metrics::USAGE_TOKENS.increment(by: prompt, labels: { kind: "prompt" }) if prompt
+      Metrics::USAGE_TOKENS.increment(by: completion, labels: { kind: "completion" }) if completion
     end
 
     def close
@@ -53,10 +52,7 @@ module SpaceInferenceGateway
       Metrics::GENERATION_PHASE.decrement(labels: { phase: "prefill" })
       Metrics::GENERATION_PHASE.increment(labels: { phase: "decode" })
       @phase = :decode
-      Metrics::TIME_TO_FIRST_TOKEN.observe(
-        Process.clock_gettime(Process::CLOCK_MONOTONIC) - @t0,
-        labels: { flavor: @flavor },
-      )
+      Metrics::TIME_TO_FIRST_TOKEN.observe(Process.clock_gettime(Process::CLOCK_MONOTONIC) - @t0)
     end
   end
 end
