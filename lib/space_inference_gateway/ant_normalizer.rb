@@ -87,7 +87,7 @@ module SpaceInferenceGateway
     # Reads delta[@reasoning_field] for reasoning, delta["content"] for text.
     # Yields ANT-format "event: ...\ndata: ...\n\n" strings.
     # observer (I09): optional GenerationObserver tapping deltas/finish/usage.
-    def stream_to_sse_from_oai(upstream_body, observer: nil, &block)
+    def stream_to_sse_from_oai(upstream_body, observer: nil, &)
       state = init_oai_to_ant_state
       buf   = +""
 
@@ -105,7 +105,7 @@ module SpaceInferenceGateway
             data = JSON.parse(raw)
             next if data["type"] == "diffusion_frame"
 
-            process_oai_chunk(data, state, observer, &block)
+            process_oai_chunk(data, state, observer, &)
           end
         end
       end
@@ -260,7 +260,7 @@ module SpaceInferenceGateway
 "content_block" => { "type" => "thinking", "thinking" => "" }, }, },
         { event: "content_block_delta", data: { "type" => "content_block_delta", "index" => 0,
 "delta" => { "type" => "thinking_delta", "thinking" => thinking }, }, },
-        { event: "content_block_stop",  data: { "type" => "content_block_stop", "index" => 0 } },
+        { event: "content_block_stop", data: { "type" => "content_block_stop", "index" => 0 } },
       ]
     end
 
@@ -272,7 +272,7 @@ module SpaceInferenceGateway
 "content_block" => { "type" => "text", "text" => "" }, }, },
         { event: "content_block_delta", data: { "type" => "content_block_delta", "index" => index,
 "delta" => { "type" => "text_delta", "text" => text }, }, },
-        { event: "content_block_stop",  data: { "type" => "content_block_stop", "index" => index } },
+        { event: "content_block_stop", data: { "type" => "content_block_stop", "index" => index } },
       ]
     end
 

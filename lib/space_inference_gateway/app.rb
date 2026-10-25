@@ -117,8 +117,8 @@ module SpaceInferenceGateway
     # Adapter: makes AntNormalizer#stream_to_sse_from_oai duck-type as stream_to_sse
     # so it can be dropped into StreamBody for the mlx ANT streaming path.
     OaiToAntAdapter = Struct.new(:normalizer) do
-      def stream_to_sse(body, observer: nil, &block)
-        normalizer.stream_to_sse_from_oai(body, observer: observer, &block)
+      def stream_to_sse(body, observer: nil, &)
+        normalizer.stream_to_sse_from_oai(body, observer: observer, &)
       end
     end
     private_constant :OaiToAntAdapter

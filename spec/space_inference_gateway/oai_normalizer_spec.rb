@@ -429,8 +429,8 @@ RSpec.describe SpaceInferenceGateway::OaiNormalizer do
     it "emits a tool_calls delta the client can read" do
       sse = normalizer.normalize_stream_to_sse(stream_text)
       chunks = sse.lines.map { |l| l.sub(/^data: /, "").strip }
-                        .reject { |l| l.empty? || l == "[DONE]" }
-                        .map { |l| JSON.parse(l) }
+                  .reject { |l| l.empty? || l == "[DONE]" }
+                  .map { |l| JSON.parse(l) }
       tool_call_deltas = chunks.flat_map { |c| c["choices"] }
                                .filter_map { |c| c["delta"]["tool_calls"] }
       expect(tool_call_deltas).not_to be_empty
