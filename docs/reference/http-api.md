@@ -23,14 +23,36 @@ Every generation request resolves its `model` field against the registry:
 - **Known alias** → lazy auto-swap: if it isn't the active model, the gateway
   stops the current child and starts that one before serving (see the
   concurrency rules below).
-- **Unknown or absent** → served by whatever is running; if nothing is
-  running, the registry's `default:` alias is started. Real clients send
-  their own model names, which won't match your aliases — rather than 404,
-  the gateway serves them.
-- The response's `model` field echoes the request's alias when known,
-  otherwise `ADVERTISED_MODEL` (default `local-inference`).
+- **Unknown** → `404` with `code: "model_not_found"`. The alias is never
+  substituted.
+- **Absent or blank** → `400`, `invalid_request_error`, `param: "model"`.
+- The response's `model` field echoes the request's alias, which is always
+  a registered one on a 2xx.
 
-Only the explicit `POST /v1/load` rejects unknown aliases (422).
+`POST /v1/load` rejects unknown aliases as it always has (422).
+
+### Why this is strict (changed 2026-09-01)
+
+This used to fall back: an unknown or absent alias was served by whatever was
+running, on the argument that "real clients send their own model names
+which won't match your aliases." That turned out to be both a
+measurement hazard and a false premise.
+
+The hazard: a request naming an unregistered alias got a **200 and a coherent
+completion from a different model**, with nothing in the response saying so.
+`effective_model` echoed `ADVERTISED_MODEL`, `resolve_mlx_entry` supplied the
+*default* alias's registry entry, and `rewrite_model_for_mlx` forwarded that
+entry's HF repo id upstream — so the requested alias, the echoed model and the
+weights that actually answered could all disagree at once. Measured
+2026-09-01: an eval sweep for an alias the running gateway predated wrote 19
+records answered by `Qwen3.8-27B-mxfp8` before it was caught in the engine log.
+
+The premise: clients are expected to pin every tier — foreground, background
+classifiers, subagents — to one registered alias, precisely so a background
+call cannot land on a different alias and thrash the single-flight supervisor.
+Real clients have been naming real aliases all along, and strictness *defends*
+that invariant: an unmapped tier fails loudly instead of silently swapping
+the child.
 
 ## POST /v1/chat/completions
 

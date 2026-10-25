@@ -104,9 +104,11 @@ normalizer to the live upstream per request.
 
 Where reasoning comes from is a **registry property, not a global**: mlx
 emits a native `reasoning` field for models whose chat template separates
-thinking, and the `<think>` parser handles models that tag it inline
-(`deepseek-r1-70b`, `nemotron-3-super`). Both paths feed the same output
-channels. For models that don't reason at all (`hermes-4-70b`),
+thinking, and the `<think>` parser handles models that tag it inline. Both
+paths feed the same output channels. Every reasoning alias now runs on
+mlx-vlm, which splits thinking into `reasoning_content` server-side, so the
+inline path currently has no registered user — it stays because the mlx and
+optiq engines do no such splitting. For models that don't reason at all (`hermes-4-70b`),
 `supports_reasoning: false` keeps the normalizer in passthrough so a literal
 `<think>` in prose is never misclassified.
 

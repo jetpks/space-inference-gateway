@@ -65,7 +65,7 @@ RSpec.describe "Telemetry metrics (I09)" do
   end
 
   describe "GET /metrics" do
-    let(:app) { SpaceInferenceGateway::App.new(upstream_fn: ->(_p, _b) { [oai_ns_response, 200, {}] }) }
+    let(:app) { SpaceInferenceGateway::App.new(upstream_fn: ->(_p, _b) { [oai_ns_response, 200, {}] }, controller: app_fixture_controller) }
 
     it "renders all five new families" do
       get "/metrics"
@@ -164,10 +164,10 @@ RSpec.describe "Telemetry metrics (I09)" do
   end
 
   describe "non-stream never moves the phase gauge" do
-    let(:app) { SpaceInferenceGateway::App.new(upstream_fn: ->(_p, _b) { [oai_ns_response, 200, {}] }) }
+    let(:app) { SpaceInferenceGateway::App.new(upstream_fn: ->(_p, _b) { [oai_ns_response, 200, {}] }, controller: app_fixture_controller) }
 
     it "leaves both phase labels at 0" do
-      post "/v1/chat/completions", JSON.generate({ model: "any", messages: [] }), "CONTENT_TYPE" => "application/json"
+      post "/v1/chat/completions", JSON.generate({ model: "qwen3.8-flash-next-oq3", messages: [] }), "CONTENT_TYPE" => "application/json"
       expect(metrics::GENERATION_PHASE.get(labels: { phase: "prefill" })).to eq(0)
       expect(metrics::GENERATION_PHASE.get(labels: { phase: "decode" })).to eq(0)
     end
@@ -200,9 +200,9 @@ RSpec.describe "Telemetry metrics (I09)" do
       expect(metrics::GENERATION_STOPS.get(labels: { stop_reason: "tool_calls" })).to eq(1)
     end
     it "non-stream path records finish_reason verbatim (stop)" do
-      app = SpaceInferenceGateway::App.new(upstream_fn: ->(_p, _b) { [oai_ns_response, 200, {}] })
+      app = SpaceInferenceGateway::App.new(upstream_fn: ->(_p, _b) { [oai_ns_response, 200, {}] }, controller: app_fixture_controller)
       Rack::Test::Session.new(Rack::MockSession.new(app)).post(
-        "/v1/chat/completions", JSON.generate({ model: "any", messages: [] }), "CONTENT_TYPE" => "application/json",
+        "/v1/chat/completions", JSON.generate({ model: "qwen3.8-flash-next-oq3", messages: [] }), "CONTENT_TYPE" => "application/json",
       )
       expect(metrics::GENERATION_STOPS.get(labels: { stop_reason: "stop" })).to eq(1)
     end
@@ -212,9 +212,9 @@ RSpec.describe "Telemetry metrics (I09)" do
 
   describe "sig_usage_tokens_total" do
     it "non-stream path increments from upstream usage verbatim" do
-      app = SpaceInferenceGateway::App.new(upstream_fn: ->(_p, _b) { [oai_ns_response, 200, {}] })
+      app = SpaceInferenceGateway::App.new(upstream_fn: ->(_p, _b) { [oai_ns_response, 200, {}] }, controller: app_fixture_controller)
       Rack::Test::Session.new(Rack::MockSession.new(app)).post(
-        "/v1/chat/completions", JSON.generate({ model: "any", messages: [] }), "CONTENT_TYPE" => "application/json",
+        "/v1/chat/completions", JSON.generate({ model: "qwen3.8-flash-next-oq3", messages: [] }), "CONTENT_TYPE" => "application/json",
       )
       expect(metrics::USAGE_TOKENS.get(labels: { kind: "prompt" })).to eq(34)
       expect(metrics::USAGE_TOKENS.get(labels: { kind: "completion" })).to eq(246)

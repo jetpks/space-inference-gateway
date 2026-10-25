@@ -144,7 +144,7 @@ RSpec.describe "Zombie watchdog (I04 AC3)" do
           )
           app = SpaceInferenceGateway::App.new(upstream_client: upstream_client, controller: controller)
 
-          resp = call_app(app, "POST", "/v1/chat/completions", JSON.generate({ model: "any", messages: [] }))
+          resp = call_app(app, "POST", "/v1/chat/completions", JSON.generate({ model: "diffusiongemma", messages: [] }))
           expect(resp.status).to eq(504)
         ensure
           upstream&.stop
@@ -168,7 +168,7 @@ RSpec.describe "Zombie watchdog (I04 AC3)" do
         )
         app = SpaceInferenceGateway::App.new(upstream_client: upstream_client, controller: controller)
 
-        resp = call_app(app, "POST", "/v1/chat/completions", JSON.generate({ model: "any", messages: [] }))
+        resp = call_app(app, "POST", "/v1/chat/completions", JSON.generate({ model: "diffusiongemma", messages: [] }))
         expect(resp.status).to eq(504)
 
         expect(supervisor.swap_calls).to eq(0)
@@ -188,7 +188,7 @@ RSpec.describe "Zombie watchdog (I04 AC3)" do
           base_url: upstream.base_url, idle_timeout: 30, buffered_timeout: 0.3,
         )
         app = SpaceInferenceGateway::App.new(upstream_client: upstream_client, controller: controller)
-        resp = call_app(app, "POST", "/v1/chat/completions", JSON.generate({ model: "any", messages: [] }))
+        resp = call_app(app, "POST", "/v1/chat/completions", JSON.generate({ model: "diffusiongemma", messages: [] }))
         expect(resp.status).to eq(504) # streak 1
         upstream.stop
 
@@ -199,7 +199,7 @@ RSpec.describe "Zombie watchdog (I04 AC3)" do
         end
         ok_client = SpaceInferenceGateway::UpstreamClient.new(base_url: ok_upstream.base_url, buffered_timeout: 5)
         ok_app = SpaceInferenceGateway::App.new(upstream_client: ok_client, controller: controller)
-        ok_resp = call_app(ok_app, "POST", "/v1/chat/completions", JSON.generate({ model: "any", messages: [] }))
+        ok_resp = call_app(ok_app, "POST", "/v1/chat/completions", JSON.generate({ model: "diffusiongemma", messages: [] }))
         expect(ok_resp.status).to eq(200) # reset to 0
         ok_upstream.stop
 
@@ -209,7 +209,7 @@ RSpec.describe "Zombie watchdog (I04 AC3)" do
           base_url: upstream2.base_url, idle_timeout: 30, buffered_timeout: 0.3,
         )
         app2 = SpaceInferenceGateway::App.new(upstream_client: upstream_client2, controller: controller)
-        resp2 = call_app(app2, "POST", "/v1/chat/completions", JSON.generate({ model: "any", messages: [] }))
+        resp2 = call_app(app2, "POST", "/v1/chat/completions", JSON.generate({ model: "diffusiongemma", messages: [] }))
         expect(resp2.status).to eq(504) # streak 1 again (below threshold 2)
         upstream2.stop
 

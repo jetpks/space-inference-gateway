@@ -139,6 +139,11 @@ module SpaceInferenceGateway
     # seam (request rewrites, error reshaping): "mlx", "optiq", "mlx-vlm".
     OAI_UPSTREAM_ENGINES = %w[mlx optiq mlx-vlm].freeze
 
+    # Efforts that mean "no reasoning at all" rather than "less of it".
+    # mlx-vlm reads these as a request to disable thinking, so they are a
+    # legitimate client choice and pass through uncoerced.
+    DISABLED_REASONING_EFFORTS = %w[none off disabled false 0].freeze
+
     private
 
     def handle_oai(env)
@@ -147,6 +152,8 @@ module SpaceInferenceGateway
       request     = JSON.parse(body_str)
       model_alias = request["model"]
       streaming   = request["stream"] == true
+
+      return model_resolution_error(model_alias) unless model_registered?(model_alias)
 
       # Body rewrite runs before the reservation (AC1/I02): it can raise on a
       # JSON-parseable but ill-shaped body (e.g. a non-hash message), and it
@@ -391,16 +398,71 @@ module SpaceInferenceGateway
       end
     end
 
+    # Strict model resolution on the two GENERATION endpoints. An absent or
+    # unregistered alias is refused rather than served by whatever happens to
+    # be running.
+    #
+    # The old fallback was deliberate — reference/http-api.md argued "real
+    # clients send their own model names (claude-...), which won't match your
+    # aliases — rather than 404, the gateway serves them." It is a measurement
+    # hazard that outgrew that rationale. A request naming an unregistered
+    # alias got a 200 and a coherent completion from a DIFFERENT model, with
+    # nothing in the response saying so: `effective_model` echoes
+    # ADVERTISED_MODEL, `resolve_mlx_entry` silently supplies the default
+    # alias's entry, and `rewrite_model_for_mlx` forwards that entry's HF repo
+    # id upstream. The alias, the echoed model and the forwarded weights can
+    # all disagree at once. Measured 2026-09-01: a sweep for an alias the
+    # running gateway predated wrote 19 records answered by Qwen3.8-27B-mxfp8.
+    #
+    # The premise is also no longer true. Clients pin every tier — foreground,
+    # background classifiers, subagents — to one registered alias, precisely
+    # so a background call cannot land on a different alias and thrash the
+    # single-flight supervisor. Strictness DEFENDS that invariant: an unmapped
+    # tier now fails loudly instead of silently swapping the child.
+    def model_registered?(model_alias)
+      named?(model_alias) && !@controller.registry.resolve(model_alias).nil?
+    end
+
+    def named?(model_alias)
+      model_alias.is_a?(String) && !model_alias.strip.empty?
+    end
+
+    def model_resolution_error(model_alias)
+      named   = named?(model_alias)
+      status  = named ? 404 : 400
+      message = if named
+                  "Unknown model #{model_alias.inspect}. Name a registered alias; GET /v1/models lists them."
+                else
+                  "The 'model' field is required. Name a registered alias; GET /v1/models lists them."
+                end
+      [status, JSON_HEADERS.dup, [model_error_body(message, status)]]
+    end
+
+    # OAI error shape: nests under "error" with a code/param a client can
+    # branch on.
+    def model_error_body(message, status)
+      error = { message: message, type: "invalid_request_error", param: "model" }
+      error[:code] = "model_not_found" if status == 404
+      JSON.generate({ error: error })
+    end
+
     def effective_model(alias_name)
       @controller.registry.resolve(alias_name) ? alias_name : @advertised_model
+    end
+
+    # The registry entry for alias_name, falling back to the default alias's
+    # entry for an unknown/unset alias (same fallback ensure_active_if_known
+    # would resolve to, so the mlx-facing rewrites agree with what actually
+    # loads).
+    def resolve_mlx_entry(alias_name)
+      @controller.registry.resolve(alias_name) ||
+        @controller.registry.resolve(@controller.registry.default_alias)
     end
 
     # True when the entry for alias_name (or the default) uses one of the
     # OAI-upstream engines — see OAI_UPSTREAM_ENGINES.
     def mlx_engine?(alias_name)
-      entry = @controller.registry.resolve(alias_name) ||
-              @controller.registry.resolve(@controller.registry.default_alias)
-      OAI_UPSTREAM_ENGINES.include?(entry&.fetch(:engine, nil))
+      OAI_UPSTREAM_ENGINES.include?(resolve_mlx_entry(alias_name)&.fetch(:engine, nil))
     end
 
     # The model id the mlx child expects in the request body's "model" field —
@@ -409,17 +471,13 @@ module SpaceInferenceGateway
     # HuggingFace, so the alias cannot be forwarded as-is (unlike llama-server,
     # which ignores it).
     def mlx_model_id(alias_name)
-      entry = @controller.registry.resolve(alias_name) ||
-              @controller.registry.resolve(@controller.registry.default_alias)
-      entry[:model]
+      resolve_mlx_entry(alias_name)[:model]
     end
 
     # Stop tokens from the registry entry (optional). Workaround for the
     # mlx_lm 0.31.3 eos-token-id stop bug — see models.yml comment.
     def mlx_stop_tokens(alias_name)
-      entry = @controller.registry.resolve(alias_name) ||
-              @controller.registry.resolve(@controller.registry.default_alias)
-      entry[:stop_tokens]
+      resolve_mlx_entry(alias_name)[:stop_tokens]
     end
 
     # Merge registry stop_tokens into the request's existing "stop" field,
@@ -436,6 +494,83 @@ module SpaceInferenceGateway
       body["stop"] = (existing + Array(stop_tokens)).uniq
     end
 
+    # mlx-vlm forwards reasoning_effort straight into apply_chat_template, so
+    # the accepted vocabulary is the *model template's*, not OpenAI's.
+    # Qwen3.8-Flash-Next raises on anything but xhigh/medium/low, which turns
+    # a stock client's reasoning_effort: "high" into a 500 rather than a
+    # degradation. An entry declares what its template accepts
+    # (reasoning_effort_values) and what to fall back to (reasoning_effort);
+    # an unsupported value is coerced to the fallback instead of relayed.
+    #
+    # Entries without a reasoning_effort default are untouched — this must
+    # stay a no-op for every alias that predates it.
+    def inject_reasoning_effort(parsed, entry)
+      fallback = entry && entry[:reasoning_effort]
+      return unless fallback
+
+      requested = requested_reasoning_effort(parsed)
+      return if requested && DISABLED_REASONING_EFFORTS.include?(requested.downcase)
+
+      apply_reasoning_effort(parsed, coerce_reasoning_effort(requested, entry, fallback))
+    end
+
+    # Sampling penalties an alias declares are DEFAULTS, not overrides: a
+    # client that states its own keeps it, matching how reasoning_effort
+    # treats a value its template accepts. An alias declaring none is
+    # untouched, so this stays a no-op for every alias that predates it.
+    #
+    # These reach the engine as request fields, which means they are applied
+    # AFTER a client has recorded what it sent - an evaluation harness
+    # logging its own request body will not see them. Anything comparing runs
+    # across aliases has to read them from here, not from the client's log.
+    def inject_sampling_penalties(parsed, entry)
+      declared = entry && entry[:penalties]
+      return unless declared.is_a?(Hash)
+
+      declared.each do |key, value|
+        name = key.to_s
+        parsed[name] = value unless parsed.key?(name)
+      end
+    end
+
+    # A client may express effort as either the flat reasoning_effort field or
+    # the nested Responses-API reasoning: {effort:}. mlx-vlm checks the nested
+    # form first, so both are read here and both are rewritten below.
+    def requested_reasoning_effort(parsed)
+      nested = parsed["reasoning"].is_a?(Hash) ? parsed["reasoning"]["effort"] : nil
+      (parsed["reasoning_effort"] || nested)&.to_s
+    end
+
+    def apply_reasoning_effort(parsed, effort)
+      parsed["reasoning_effort"] = effort
+      parsed["reasoning"]["effort"] = effort if parsed["reasoning"].is_a?(Hash)
+    end
+
+    # Used by inject_reasoning_effort: a requested effort passes through if
+    # the template accepts it (or the entry declares no allowlist); otherwise
+    # it coerces to the fallback.
+    def coerce_reasoning_effort(requested, entry, fallback)
+      allowed = Array(entry[:reasoning_effort_values]).map(&:to_s)
+      requested && (allowed.empty? || allowed.include?(requested)) ? requested : fallback.to_s
+    end
+
+    # Qwen-family templates replay each prior assistant turn's full
+    # chain-of-thought back into the prompt unless preserve_thinking is false —
+    # and it defaults true. That grows context by every past turn's reasoning
+    # rather than by its answer, which is the wrong trade on a box where the
+    # weights already own most of the wired limit. mlx-vlm does not forward
+    # preserve_thinking to the template, so the equivalent is done here:
+    # with the field gone, the template renders an empty think block for
+    # history and the answers survive intact.
+    def strip_history_reasoning(parsed)
+      messages = parsed["messages"]
+      return unless messages.is_a?(Array)
+
+      messages.each do |message|
+        message.delete("reasoning_content") if message.is_a?(Hash) && message["role"] == "assistant"
+      end
+    end
+
     # Applies OAI-upstream request rewrites (see OAI_UPSTREAM_ENGINES):
     # - mlx and mlx-vlm: rewrites the "model" field to the HF repo id (both
     #   validate this field against their loaded model; optiq single-model
@@ -445,8 +580,7 @@ module SpaceInferenceGateway
       return body_str unless mlx_engine?(model_alias)
 
       parsed = JSON.parse(body_str)
-      entry  = @controller.registry.resolve(model_alias) ||
-               @controller.registry.resolve(@controller.registry.default_alias)
+      entry  = resolve_mlx_entry(model_alias)
       parsed["model"] = mlx_model_id(model_alias) if %w[mlx mlx-vlm].include?(entry&.fetch(:engine, nil))
       # Modern OAI clients (pi included) send max_completion_tokens; mlx-vlm's
       # schema only reads max_tokens and silently defaults to 2048 when it's
@@ -458,6 +592,9 @@ module SpaceInferenceGateway
       end
       (parsed["messages"] || []).each { |m| m["role"] = "system" if m["role"] == "developer" }
       inject_mlx_stop_tokens(parsed, model_alias)
+      inject_reasoning_effort(parsed, entry)
+      inject_sampling_penalties(parsed, entry)
+      strip_history_reasoning(parsed) if entry && entry[:preserve_thinking] == false
       JSON.generate(parsed)
     end
 

@@ -61,9 +61,6 @@ models:
     max_num_seqs: 4
     thinking_budget: 512
     supports_reasoning: true
-  # Qwen3.6 27B OptiQ-4bit with MTP depth 2 (optiq engine).
-  # optiq's single-model mode: the request "model" field is a label — any value
-  # is accepted, so the proxy does not rewrite it for this engine.
   qwen3-27b-optiq:
     engine: optiq
     model: mlx-community/Qwen3.6-27B-OptiQ-4bit
@@ -73,82 +70,350 @@ models:
     mtp: true
     mtp_depth: 2
     max_concurrent: 8
-  # Dense 70B (Llama-3.3 base, Nous instruct finetune). No native reasoning —
-  # the chat template emits content only, so supports_reasoning: false keeps
-  # the normalizer in passthrough (no <think>/reasoning-field extraction).
-  hermes-4-70b:
-    engine: mlx
-    model: mlx-community/Hermes-4-70B-6bit
-    port: 8080
-    venv: ~/.venv-vllm-metal/bin/python
-    decode_concurrency: 8
-    prompt_concurrency: 4
-    supports_reasoning: false
-    # mlx_lm 0.31.3 bug: the eos_token_id-based stop (via
-    # tokenizer.eos_token_ids in the SequenceStateMachine) does not fire for
-    # this model — the server generates past <|eot_id|> (128009) without
-    # stopping. Injecting it as an explicit stop sequence works around the
-    # bug (string-based stop detection is unaffected).
-    stop_tokens:
-      - <|eot_id|>
-  deepseek-r1-70b:
-    engine: mlx
-    model: mlx-community/DeepSeek-R1-Distill-Llama-70B-6bit
-    port: 8080
-    venv: ~/.venv-vllm-metal/bin/python
-    decode_concurrency: 8
-    prompt_concurrency: 4
-    # Reasoning model — emits <think>...</think> tags. The proxy's reasoning
-    # parser (Phase-1 <think> path) lifts these into the reasoning channel.
-    supports_reasoning: true
-    # Same mlx_lm eos-stop bug precaution as hermes-4-70b (Llama-3.3 tokenizer).
-    stop_tokens:
-      - <|eot_id|>
   qwen3-122b-a10b:
-    engine: mlx
+    engine: mlx-vlm
     model: mlx-community/Qwen3.5-122B-A10B-4bit
     port: 8080
-    venv: ~/.venv-vllm-metal/bin/python
-    decode_concurrency: 32
-    prompt_concurrency: 8
-    # ~122B params — the default 120s readiness budget kills a legitimately
-    # loading model of this size before it's had a chance to come up.
-    readiness_timeout: 300
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    enable_thinking: true
+    supports_reasoning: true
+    max_num_seqs: 1
+    # 65 GiB off a cold page cache — the same class as the flash-next oQ3 alias
+    # above, whose 600s budget is measured. The 300s here was inherited from the
+    # mlx engine and never measured against a cold load.
+    readiness_timeout: 600
+  # Qwen3.5-35B-A3B — moved to mlx-vlm 2026-09-01 alongside its 3.6 siblings
+  # below. Same model_type (qwen3_5_moe), same reason: it is a thinking model,
+  # and the legacy mlx engine has no launch-level thinking switch.
   qwen3-35b-a3b:
-    engine: mlx
+    engine: mlx-vlm
     model: mlx-community/Qwen3.5-35B-A3B-4bit
     port: 8080
-    venv: ~/.venv-vllm-metal/bin/python
-    decode_concurrency: 32
-    prompt_concurrency: 8
-  # Qwen3.6 35B A3B (model_type qwen3_5_moe — same arch family as the 3.5
-  # MoE above, runs on the pinned mlx_lm 0.31.3).
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    enable_thinking: true
+    supports_reasoning: true
+    max_num_seqs: 1
+  # Qwen3.6-35B-A3B, both quants — moved from the mlx engine to mlx-vlm
+  # 2026-09-01 (model_type qwen3_5_moe, which mlx-vlm implements, so the
+  # weights load unchanged and only the serving vocabulary differs).
+  #
+  # Why move: these are reasoning models, and under mlx_lm.server the only
+  # lever over their thinking was chat_template_kwargs, forwarded per request.
+  # That left them running past the 16,384-token cap on some prompts even with
+  # thinking off, which is why they have never produced a usable eval arm.
+  #
+  # Thinking ON as of 2026-09-01, and the runaway is now bounded by the knob
+  # that actually means it. thinking_budget forces "\n</think>" once the
+  # THINKING span exceeds it (utils.py ThinkingBudget), leaving the answer
+  # unbounded — and it works with the Qwen template pre-opening <think> in the
+  # prompt, because the server detects that case (_prompt_has_open_thinking).
+  # 4096 is a starting point sized to leave most of a 16k budget for the
+  # answer, not a measured result.
+  #
+  # ⚠️ Sampling penalties REMOVED 2026-09-01. These arms are for code, and a
+  # repetition penalty is the wrong instrument there: over a 64-token window,
+  # 1.05 penalises indentation, closing delimiters and an identifier named
+  # once per line — all correct output, not degeneration. They were only ever
+  # standing in for a length bound, which thinking_budget now provides
+  # directly. Removing them also restores comparability with the flash-next
+  # arms, which deliberately carry none.
+  #
+  # decode_concurrency/prompt_concurrency dropped: mlx_lm-specific, and
+  # meaningless to this engine.
   qwen3.6-35b-a3b-4bit:
-    engine: mlx
+    engine: mlx-vlm
     model: mlx-community/Qwen3.6-35B-A3B-4bit
     port: 8080
-    venv: ~/.venv-vllm-metal/bin/python
-    decode_concurrency: 32
-    prompt_concurrency: 8
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    enable_thinking: true
+    supports_reasoning: true
+    thinking_budget: 4096
+    max_num_seqs: 1
   qwen3.6-35b-a3b-8bit:
-    engine: mlx
+    engine: mlx-vlm
     model: mlx-community/Qwen3.6-35B-A3B-8bit
     port: 8080
-    venv: ~/.venv-vllm-metal/bin/python
-    decode_concurrency: 32
-    prompt_concurrency: 8
-  # MoE 120B/A12B (Nemotron 3 Super, q5). Custom NemotronH architecture —
-  # mlx_lm 0.31.3 ships nemotron_h support. Reasoning model: emits thinking
-  # tags the proxy's parser lifts into the reasoning channel. Registered after
-  # a guided-ops trial 2026-07-18: loaded and served through the TLS edge,
-  # reasoning_content separated, finish_reason stop.
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    enable_thinking: true
+    supports_reasoning: true
+    thinking_budget: 4096
+    max_num_seqs: 1
+  # MoE 120B/A12B (Nemotron 3 Super, q5). Custom NemotronH architecture.
+  # Registered after a guided-ops trial 2026-07-18: loaded and served through
+  # the TLS edge, reasoning_content separated, finish_reason stop.
+  #
+  # Moved from the mlx engine to mlx-vlm 2026-09-01: mlx-vlm implements
+  # nemotron_h (mlx_vlm/models/nemotron_h), so the weights load unchanged and
+  # only the serving vocabulary differs.
+  #
+  # enable_thinking is PRESENT here, unlike the a3b arms and the 122B above.
+  # This alias is a reasoning arm today — supports_reasoning: true, tags lifted
+  # by the parser — and on mlx-vlm the flag is the whole-child switch, so
+  # omitting it would silently turn thinking off and change what this alias is.
   nemotron-3-super:
-    engine: mlx
+    engine: mlx-vlm
     model: mlx-community/NVIDIA-Nemotron-3-Super-120B-A12B-5bit
     port: 8080
-    venv: ~/.venv-vllm-metal/bin/python
-    decode_concurrency: 32
-    prompt_concurrency: 8
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    enable_thinking: true
     supports_reasoning: true
-    # ~120B params — see qwen3-122b-a10b's readiness_timeout comment above.
-    readiness_timeout: 300
+    max_num_seqs: 1
+    # 77 GiB cold — see the 122B's readiness_timeout note above.
+    readiness_timeout: 600
+  qwen3.5-9b:
+    engine: mlx-vlm
+    model: mlx-community/Qwen3.5-9B-MLX-4bit
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    enable_thinking: true
+    supports_reasoning: true
+    max_num_seqs: 1
+
+  # Gemma 4 E4B (gemma4, MatFormer "effective 4B"). Thinking model, but NOT via
+  # <think>: its template opens '<|think|>' and renders tool-call reasoning as
+  # '<|channel>thought ... <channel|>'. mlx-vlm handles both natively -
+  # _split_thinking tries the tokenizer's own parse_response first and falls
+  # back to a marker set that already knows this shape (server/app.py's
+  # _count_thinking_tag_tokens names it explicitly).
+  #
+  # Verified live 2026-09-01 rather than assumed, because a non-<think> thinking
+  # model is exactly where the gateway's own ReasoningParser would fail: probed
+  # direct on :8081 with --enable-thinking, reasoning_content came back with 658
+  # characters, content was bare "391", and no marker leaked into content.
+  gemma-4-e4b:
+    engine: mlx-vlm
+    model: mlx-community/gemma-4-e4b-it-4bit
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    enable_thinking: true
+    supports_reasoning: true
+    max_num_seqs: 1
+  muse-glimmer-30b:
+    engine: mlx-vlm
+    model: mlx-community/Muse-Glimmer-30B-mxfp8
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    supports_reasoning: true
+    reasoning_effort: medium
+    reasoning_effort_values: [high, medium, low, none]
+    max_num_seqs: 1
+    # 30 GiB cold — same class as the arms above, and a deadline costs nothing.
+    readiness_timeout: 600
+
+  # ── 2026-09-01 second band: families, scale pairs, and one novel architecture ──
+  # Each was smoke-probed on :8081 before registration, after granite-4.1-8b
+  # served 132 samples of token garbage that the harness scored as a clean
+  # 0.0% — a broken quant can look well-behaved to an extractor.
+
+  # Devstral Small 2 24B (mistral3). Mistral's agentic-coding specialist, and
+  # the second coder family here after qwen3-coder-next. 8bit deliberately,
+  # not the far more popular 4bit: coder-next is 6bit, and a 4-vs-6 comparison
+  # would confound quantization with model. Probed: 33 completion tokens for a
+  # correct fenced answer — terser than any arm on the box.
+  devstral-small-2-24b:
+    engine: mlx-vlm
+    model: mlx-community/Devstral-Small-2-24B-Instruct-2512-8bit
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    supports_reasoning: false
+    max_num_seqs: 1
+    readiness_timeout: 600
+
+  # Gemma 4, the two larger shapes. Same gemma4 template family as
+  # gemma-4-e4b, whose <|think|> reasoning split was verified live — these
+  # inherit that path rather than being probed for it individually.
+  # 26b-a4b is the MoE (A4B active) and the direct scale partner to e4b;
+  # 31b is dense and will decode considerably slower.
+  gemma-4-26b-a4b:
+    engine: mlx-vlm
+    model: mlx-community/gemma-4-26b-a4b-it-mxfp8
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    enable_thinking: true
+    supports_reasoning: true
+    max_num_seqs: 1
+    readiness_timeout: 600
+  nemotron-3-nano-30b-a3b:
+    engine: mlx-vlm
+    model: mlx-community/NVIDIA-Nemotron-3-Nano-30B-A3B-4bit
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    enable_thinking: true
+    supports_reasoning: true
+    max_num_seqs: 1
+    readiness_timeout: 600
+  nemotron-3.5-lightning-30b-a3b:
+    engine: mlx-vlm
+    model: mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-mxfp8
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    enable_thinking: true
+    supports_reasoning: true
+    max_num_seqs: 1
+    readiness_timeout: 600
+  muse-glimmer-30b-mxfp4:
+    engine: mlx-vlm
+    model: mlx-community/Muse-Glimmer-30B-mxfp4
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    supports_reasoning: true
+    reasoning_effort: medium
+    reasoning_effort_values: [high, medium, low, none]
+    max_num_seqs: 1
+    readiness_timeout: 600
+
+  # ── The Qwen3.8-27B quant pair: mxfp8 vs mxfp4, one variable ──────────────
+  # Registered 2026-09-01 to make the mx-format story a controlled comparison
+  # instead of two anecdotes.
+  #
+  # Why a "plain" mxfp8 twin exists at all when qwen3.8-27b-mxfp8-concurrent1
+  # already serves these exact weights: that alias carries an MTP DRAFTER and
+  # APC, and concurrent4 carries batching plus a thinking_budget. Speculative
+  # decoding changes decode throughput directly, which is the number the
+  # format question turns on, so reading a bare mxfp4 arm against concurrent1
+  # would confound quantization with speculative decoding. These two differ in
+  # the weights and nothing else.
+  #
+  # APC is dropped from both for symmetry rather than necessity: it caches
+  # shared prompt prefixes, so it moves PREFILL only — it cannot change which
+  # tokens are generated, and does not touch decode tok/s. Correct to control
+  # anyway, but it was never the confound.
+  #
+  # What this pair is for: both mxfp8 arms measured so far decode at 15.8
+  # tok/s while a 77 GiB affine 5-bit Nemotron manages 44-45, yet
+  # gemma-4-26b-a4b (mxfp8, A4B active) hits 77.9 — so the penalty tracks
+  # ACTIVE parameters, not the format alone.
+  #
+  # The split is sharp: the two DENSE mxfp8 arms measured (Qwen3.8-27B and
+  # Muse Glimmer 30B, whose text tower carries no MoE keys at all — 52 layers,
+  # hidden 6656, intermediate 19968) both sit at ~15.8 tok/s, while the two
+  # SPARSE ones fly. Qwen3.8-27B pays the tax in full, which makes it the
+  # sharpest place to ask what halving the bits buys. The Muse Glimmer pair
+  # asks the same of another dense model; this asks it at 27B.
+  qwen3.8-27b-mxfp8-plain:
+    engine: mlx-vlm
+    model: mlx-community/Qwen3.8-27B-mxfp8
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    enable_thinking: true
+    supports_reasoning: true
+    max_num_seqs: 1
+    readiness_timeout: 600
+  qwen3.8-27b-mxfp4:
+    engine: mlx-vlm
+    model: mlx-community/Qwen3.8-27B-mxfp4
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    enable_thinking: true
+    supports_reasoning: true
+    max_num_seqs: 1
+    readiness_timeout: 600
+
+  # ── Muse Glimmer 30B: the affine half of a 2x2 (format x bit-width) ───────
+  # With the two mx arms above this completes a controlled square on one dense
+  # model, one uploader, one corpus:
+  #
+  #            4 bits              8 bits
+  #   mx       mxfp4  17.27 GiB    mxfp8  30.27 GiB
+  #   affine   4bit   18.08 GiB    8bit   31.08 GiB
+  #
+  # Reading down a column isolates FORMAT at fixed bit-width; reading across a
+  # row isolates BIT-WIDTH at fixed format. The mxfp4/4bit pair is the sharpest
+  # of the four comparisons, since 17.27 vs 18.08 GiB is under a gigabyte apart
+  # — near-identical memory traffic with the packing scheme as the only
+  # meaningful variable.
+  #
+  # Worth having because the mx penalty measured today is a throughput finding
+  # with no accuracy half. Three dense mxfp8 arms sit at 13.9-15.9 tok/s while
+  # a same-family MoE at the same quant hits 77.9, and mxfp4 recovers 1.85x of
+  # that on this model — but nothing yet says whether mx or affine is BETTER
+  # per bit, which is the question that decides what to serve.
+  #
+  # Naming: the unsuffixed alias is the mxfp8 build and keeps its name for the
+  # committed run recorded under it. mx formats carry an mxfp prefix here,
+  # affine ones a plain bit name, matching the upstream repos.
+  muse-glimmer-30b-8bit:
+    engine: mlx-vlm
+    model: mlx-community/Muse-Glimmer-30B-8bit
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    supports_reasoning: true
+    reasoning_effort: medium
+    reasoning_effort_values: [high, medium, low, none]
+    max_num_seqs: 1
+    readiness_timeout: 600
+  muse-glimmer-30b-4bit:
+    engine: mlx-vlm
+    model: mlx-community/Muse-Glimmer-30B-4bit
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    supports_reasoning: true
+    reasoning_effort: medium
+    reasoning_effort_values: [high, medium, low, none]
+    max_num_seqs: 1
+    readiness_timeout: 600
+
+  # nemotron-3-super at LOW reasoning — the control arm for the biggest
+  # confound on the board. Registered 2026-09-02.
+  #
+  # Measured 2026-09-01: of 21 swept arms, Muse Glimmer is the ONLY one that
+  # reasons — ~1,650 characters on 100% of samples, while sixteen arms produce
+  # exactly zero. Its 90.9% is therefore a thinking-enabled result sitting in a
+  # thinking-disabled band, and its 6.2-point lead over nemotron-3-super (84.7%)
+  # cannot be read as a model difference until reasoning is controlled for.
+  #
+  # Same weights and same config as nemotron-3-super; a SECOND alias exists only
+  # because an alias carries one effort fragment, and canary sends "none" to the
+  # original. Everything else must stay identical or the pair measures two
+  # things at once.
+  #
+  # Why "low" rather than "high": Muse Glimmer at its floor still emits ~1,650
+  # characters, so the honest comparison is a modest reasoning budget, not a
+  # maximal one. nemotron is also genuinely gateable — unlike the flash-next
+  # arms its enable_thinking is structural — so "low" means what it says here.
+  muse-glimmer-30b-abliterated-mxfp4:
+    engine: mlx-vlm
+    model: shoemoney/Muse-Glimmer-30B-Abliterated-MLX-mxfp4
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    # Abliterated — refusal training surgically removed (Falcon-style:
+    # the 'refusal direction' zeroed in the residual stream, no
+    # instruction-following or reasoning change). Base is
+    # Blackfrost-AI/Muse-Glimmer-30B-Abliterated-BF16 via mlx-vlm;
+    # same Onyx ATEM channel (to=self→to=user) as the stock
+    # Muse-Glimmer aliases above.
+    supports_reasoning: true
+    reasoning_effort: medium
+    reasoning_effort_values: [high, medium, low, none]
+    max_num_seqs: 1
+    readiness_timeout: 600
+  # Qwen3.8-27B abliterated with BUNDLED MTP — native mtp.safetensors in the
+  # model repo (mtplx format), so draft_model points at the same path as
+  # model (--draft-model help: bundled-MTP checkpoints use the model path).
+  # Registered 2026-10-24 when muse-glimmer-30b-abliterated-mxfp4 proved
+  # unusable; small uploader (Shiftedx, ~325 downloads) — treat as trial.
+  # Abliteration = refusal direction zeroed, arch/tokenizer untouched, so
+  # the mxfp8 default alias's tuning notes (spec-decode vs batching tradeoff)
+  # should carry over at mxfp4 bit-width.
+  qwen3.8-27b-abliterated-mxfp4-mtp:
+    engine: mlx-vlm
+    model: Shiftedx/Qwen3.8-27B-Abliterated-MLX-MXFP4-MTP
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    draft_model: Shiftedx/Qwen3.8-27B-Abliterated-MLX-MXFP4-MTP
+    draft_kind: mtp
+    enable_thinking: true
+    supports_reasoning: true
+    reasoning_effort: medium
+    reasoning_effort_values: [high, medium, low, none]
+    max_num_seqs: 1
+    readiness_timeout: 600
+  nemotron-3-super-low:
+    engine: mlx-vlm
+    model: mlx-community/NVIDIA-Nemotron-3-Super-120B-A12B-5bit
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    enable_thinking: true
+    supports_reasoning: true
+    max_num_seqs: 1
+    readiness_timeout: 600
