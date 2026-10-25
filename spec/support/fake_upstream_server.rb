@@ -17,16 +17,20 @@ module FakeUpstreamServer
   # A single-connection raw TCP fake upstream. The caller scripts the
   # response by hand (status line, headers, chunked body) after the request
   # head has been drained, then can observe whether the gateway closed the
-  # connection (the cancellation signal optiq relies on).
+  # connection (the cancellation signal optiq relies on). I06: the drained
+  # request head (request line + headers) is exposed via last_head so specs
+  # can assert on the upstream wire — e.g. the streaming leg's authorization
+  # header discipline.
   class RawUpstream
     def initialize(task)
       @task         = task
       @server       = TCPServer.new("127.0.0.1", 0)
       @port         = @server.local_address.ip_port
       @accept_tasks = []
+      @last_head    = nil
     end
 
-    attr_reader :port
+    attr_reader :port, :last_head
 
     def base_url
       "http://127.0.0.1:#{@port}"
@@ -39,7 +43,7 @@ module FakeUpstreamServer
     def accept
       @accept_tasks << @task.async do
         sock = @server.accept
-        drain_request_head(sock)
+        @last_head = drain_request_head(sock)
         yield sock
       end
     end
@@ -125,11 +129,15 @@ module FakeUpstreamServer
     )
   end
 
-  def make_app(upstream_client:)
+  def make_app(upstream_client: nil, raw_streamer: nil)
     registry   = fixture_registry
     supervisor = FakeSupervisor.new("diffusiongemma", "http://unused")
     controller = SpaceInferenceGateway::ModelController.new(registry: registry, supervisor: supervisor)
-    SpaceInferenceGateway::App.new(upstream_client: upstream_client, controller: controller)
+    SpaceInferenceGateway::App.new(
+      upstream_client: upstream_client,
+      raw_streamer:    raw_streamer,
+      controller:      controller,
+    )
   end
 
   # Boot a Falcon/Rack proxy on an ephemeral port using pre-bound sockets.

@@ -66,6 +66,14 @@ a `fast-messages` sibling gem, never in-gateway synthesis again.
 `ErrorRelay::Oai` and the `llamacpp` fixtures are retained so a future
 true-OAI engine (e.g. llama-server) can slot back in without archaeology.
 
+The streaming completions leg rides `fast-completions`' raw surface
+(`Client#raw_stream` via `RawCompletionsStreamer`, 2026-10 — BRIEF §3):
+one SSE codec and one wire discipline, shared with pi. Raw body in, parsed
+SSE events out, no chat accumulation, no auto-retry, parameterized watchdog
+(TTFB + per-chunk inactivity re-arm). The control plane and the buffered
+non-stream path stay on the internal `UpstreamClient` — out of the gem's
+charter by design.
+
 Engine quirks are absorbed at this seam too, invisibly to clients: mlx
 validates the request's `model` field (and would try to fetch unknown names
 from Hugging Face), so the gateway rewrites it to the loaded HF repo id; mlx
@@ -186,10 +194,10 @@ exist purely to keep long generations alive and observable:
 - **Stream lifetime is the unit of accounting.** Falcon consumes a streaming
   body lazily *after* the handler returns, so the in-flight generation count
   is held from stream open until the body's idempotent `close` — teardown
-  closes upstream response before client (so pool drain doesn't hang),
-  observes duration, and releases the counter exactly once. Getting this
-  wrong (the count dropping to zero before relay) was a real regression
-  caught and fixed during the build.
+  aborts the raw-stream session (which closes the upstream response before
+  the client, so pool drain doesn't hang), observes duration, and releases
+  the counter exactly once. Getting this wrong (the count dropping to zero
+  before relay) was a real regression caught and fixed during the build.
 - **The pipe trick.** The normalizer drains in a scheduler fiber writing to
   an `IO.pipe`, and the Rack body reads it with `IO.select` timeouts —
   because Falcon drives the body from an Enumerator fiber where

@@ -3,9 +3,12 @@
 require_relative "../support/fake_upstream_server"
 
 # UpstreamClient timeout split (I05 AC4): the buffered (#call) path and the
-# streaming (#open_stream) path used to share UPSTREAM_IDLE_TIMEOUT — this
-# drives both against a real in-process raw-socket fake upstream (no
-# mock/stub of UpstreamClient) to prove they're independently configured.
+# streaming path used to share UPSTREAM_IDLE_TIMEOUT — the buffered path is
+# driven here against a real in-process raw-socket fake upstream (no
+# mock/stub of UpstreamClient) to prove it is independently configured.
+# I06: the streaming leg moved to RawCompletionsStreamer (its idle-gap re-arm
+# coverage lives in raw_completions_streamer_spec + stream_lifecycle_spec);
+# UpstreamClient keeps #call — the control plane and buffered non-stream path.
 RSpec.describe SpaceInferenceGateway::UpstreamClient do
   include FakeUpstreamServer
 
@@ -65,48 +68,6 @@ RSpec.describe SpaceInferenceGateway::UpstreamClient do
 
         expect(status).to eq(200)
       ensure
-        upstream.stop
-      end
-    end
-  end
-
-  describe "#open_stream uses the idle-gap timeout, not the buffered one" do
-    it "times out mid-stream on a short idle_timeout despite a long buffered_timeout" do
-      @task.with_timeout(5) do
-        upstream = FakeUpstreamServer::RawUpstream.new(@task)
-        upstream.accept do |sock|
-          sse_headers(sock)
-          http_chunk(sock, "data: {}\n\n")
-          @task.sleep(60) # headers + one chunk arrive, then stall
-        end
-
-        client = described_class.new(base_url: upstream.base_url, idle_timeout: 0.3, buffered_timeout: 1800)
-        response, http_client = client.open_stream("/v1/chat/completions", "{}")
-
-        expect(response.status).to eq(200)
-        expect { @task.with_timeout(2) { response.read } }.to raise_error(IO::TimeoutError)
-      ensure
-        http_client&.close
-        upstream.stop
-      end
-    end
-
-    it "does not time out within a long idle_timeout despite a short buffered_timeout" do
-      @task.with_timeout(5) do
-        upstream = FakeUpstreamServer::RawUpstream.new(@task)
-        upstream.accept do |sock|
-          sse_headers(sock)
-          http_chunk(sock, "data: {}\n\n")
-          end_chunks(sock)
-        end
-
-        client = described_class.new(base_url: upstream.base_url, idle_timeout: 30, buffered_timeout: 0.1)
-        response, http_client = client.open_stream("/v1/chat/completions", "{}")
-
-        expect(response.status).to eq(200)
-        expect(response.read).to include("data: {}")
-      ensure
-        http_client&.close
         upstream.stop
       end
     end

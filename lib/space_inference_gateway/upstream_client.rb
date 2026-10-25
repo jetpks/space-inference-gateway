@@ -9,9 +9,9 @@ module SpaceInferenceGateway
   class UpstreamClient
     # Per-socket-operation (idle-gap) timeout, not a whole-request deadline: it
     # resets on every successful read/write, so a stream that keeps emitting
-    # tokens never times out. Applied via Async::HTTP::Endpoint's timeout:
-    # option, which sets IO#timeout= on the connection socket. Governs
-    # #open_stream only — see UPSTREAM_BUFFERED_TIMEOUT for the buffered path.
+    # tokens never times out. Feeds the streaming leg's inactivity deadline on
+    # RawCompletionsStreamer (I06) — UPSTREAM_BUFFERED_TIMEOUT governs the
+    # buffered path below.
     #
     # Sized to cover a full-context prefill, not a token gap: the engine emits
     # zero bytes until prefill completes, so an entire prefill counts as one
@@ -23,19 +23,18 @@ module SpaceInferenceGateway
     UPSTREAM_IDLE_TIMEOUT = Integer(ENV.fetch("UPSTREAM_IDLE_TIMEOUT", "1400"))
 
     # Wall-clock bound on waiting for the upstream's response status line +
-    # headers in #open_stream (streaming opens only) — enforced via
-    # Async::Task#with_timeout, independent of the socket-level idle timeout
-    # above. A zombied engine child accepts the TCP connection but its
-    # generation thread has died, so it never writes a response; this bound
-    # catches that quickly instead of waiting out the full idle-gap window.
-    # Once headers arrive, UPSTREAM_IDLE_TIMEOUT resumes governing mid-stream
-    # gaps as before.
+    # headers on the streaming leg — now the fast-completions raw surface's
+    # ttfb deadline (I06), same semantics: a zombied engine child accepts the
+    # TCP connection but its generation thread has died, so it never writes a
+    # response; this bound catches that quickly instead of waiting out the
+    # full idle-gap window. Once headers arrive, UPSTREAM_IDLE_TIMEOUT
+    # resumes governing mid-stream gaps as before.
     UPSTREAM_HEADERS_TIMEOUT = Integer(ENV.fetch("UPSTREAM_HEADERS_TIMEOUT", "300"))
 
     # End-to-end deadline for #call's buffered (non-streaming) path: its
     # upstream headers arrive only after full generation, so unlike the
     # idle-gap timeout above this bounds the whole request, not a per-read
-    # gap. Independent of it — a wedged mid-stream #open_stream connection is
+    # gap. Independent of it — a wedged mid-stream streaming connection is
     # still killed by UPSTREAM_IDLE_TIMEOUT after 1400s, not this one. 1800
     # matches canary's own STUDIO_READ_TIMEOUT.
     UPSTREAM_BUFFERED_TIMEOUT = Integer(ENV.fetch("UPSTREAM_BUFFERED_TIMEOUT", "1800"))
@@ -62,18 +61,6 @@ module SpaceInferenceGateway
       [e.message, 502, {}]
     ensure
       client&.close
-    end
-
-    # Opens a streaming request without buffering the body.
-    # Returns [response, client]; caller MUST close the response then the client when done.
-    def open_stream(path, body_str)
-      client   = build_client(@idle_timeout)
-      request  = build_request("POST", path, body_str)
-      response = Async::Task.current.with_timeout(@headers_timeout) { client.call(request) }
-      [response, client]
-    rescue StandardError
-      client&.close
-      raise
     end
 
     private

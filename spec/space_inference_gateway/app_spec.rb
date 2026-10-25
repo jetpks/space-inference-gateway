@@ -103,6 +103,36 @@ RSpec.describe SpaceInferenceGateway::App do
       expect(roles).to eq(%w[system user])
     end
 
+    it "folds max_completion_tokens into max_tokens (mlx engines read only max_tokens)" do
+      # Ported from prod f17acc5 (I06): modern OAI clients (pi included) send
+      # max_completion_tokens; mlx-vlm's schema only reads max_tokens and
+      # silently defaults to 2048 when it's missing — xhigh thinking exhausts
+      # that before the answer begins.
+      body = JSON.generate({
+                             model: "qwen3-35b-a3b",
+        messages: [{ role: "user", content: "hi" }],
+        max_completion_tokens: 4096,
+                           })
+      post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
+      expect(last_response.status).to eq(200)
+      sent = JSON.parse(forwarded.first[:body])
+      expect(sent["max_tokens"]).to eq(4096)
+      expect(sent.key?("max_completion_tokens")).to be false
+    end
+
+    it "an explicit max_tokens always wins — max_completion_tokens is not folded over it" do
+      body = JSON.generate({
+                             model: "qwen3-35b-a3b",
+        messages: [{ role: "user", content: "hi" }],
+        max_completion_tokens: 100,
+        max_tokens: 7,
+                           })
+      post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
+      sent = JSON.parse(forwarded.first[:body])
+      expect(sent["max_tokens"]).to eq(7)
+      expect(sent["max_completion_tokens"]).to eq(100)
+    end
+
     it "injects the registry stop_tokens for the default mlx model (hermes-4)" do
       body = JSON.generate({ model: "hermes-4-70b", messages: [{ role: "user", content: "hi" }] })
       post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"

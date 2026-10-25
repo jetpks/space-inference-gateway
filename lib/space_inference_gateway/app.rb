@@ -7,6 +7,7 @@ require_relative "oai_normalizer"
 require_relative "model_registry"
 require_relative "model_controller"
 require_relative "upstream_client"
+require_relative "raw_completions_streamer"
 require_relative "inference_server_supervisor"
 require_relative "error_relay"
 
@@ -25,11 +26,11 @@ module SpaceInferenceGateway
     KEEPALIVE_COMMENT = ": keepalive\n\n"
 
     # Streaming Rack body for SSE generation paths.
-    # Owns the upstream HTTP client and closes it when the body is done.
+    # Owns the raw-stream session and closes it when the body is done.
     # on_close is called once on first close (generation lifetime hook).
     #
-    # The upstream normalizer is drained in a fiber-scheduler fiber and its
-    # chunks are written to an IO pipe. #each reads from the pipe with a
+    # The session's drain task normalizes raw-surface events and writes the
+    # downstream SSE bytes to an IO pipe. #each reads from the pipe with a
     # KEEPALIVE_INTERVAL timeout via IO.select, yielding an SSE comment
     # (`: keepalive\n\n`) on timeout. This keeps the client's HTTP idle timer
     # from tripping while the upstream is silent — e.g. optiq spends minutes in
@@ -43,28 +44,9 @@ module SpaceInferenceGateway
     # `to_enum(:each).next`, which runs #each in a separate Enumerator fiber
     # where Async::Task.current is unavailable. IO.select and Fiber.scheduler
     # work in any fiber on the scheduler's thread.
-    StreamBody = Struct.new(:response, :client, :normalizer, :on_close, :t0, :observer) do
+    StreamBody = Struct.new(:session, :on_close, :t0, :observer) do
       def each
-        read_io, write_io = IO.pipe
-        @read_io  = read_io
-        @write_io = write_io
-
-        # Drain the upstream normalizer in a scheduled fiber. Chunks are
-        # written to the pipe; closing the write end on exit signals EOF.
-        # An idle-gap timeout mid-stream (upstream silent past
-        # UPSTREAM_IDLE_TIMEOUT) surfaces as IO::TimeoutError here — counted
-        # separately from a downstream-abandon close (plain IOError) so it's
-        # observable in /metrics even though the SSE stream, already 200'd,
-        # can only end silently rather than carry a 5xx.
-        Fiber.scheduler.fiber do
-          normalizer.stream_to_sse(response.body, observer: observer) { |chunk| write_io.write(chunk) }
-        rescue IO::TimeoutError
-          Metrics::UPSTREAM_ERRORS.increment(labels: { status: "504" })
-        rescue StandardError
-          nil
-        ensure
-          write_io.close unless write_io.closed?
-        end
+        read_io = session.read_io
 
         # Read from the pipe with a keepalive timeout. IO.select is
         # fiber-scheduler-aware and does not block the reactor.
@@ -86,21 +68,19 @@ module SpaceInferenceGateway
         read_io.close unless read_io.closed?
       end
 
-      # Single idempotent teardown: upstream response closed before client (so
-      # client#close's pool-drain wait returns promptly instead of hanging on
-      # the still-checked-out connection), both pipe ends closed, duration
-      # observed, and the generation counter released — exactly once. The
-      # counter release runs under ensure (AC8): a raise anywhere above it
-      # (response/client close, metrics) must not leak @active_generations.
+      # Single idempotent teardown: the raw-stream session aborted and both
+      # pipe ends closed (the session owns the upstream connection — closing
+      # it is the downstream-abandon signal the engine relies on to cancel
+      # generation), duration observed, and the generation counter released —
+      # exactly once. The counter release runs under ensure (AC8): a raise
+      # anywhere above it (session close, metrics) must not leak
+      # @active_generations.
       def close
         return if @closed
 
         @closed = true
         begin
-          response.close
-          client&.close
-          @read_io&.close unless @read_io&.closed?
-          @write_io&.close unless @write_io&.closed?
+          session.close
           Metrics::REQUEST_DURATION.observe(
             Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0,
             labels: { stream: "true" },
@@ -114,13 +94,17 @@ module SpaceInferenceGateway
     private_constant :StreamBody
 
     # upstream_fn:     optional (path, body) => [body, status, headers] — legacy test seam.
-    # upstream_client: optional UpstreamClient — injected test seam; wins over default.
+    # upstream_client: optional UpstreamClient — injected test seam; wins over default
+    #                  (control plane + buffered path).
+    # raw_streamer:    optional RawCompletionsStreamer — injected test seam; wins over
+    #                  default (streaming completions leg, I06/BRIEF §3).
     # controller:      optional ModelController — built from config/models.yml when omitted.
     # error_relay:     optional ErrorRelay::Oai/Mlx instance — injected for testing.
-    def initialize(upstream_fn: nil, upstream_client: nil, controller: nil, error_relay: nil)
+    def initialize(upstream_fn: nil, upstream_client: nil, raw_streamer: nil, controller: nil, error_relay: nil)
       @upstream_fn     = upstream_fn
       @controller      = controller || build_default_controller
       @upstream_client = upstream_client || UpstreamClient.new(base_url: -> { @controller.base_url })
+      @raw_streamer    = raw_streamer || RawCompletionsStreamer.new(base_url: -> { @controller.base_url })
       @error_relay     = error_relay || default_error_relay
       @advertised_model = ADVERTISED_MODEL
     end
@@ -183,7 +167,7 @@ module SpaceInferenceGateway
 
       if streaming && @upstream_fn.nil?
         record_request_accepted(streaming: streaming)
-        return open_stream("/v1/chat/completions", body_str, normalizer, t0: t0)
+        return open_stream(body_str, normalizer, t0: t0)
       end
 
       result = nil
@@ -265,25 +249,41 @@ module SpaceInferenceGateway
     # call succeeded. This method owns the matching end_generation: once
     # (immediately below, on any non-success exit) or later, via StreamBody's
     # on_close, if the stream opens successfully.
-    def open_stream(path, body_str, normalizer, t0:)
+    #
+    # I06: the streaming leg rides the fast-completions raw surface via
+    # @raw_streamer. The seam blocks until the upstream status is decided and
+    # the first normalized chunk is in the pipe (so the 200-vs-error relay
+    # split stays observable downstream exactly as before), then raises the
+    # raw surface's own errors for the rescue ladder below — the phase-named
+    # TimeoutError (TTFB watchdog) and ApiError (non-2xx, carrying status +
+    # body for the relay) map onto the same responses the UpstreamClient
+    # errors used to. The observer is created up front (its taps fire during
+    # the open gate) and closed on failure so GENERATION_PHASE stays net-zero.
+    def open_stream(body_str, normalizer, t0:)
       succeeded = false
-      response, client = @upstream_client.open_stream(path, body_str)
-      @controller.note_generation_success
-      if response.status == 200
-        observer  = GenerationObserver.new(t0: t0)
-        on_close  = -> { @controller.end_generation }
+      observer  = GenerationObserver.new(t0: t0)
+      begin
+        session = @raw_streamer.open(body_str, normalizer: normalizer, observer: observer)
+        @controller.note_generation_success
+        on_close = -> { @controller.end_generation }
         succeeded = true
-        [200, SSE_HEADERS.dup, StreamBody.new(response, client, normalizer, on_close, t0, observer)]
-      else
-        @error_relay.relay(response.status, response.read.tap { client.close })
+        [200, SSE_HEADERS.dup, StreamBody.new(session, on_close, t0, observer)]
+      rescue Fast::Completions::ApiError => e
+        # A non-2xx response still proves the engine child is alive (headers
+        # arrived) — the zombie-watchdog streak resets on it, exactly as the
+        # pre-adoption open_stream did (note_generation_success ran on any
+        # response before the status split).
+        @controller.note_generation_success
+        @error_relay.relay(e.status, e.body)
+      rescue Fast::Completions::TimeoutError => e
+        @controller.note_generation_failure
+        @error_relay.relay(504, e.message)
+      rescue StandardError
+        upstream_error(502)
+      ensure
+        observer.close unless succeeded
+        @controller.end_generation unless succeeded
       end
-    rescue IO::TimeoutError, Async::TimeoutError => e
-      @controller.note_generation_failure
-      @error_relay.relay(504, e.message)
-    rescue StandardError
-      upstream_error(502)
-    ensure
-      @controller.end_generation unless succeeded
     end
 
     def call_upstream(path, body_str)
@@ -448,6 +448,14 @@ module SpaceInferenceGateway
       entry  = @controller.registry.resolve(model_alias) ||
                @controller.registry.resolve(@controller.registry.default_alias)
       parsed["model"] = mlx_model_id(model_alias) if %w[mlx mlx-vlm].include?(entry&.fetch(:engine, nil))
+      # Modern OAI clients (pi included) send max_completion_tokens; mlx-vlm's
+      # schema only reads max_tokens and silently defaults to 2048 when it's
+      # missing — xhigh thinking exhausts that before the answer begins. Fold
+      # the modern field into the engine's; an explicit max_tokens always wins.
+      # (Ported from prod f17acc5, I06.)
+      if parsed.key?("max_completion_tokens") && !parsed.key?("max_tokens")
+        parsed["max_tokens"] = parsed.delete("max_completion_tokens")
+      end
       (parsed["messages"] || []).each { |m| m["role"] = "system" if m["role"] == "developer" }
       inject_mlx_stop_tokens(parsed, model_alias)
       JSON.generate(parsed)

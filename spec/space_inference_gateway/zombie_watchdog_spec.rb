@@ -235,8 +235,8 @@ RSpec.describe "Zombie watchdog (I04 AC3)" do
             @task.sleep(60) # headers + one chunk arrive, then stall
           end
 
-          upstream_client = SpaceInferenceGateway::UpstreamClient.new(base_url: upstream.base_url, idle_timeout: 0.3)
-          app = SpaceInferenceGateway::App.new(upstream_client: upstream_client, controller: controller)
+          streamer = SpaceInferenceGateway::RawCompletionsStreamer.new(base_url: upstream.base_url, idle_timeout: 0.3)
+          app = SpaceInferenceGateway::App.new(raw_streamer: streamer, controller: controller)
           proxy_port, proxy_task, proxy_bound = boot_proxy(app)
           client = client_for(proxy_port)
           body = JSON.generate({ model: "diffusiongemma", messages: [], stream: true })
@@ -287,10 +287,10 @@ RSpec.describe "Zombie watchdog (I04 AC3)" do
           upstream = FakeUpstreamServer::RawUpstream.new(@task)
           upstream.accept { |_sock| @task.sleep(60) } # request 1: never responds
 
-          zombie_client = SpaceInferenceGateway::UpstreamClient.new(
+          zombie_streamer = SpaceInferenceGateway::RawCompletionsStreamer.new(
             base_url: upstream.base_url, idle_timeout: 10, headers_timeout: 0.3,
           )
-          app = SpaceInferenceGateway::App.new(upstream_client: zombie_client, controller: controller)
+          app = SpaceInferenceGateway::App.new(raw_streamer: zombie_streamer, controller: controller)
           proxy_port, proxy_task, proxy_bound = boot_proxy(app)
           client = client_for(proxy_port)
           body = JSON.generate({ model: "zombie-test", messages: [], stream: true })
@@ -315,10 +315,10 @@ RSpec.describe "Zombie watchdog (I04 AC3)" do
 
           # Interleaved success — point directly at the (real, restarted)
           # child, whose canned response resets the streak.
-          healthy_client = SpaceInferenceGateway::UpstreamClient.new(
+          healthy_streamer = SpaceInferenceGateway::RawCompletionsStreamer.new(
             base_url: supervisor.base_url, idle_timeout: 10, headers_timeout: 5,
           )
-          healthy_app = SpaceInferenceGateway::App.new(upstream_client: healthy_client, controller: controller)
+          healthy_app = SpaceInferenceGateway::App.new(raw_streamer: healthy_streamer, controller: controller)
           healthy_port, healthy_task, healthy_bound = boot_proxy(healthy_app)
           healthy_http = client_for(healthy_port)
           resp3 = healthy_http.post("/v1/chat/completions", [["content-type", "application/json"]], body)

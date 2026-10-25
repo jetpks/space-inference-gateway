@@ -91,6 +91,8 @@ GEM
       protocol-http (~> 0.31)
       protocol-rack (~> 0.7)
       samovar (~> 2.3)
+    fast-completions (0.6.0)
+      async-http (~> 0.95)
     fast-prometheus (0.4.0)
       async (>= 2.38)
       async-grpc (~> 0.7)
@@ -203,6 +205,7 @@ DEPENDENCIES
   dry-monads (~> 1.10)
   dry-schema (~> 1.16)
   falcon (~> 0.55)
+  fast-completions (~> 0.6)
   fast-prometheus (~> 0.4)
   rack (~> 3.0)
   rack-test (~> 2.1)
@@ -238,6 +241,7 @@ CHECKSUMS
   dry-schema (1.16.0) sha256=cd3aaeabc0f1af66ec82a29096d4c4fb92a0a58b9dae29a22b1bbceb78985727
   dry-types (1.9.1) sha256=baebeecdb9f8395d6c9d227b62011279440943e3ef2468fe8ccc1ba11467f178
   falcon (0.57.0) sha256=c9b060bc23a3b90a80376078aae037d8f48e0b2f12f5f30f360d4b29d7baf0f7
+  fast-completions (0.6.0) sha256=f436fcf1e9000c4e08228517e66d8edc58b0a9cd61f6cec9c10769e1dffe8b77
   fast-prometheus (0.4.0) sha256=bdfde3347b933371c547e903b20945d7e28b3c97b1694b57e13fde78d0ad3bb1
   fast-protowire (0.3.0) sha256=f0fae7e87ee6a7784ca98a92e1c8d9c197647fb69f2cf0133725dec577220877
   fiber-annotation (0.2.0) sha256=7abfadf1d119f508867d4103bf231c0354d019cc39a5738945dec2edadaf6c03
