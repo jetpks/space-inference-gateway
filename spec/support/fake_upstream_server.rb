@@ -117,6 +117,8 @@ module FakeUpstreamServer
     def start(_alias_name) = Success(nil)
     def stop = nil
     def swap(to:) = Success(to)
+    # The metrics gauge polls the live child's pid; a fake has none.
+    def pid = nil
   end
 
   def fixture_registry
@@ -138,6 +140,32 @@ module FakeUpstreamServer
       raw_streamer:    raw_streamer,
       controller:      controller,
     )
+  end
+
+  # App-level fixture wiring for the rack/test specs (app/metrics/telemetry):
+  # a registry decoupling them from the production config/models.yml. Binding a
+  # behaviour spec to a shipped alias breaks the spec when ops tunes the
+  # registry — the lesson the sampling-penalty specs learned the hard way.
+  # These aliases are the suite's own; none is a live arm. qwen3-35b-a3b and
+  # hermes-4-70b sit on the legacy mlx engine deliberately: the engine-rewrite
+  # specs need mlx arms, and the production fleet no longer carries any.
+  def app_fixture_registry
+    SpaceInferenceGateway::ModelRegistry.new(
+      "default" => "qwen3.8-flash-next-oq3",
+      "models"  => {
+        "qwen3.8-flash-next-oq3" => { "engine" => "mlx-vlm", "model" => "fixture/flash-next", "port" => 8080 },
+        "qwen3.8-27b-mxfp8-concurrent1" => { "engine" => "mlx-vlm", "model" => "mlx-community/Qwen3.8-27B-mxfp8", "port" => 8080 },
+        "qwen3-35b-a3b" => { "engine" => "mlx", "model" => "mlx-community/Qwen3.5-35B-A3B-4bit", "port" => 8080 },
+        "hermes-4-70b" => { "engine" => "mlx", "model" => "fixture/hermes", "port" => 8080,
+                                             "stop_tokens" => ["<|eot_id|>"], },
+        "qwen3-27b-optiq" => { "engine" => "optiq", "model" => "fixture/optiq", "port" => 8081 },
+      },
+    )
+  end
+
+  def app_fixture_controller
+    supervisor = FakeSupervisor.new("qwen3.8-flash-next-oq3", "http://unused")
+    SpaceInferenceGateway::ModelController.new(registry: app_fixture_registry, supervisor: supervisor)
   end
 
   # Boot a Falcon/Rack proxy on an ephemeral port using pre-bound sockets.

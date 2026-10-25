@@ -7,6 +7,7 @@ require "async/semaphore"
 require "async/process/child"
 require "dry/monads"
 require_relative "metrics"
+require_relative "mlx_vlm_flags"
 
 module SpaceInferenceGateway
   class InferenceServerSupervisor
@@ -119,14 +120,10 @@ module SpaceInferenceGateway
     end
 
     # APC, thinking_budget and max_num_seqs all have no CLI flag on mlx-vlm —
-    # environment-only, so an entry declaring none of them leaves the
-    # child's environment unchanged.
-    def build_env(entry)
-      { "APC_ENABLED" => (entry[:apc_enabled] ? "1" : nil),
-        "APC_EXACT_CACHE_ENTRIES" => entry[:apc_exact_cache_entries]&.to_s,
-        "MLX_VLM_THINKING_BUDGET" => entry[:thinking_budget]&.to_s,
-        "MLX_VLM_MAX_NUM_SEQS" => entry[:max_num_seqs]&.to_s, }.compact
-    end
+    # environment-only, so an entry declaring none of them leaves the child's
+    # environment unchanged. The mapping lives with the rest of that engine's
+    # vocabulary; this stays as the supervisor's seam onto it.
+    def build_env(entry) = MlxVlmFlags.env_for(entry)
 
     def build_mlx_argv(entry)
       argv = [entry[:venv].to_s, "-m", "mlx_lm.server",
@@ -161,6 +158,7 @@ module SpaceInferenceGateway
       argv << "--enable-thinking" if entry[:enable_thinking]
       argv += ["--draft-model", entry[:draft_model].to_s] if entry[:draft_model]
       argv += ["--draft-kind",  entry[:draft_kind].to_s]  if entry[:draft_kind]
+      argv += MlxVlmFlags.tuning_argv(entry)
       argv += Array(entry[:extra_args])
       argv
     end

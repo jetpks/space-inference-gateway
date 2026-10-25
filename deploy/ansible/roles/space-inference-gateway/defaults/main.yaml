@@ -23,7 +23,7 @@ mlx_venv: "{{ ansible_facts.env.HOME }}/.venv-vllm-metal"
 mlx_vlm_venv: "{{ ansible_facts.env.HOME }}/.venv-mlx-vlm"
 mlx_optiq_version: "0.3.5"
 mlx_lm_version: "0.31.3"
-mlx_vlm_version: "0.6.13"
+mlx_vlm_version: "0.7.10"
 
 # --- MTP drafter ---
 # The speculative-decoding drafter for the mlx-vlm alias, passed to the engine

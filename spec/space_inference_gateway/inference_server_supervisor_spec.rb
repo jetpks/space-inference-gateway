@@ -244,6 +244,42 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
 
   # ── AC4 — environment derived from the registry entry ────────────────────
 
+  describe "#build_argv — mlx-vlm tuning flags" do
+    let(:tunable) do
+      {
+        engine: "mlx-vlm",
+        venv:   "/home/user/.venv-mlx-vlm/bin/mlx_vlm.server",
+        model:  "Vontra/Qwen3.8-Flash-Next-MLX-oQ3-MTP",
+        port:   8080,
+      }
+    end
+
+    it "emits nothing extra when no tuning key is declared" do
+      expect(supervisor.send(:build_argv, tunable)).to eq([
+                                                            "/home/user/.venv-mlx-vlm/bin/mlx_vlm.server",
+                                                            "--model", "Vontra/Qwen3.8-Flash-Next-MLX-oQ3-MTP",
+                                                            "--host", "127.0.0.1",
+                                                            "--port", "8080",
+                                                          ])
+    end
+
+    it "emits the kv-cache and context knobs in a stable order" do
+      argv = supervisor.send(:build_argv,
+                             tunable.merge(kv_bits: 4, kv_quant_scheme: "uniform", max_kv_size: 131_072),)
+      expect(argv.last(6)).to eq(["--max-kv-size", "131072", "--kv-bits", "4", "--kv-quant-scheme", "uniform"])
+    end
+
+    it "emits quantized_kv_start: 0 rather than dropping it as falsey" do
+      argv = supervisor.send(:build_argv, tunable.merge(quantized_kv_start: 0))
+      expect(argv.last(2)).to eq(["--quantized-kv-start", "0"])
+    end
+
+    it "keeps extra_args last so an operator override still wins" do
+      argv = supervisor.send(:build_argv, tunable.merge(kv_bits: 4, extra_args: ["--kv-bits", "8"]))
+      expect(argv.last(2)).to eq(["--kv-bits", "8"])
+    end
+  end
+
   describe "#build_env (AC4)" do
     it "maps apc_enabled and apc_exact_cache_entries to APC_ENABLED and APC_EXACT_CACHE_ENTRIES" do
       entry = { engine: "mlx-vlm", apc_enabled: true, apc_exact_cache_entries: 16 }
@@ -297,11 +333,11 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
       expect(registry.resolve("no-such-model")).to be_nil
     end
 
-    it "config/models.yml has qwen3.8-27b-mxfp8-concurrent1 default and carries mlx + optiq + mlx-vlm aliases" do
+    it "config/models.yml has qwen3.8-27b-mxfp8-concurrent1 default and carries optiq + mlx-vlm aliases" do
       loaded = SpaceInferenceGateway::ModelRegistry.load
       expect(loaded.default_alias).to eq("qwen3.8-27b-mxfp8-concurrent1")
       expect(loaded.aliases).to include("qwen3.8-27b-mxfp8-concurrent1", "qwen3.8-27b-mxfp8-concurrent4",
-                                        "qwen3-27b-optiq", "hermes-4-70b", "qwen3-122b-a10b", "qwen3-35b-a3b",)
+                                        "qwen3-27b-optiq", "qwen3-122b-a10b", "qwen3-35b-a3b",)
 
       optiq_entry = loaded.resolve("qwen3-27b-optiq")
       expect(optiq_entry[:engine]).to eq("optiq")
@@ -310,10 +346,6 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
       expect(optiq_entry[:mtp]).to eq(true)
       expect(optiq_entry[:mtp_depth]).to eq(2)
       expect(optiq_entry[:max_concurrent]).to eq(8)
-
-      mlx_entry = loaded.resolve("qwen3-122b-a10b")
-      expect(mlx_entry[:engine]).to eq("mlx")
-      expect(mlx_entry[:model]).to be_a(String)
 
       concurrent1 = loaded.resolve("qwen3.8-27b-mxfp8-concurrent1")
       expect(concurrent1[:engine]).to eq("mlx-vlm")
@@ -334,6 +366,149 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
       expect(concurrent4[:draft_kind]).to be_nil
       expect(concurrent4[:max_num_seqs]).to eq(4)
       expect(concurrent4[:thinking_budget]).to eq(512)
+    end
+
+    # Thinking is a two-field contract on mlx-vlm and it is easy to get half
+    # right: enable_thinking is the LAUNCH flag (absent = off for the whole
+    # child), supports_reasoning is what routes the output. An alias with one
+    # and not the other is misconfigured in a way no request-level assertion
+    # would catch — thinking that never happens, or thinking that leaks into
+    # content — so they are asserted together, per alias.
+    it "enables thinking on every alias whose template supports it" do
+      loaded = SpaceInferenceGateway::ModelRegistry.load
+
+      # No live arm sits on the legacy mlx engine any more (the fleet finished
+      # its move to mlx-vlm); the engine stays supported in code, and the
+      # app-level rewrite specs exercise it against fixture arms.
+
+      %w[nemotron-3-super qwen3-122b-a10b qwen3-35b-a3b
+         qwen3.6-35b-a3b-4bit qwen3.6-35b-a3b-8bit
+         qwen3.5-9b gemma-4-e4b
+         gemma-4-26b-a4b
+         nemotron-3-nano-30b-a3b nemotron-3.5-lightning-30b-a3b
+         nemotron-3-super-low].each do |name|
+        entry = loaded.resolve(name)
+        expect(entry[:engine]).to eq("mlx-vlm"), "#{name} left the mlx-vlm engine"
+        expect(entry[:enable_thinking]).to eq(true), "#{name} would launch with thinking off"
+        expect(entry[:supports_reasoning]).to eq(true), "#{name} would leak reasoning into content"
+      end
+
+      # The non-thinking control: devstral-small-2-24b carries no thinking
+      # channel at all, so enable_thinking must stay ABSENT rather than false —
+      # absence is how mlx-vlm is told, and a false here would read as a knob
+      # someone chose rather than a channel that does not exist. gemma-4-e4b
+      # above is the counterexample that makes this worth asserting: it IS a
+      # thinking model despite having no <think> tag.
+      # muse-glimmer-30b is the case that proves these two fields are genuinely
+      # independent, so it is asserted apart from both groups. It IS a
+      # reasoning model — supports_reasoning routes the reasoning_content
+      # mlx-vlm splits out of its to=self channel — but its template reads no
+      # enable_thinking at all: reasoning there is a system-prompt instruction
+      # ("Reasoning strength: high."), so the launch flag would be inert.
+      # Both Muse Glimmer quants: same template, so the same contract. The
+      # mxfp4 copy exists to measure what survives 4 bits, and it would be a
+      # silent confound if the two arms differed in anything but the weights.
+      %w[muse-glimmer-30b muse-glimmer-30b-mxfp4
+         muse-glimmer-30b-8bit muse-glimmer-30b-4bit].each do |name|
+        muse = loaded.resolve(name)
+        expect(muse[:supports_reasoning]).to eq(true), "#{name} would leak reasoning into content"
+        expect(muse[:enable_thinking]).to be_nil, "#{name} declares a launch flag its template never reads"
+      end
+
+      %w[devstral-small-2-24b].each do |name|
+        entry = loaded.resolve(name)
+        expect(entry[:engine]).to eq("mlx-vlm"), "#{name} is not on mlx-vlm"
+        expect(entry[:enable_thinking]).to be_nil, "#{name} declares a thinking flag it has no channel for"
+        expect(entry[:supports_reasoning]).to eq(false)
+      end
+    end
+
+    # The two quant PAIRS exist to isolate format from everything else, so the
+    # thing worth asserting is that each pair differs in weights alone. A
+    # drafter or a cache quietly appearing on one side would confound exactly
+    # the comparison the pair was bought for — and concurrent1, which serves
+    # the same mxfp8 weights, does carry both.
+    # Knobs that would move throughput or output distribution, and so must be
+    # absent from BOTH halves of a pair rather than merely equal.
+    let(:confounding_knobs) { %i[draft_model draft_kind apc_enabled thinking_budget penalties] }
+
+    it "keeps each quant pair differing in weights alone" do
+      loaded = SpaceInferenceGateway::ModelRegistry.load
+
+      # An array of pairs, not a Hash: the Muse Glimmer square shares the mxfp8
+      # alias across two of its comparisons, and a Hash would silently keep
+      # only the last of those — dropping a check while still passing.
+      [
+        ["qwen3.8-27b-mxfp8-plain", "qwen3.8-27b-mxfp4"],
+        ["muse-glimmer-30b",        "muse-glimmer-30b-mxfp4"],   # mx, 8 -> 4 bits
+        ["muse-glimmer-30b-8bit",   "muse-glimmer-30b-4bit"],    # affine, 8 -> 4 bits
+        ["muse-glimmer-30b",        "muse-glimmer-30b-8bit"],    # 8 bits, mx vs affine
+        ["muse-glimmer-30b-mxfp4",  "muse-glimmer-30b-4bit"],    # 4 bits, mx vs affine
+      ].each do |a, b|
+        left  = loaded.resolve(a)
+        right = loaded.resolve(b)
+
+        confounding_knobs.each do |knob|
+          expect(left[knob]).to be_nil, "#{a} carries #{knob}, confounding its quant pair"
+          expect(right[knob]).to be_nil, "#{b} carries #{knob}, confounding its quant pair"
+        end
+
+        expect(left[:enable_thinking]).to eq(right[:enable_thinking])
+        expect(left[:supports_reasoning]).to eq(right[:supports_reasoning])
+        expect(left[:max_num_seqs]).to eq(right[:max_num_seqs])
+        expect(left[:model]).not_to eq(right[:model])
+      end
+    end
+
+    # The sibling that proves the twin was needed: same weights as the plain
+    # mxfp8 arm, but speculative decoding attached, which moves decode
+    # throughput — the very number the format comparison turns on.
+    it "keeps the drafter on concurrent1, not on the plain twin" do
+      loaded = SpaceInferenceGateway::ModelRegistry.load
+
+      expect(loaded.resolve("qwen3.8-27b-mxfp8-concurrent1")[:draft_model]).not_to be_nil
+      expect(loaded.resolve("qwen3.8-27b-mxfp8-plain")[:model])
+        .to eq(loaded.resolve("qwen3.8-27b-mxfp8-concurrent1")[:model])
+    end
+
+    # The reasoning control pair: same weights, same config, differing only in
+    # the effort canary sends. If the registry entries ever diverge the arm
+    # stops measuring reasoning and starts measuring whatever else changed.
+    it "keeps nemotron-3-super-low identical to nemotron-3-super but for the alias" do
+      loaded = SpaceInferenceGateway::ModelRegistry.load
+      base = loaded.resolve("nemotron-3-super")
+      low  = loaded.resolve("nemotron-3-super-low")
+
+      %i[model engine enable_thinking supports_reasoning max_num_seqs port].each do |knob|
+        expect(low[knob]).to eq(base[knob]), "nemotron-3-super-low differs from its control on #{knob}"
+      end
+    end
+
+    # These arms are for code. A repetition penalty over a 64-token window
+    # penalises indentation, closing delimiters and an identifier named once
+    # per line — correct output, not degeneration — so the length bound they
+    # were standing in for is expressed as thinking_budget instead. This is
+    # the assertion that a well-meaning re-tune has to argue with.
+    it "bounds the a3b code arms with thinking_budget rather than penalties" do
+      loaded = SpaceInferenceGateway::ModelRegistry.load
+
+      %w[qwen3.6-35b-a3b-4bit qwen3.6-35b-a3b-8bit].each do |name|
+        entry = loaded.resolve(name)
+        expect(entry[:penalties]).to be_nil, "#{name} carries a code-hostile sampling penalty"
+        expect(entry[:thinking_budget]).to eq(4096)
+      end
+    end
+
+    it "drops mlx_lm-only concurrency knobs from every mlx-vlm alias" do
+      loaded = SpaceInferenceGateway::ModelRegistry.load
+
+      loaded.aliases.each do |name|
+        entry = loaded.resolve(name)
+        next unless entry[:engine] == "mlx-vlm"
+
+        expect(entry[:decode_concurrency]).to be_nil, "#{name} kept decode_concurrency"
+        expect(entry[:prompt_concurrency]).to be_nil, "#{name} kept prompt_concurrency"
+      end
     end
 
     it "venv has ~ expanded; model is the repo id (not path-expanded)" do

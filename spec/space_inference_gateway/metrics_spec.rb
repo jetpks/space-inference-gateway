@@ -1,9 +1,11 @@
 # frozen_string_literal: true
 
 require "rack/test"
+require_relative "../support/fake_upstream_server"
 
 RSpec.describe SpaceInferenceGateway::Metrics do
   include Rack::Test::Methods
+  include FakeUpstreamServer
 
   before { described_class.reset_all }
 
@@ -19,7 +21,7 @@ RSpec.describe SpaceInferenceGateway::Metrics do
     end
   end
 
-  let(:app) { SpaceInferenceGateway::App.new(upstream_fn: upstream_fn) }
+  let(:app) { SpaceInferenceGateway::App.new(upstream_fn: upstream_fn, controller: app_fixture_controller) }
 
   # ── Registry completeness ────────────────────────────────────────────────────
 
@@ -76,18 +78,18 @@ RSpec.describe SpaceInferenceGateway::Metrics do
 
   describe "request counter" do
     it "increments sig_requests_total for OAI non-stream" do
-      body = JSON.generate({ model: "any", messages: [] })
+      body = JSON.generate({ model: "qwen3.8-flash-next-oq3", messages: [] })
       post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
       expect(described_class::REQUESTS.get(labels: { stream: "false" })).to eq(1)
     end
 
     it "increments sig_requests_total for OAI stream (legacy-seam path)" do
       streaming_fn = ->(_path, _body) { [oai_s_response, 200, {}] }
-      streaming_app = SpaceInferenceGateway::App.new(upstream_fn: streaming_fn)
+      streaming_app = SpaceInferenceGateway::App.new(upstream_fn: streaming_fn, controller: app_fixture_controller)
       session = Rack::MockSession.new(streaming_app)
       rack_env = Rack::Test::Session.new(session)
 
-      body = JSON.generate({ model: "any", messages: [], stream: true })
+      body = JSON.generate({ model: "qwen3.8-flash-next-oq3", messages: [], stream: true })
       rack_env.post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
       expect(described_class::REQUESTS.get(labels: { stream: "true" })).to eq(1)
     end
@@ -115,10 +117,10 @@ RSpec.describe SpaceInferenceGateway::Metrics do
 
     it "increments via App when upstream returns an error" do
       err_fn = ->(_path, _body) { ['{"error":{"message":"upstream error","type":"api_error"}}', 502, {}] }
-      err_app = SpaceInferenceGateway::App.new(upstream_fn: err_fn)
+      err_app = SpaceInferenceGateway::App.new(upstream_fn: err_fn, controller: app_fixture_controller)
       session = Rack::MockSession.new(err_app)
       rack_env = Rack::Test::Session.new(session)
-      body = JSON.generate({ model: "any", messages: [] })
+      body = JSON.generate({ model: "qwen3.8-flash-next-oq3", messages: [] })
       rack_env.post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
       expect(described_class::UPSTREAM_ERRORS.get(labels: { status: "502" })).to eq(1)
     end

@@ -1,9 +1,11 @@
 # frozen_string_literal: true
 
 require "rack/test"
+require_relative "../support/fake_upstream_server"
 
 RSpec.describe SpaceInferenceGateway::App do
   include Rack::Test::Methods
+  include FakeUpstreamServer
 
   let(:oai_response)   { fixture("oai_ns.json") }
   let(:oai_s_response) { fixture("oai_s.txt") }
@@ -17,7 +19,7 @@ RSpec.describe SpaceInferenceGateway::App do
     end
   end
 
-  let(:app) { described_class.new(upstream_fn: upstream_fn) }
+  let(:app) { described_class.new(upstream_fn: upstream_fn, controller: app_fixture_controller) }
 
   # ── AC6: Route presence ───────────────────────────────────────────────────
   describe "GET /v1/models" do
@@ -36,7 +38,7 @@ RSpec.describe SpaceInferenceGateway::App do
   end
 
   describe "POST /v1/chat/completions (non-stream)" do
-    let(:request_body) { JSON.generate({ model: "any", messages: [{ role: "user", content: "hi" }] }) }
+    let(:request_body) { JSON.generate({ model: "qwen3.8-flash-next-oq3", messages: [{ role: "user", content: "hi" }] }) }
 
     before { post "/v1/chat/completions", request_body, "CONTENT_TYPE" => "application/json" }
 
@@ -78,15 +80,30 @@ RSpec.describe SpaceInferenceGateway::App do
       expect(sent["model"]).to eq("mlx-community/Qwen3.5-35B-A3B-4bit")
     end
 
-    it "rewrites the model field to the mlx-vlm repo id for unknown alias (mlx-vlm default)" do
-      # The default alias (qwen3.8-27b-mxfp8-concurrent1, engine: mlx-vlm) is what an unknown
-      # alias falls back to. mlx-vlm validates the "model" field against its
-      # loaded model the same way mlx does, so the fallback must rewrite it too —
-      # forwarding the unresolved alias would evict the resident checkpoint.
+    # Was: "rewrites the model field to the mlx-vlm repo id for unknown alias
+    # (mlx-vlm default)". That asserted the fallback this replaces — an
+    # unknown alias reaching the engine at all, rewritten to the DEFAULT
+    # alias's repo id, is exactly how a request for one model got answered by
+    # another with a 200 and nothing saying so.
+    it "refuses an unknown alias instead of forwarding it to the default model" do
       body = JSON.generate({ model: "no-such-alias", messages: [{ role: "user", content: "hi" }] })
       post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
-      sent = JSON.parse(forwarded.first[:body])
-      expect(sent["model"]).to eq("mlx-community/Qwen3.8-27B-mxfp8")
+
+      expect(last_response.status).to eq(404)
+      expect(forwarded).to be_empty, "an unknown alias reached the engine"
+      error = JSON.parse(last_response.body)["error"]
+      expect(error["code"]).to eq("model_not_found")
+      expect(error["param"]).to eq("model")
+      expect(error["message"]).to include("no-such-alias")
+    end
+
+    it "refuses a request with no model field at all" do
+      post "/v1/chat/completions", JSON.generate({ messages: [{ role: "user", content: "hi" }] }),
+           "CONTENT_TYPE" => "application/json"
+
+      expect(last_response.status).to eq(400)
+      expect(forwarded).to be_empty
+      expect(JSON.parse(last_response.body).dig("error", "type")).to eq("invalid_request_error")
     end
 
     it "normalizes the OpenAI 'developer' role to 'system' (mlx rejects developer)" do
@@ -152,6 +169,161 @@ RSpec.describe SpaceInferenceGateway::App do
       post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
       sent = JSON.parse(forwarded.first[:body])
       expect(sent.key?("stop")).to be false
+    end
+  end
+
+  # ── Sampling penalty injection ────────────────────────────────────────────
+  # On a fixture registry, not config/models.yml. These assert the BEHAVIOUR of
+  # inject_sampling_penalties, which must keep working whether or not any
+  # shipped alias currently declares penalties — and as of 2026-09-01 none do,
+  # having been dropped from the a3b arms as wrong for code. Binding them to a
+  # production alias is what broke them when that landed.
+  describe "sampling penalty injection" do
+    let(:forwarded) { [] }
+    let(:upstream_fn) do
+      lambda do |path, body|
+        forwarded << { path: path, body: body }
+        [fixture("oai_ns.json"), 200, {}]
+      end
+    end
+
+    let(:registry) do
+      SpaceInferenceGateway::ModelRegistry.new(
+        "default" => "penalty-arm",
+        "models"  => {
+          "penalty-arm" => {
+            "engine" => "mlx-vlm", "model" => "fixture/penalty-arm", "port" => 8080,
+            "penalties" => { "repetition_penalty" => 1.05, "repetition_context_size" => 64 },
+          },
+          "plain-arm" => {
+            "engine" => "mlx-vlm", "model" => "fixture/plain-arm", "port" => 8080,
+          },
+        },
+      )
+    end
+
+    let(:app) do
+      supervisor = FakeUpstreamServer::FakeSupervisor.new("penalty-arm", "http://unused")
+      controller = SpaceInferenceGateway::ModelController.new(registry: registry, supervisor: supervisor)
+      described_class.new(upstream_fn: upstream_fn, controller: controller)
+    end
+
+    def sent_for(body)
+      post "/v1/chat/completions", JSON.generate(body), "CONTENT_TYPE" => "application/json"
+      JSON.parse(forwarded.first[:body])
+    end
+
+    it "injects the alias's declared sampling penalties" do
+      sent = sent_for({ model: "penalty-arm", messages: [{ role: "user", content: "hi" }] })
+
+      expect(sent["repetition_penalty"]).to eq(1.05)
+      expect(sent["repetition_context_size"]).to eq(64)
+    end
+
+    # A declared penalty is a default, not an override: mirrors how
+    # reasoning_effort keeps a value the template accepts.
+    it "lets a client's own penalty win over the alias default" do
+      sent = sent_for({ model: "penalty-arm", messages: [{ role: "user", content: "hi" }],
+                        repetition_penalty: 1.5, })
+
+      expect(sent["repetition_penalty"]).to eq(1.5)
+      expect(sent["repetition_context_size"]).to eq(64)
+    end
+
+    it "leaves an alias declaring no penalties untouched" do
+      sent = sent_for({ model: "plain-arm", messages: [{ role: "user", content: "hi" }] })
+
+      expect(sent).not_to have_key("repetition_penalty")
+      expect(sent).not_to have_key("repetition_context_size")
+    end
+  end
+
+  # ── Reasoning effort passthrough (OAI, mlx-vlm) ───────────────────────
+  # On a local fixture registry: these assert inject_reasoning_effort's
+  # behaviour, which must hold whatever the live fleet currently declares
+  # (several arms carry reasoning_effort defaults; the fixture pins the
+  # semantics so an ops retune can't silently narrow them).
+  describe "reasoning effort passthrough (OAI, mlx-vlm)" do
+    let(:forwarded) { [] }
+    let(:upstream_fn) do
+      lambda do |path, body|
+        forwarded << { path: path, body: body }
+        [fixture("oai_ns.json"), 200, {}]
+      end
+    end
+
+    let(:registry) do
+      SpaceInferenceGateway::ModelRegistry.new(
+        "default" => "effort-arm",
+        "models"  => {
+          "effort-arm" => { "engine" => "mlx-vlm", "model" => "fixture/effort", "port" => 8080,
+                             "reasoning_effort" => "medium",
+                             "reasoning_effort_values" => %w[high medium low none], },
+          "plain-arm" => { "engine" => "mlx-vlm", "model" => "fixture/plain", "port" => 8080 },
+          "strict-arm" => { "engine" => "mlx-vlm", "model" => "fixture/strict", "port" => 8080,
+                             "preserve_thinking" => false, },
+        },
+      )
+    end
+
+    let(:app) do
+      supervisor = FakeUpstreamServer::FakeSupervisor.new("effort-arm", "http://unused")
+      controller = SpaceInferenceGateway::ModelController.new(registry: registry, supervisor: supervisor)
+      described_class.new(upstream_fn: upstream_fn, controller: controller)
+    end
+
+    def sent_for(body)
+      post "/v1/chat/completions", JSON.generate(body), "CONTENT_TYPE" => "application/json"
+      JSON.parse(forwarded.last[:body])
+    end
+
+    it "injects the alias default when the client sends no effort" do
+      sent = sent_for({ model: "effort-arm", messages: [{ role: "user", content: "hi" }] })
+      expect(sent["reasoning_effort"]).to eq("medium")
+    end
+
+    it "passes a requested effort the alias's template allows" do
+      sent = sent_for({ model: "effort-arm", messages: [{ role: "user", content: "hi" }],
+                        reasoning_effort: "high", })
+      expect(sent["reasoning_effort"]).to eq("high")
+    end
+
+    it "coerces a requested effort the template rejects to the alias default" do
+      sent = sent_for({ model: "effort-arm", messages: [{ role: "user", content: "hi" }],
+                        reasoning_effort: "xhigh", })
+      expect(sent["reasoning_effort"]).to eq("medium")
+    end
+
+    it "reads the nested Responses-API form and rewrites both fields" do
+      sent = sent_for({ model: "effort-arm", messages: [{ role: "user", content: "hi" }],
+                        reasoning: { effort: "low" }, })
+      expect(sent["reasoning_effort"]).to eq("low")
+      expect(sent.dig("reasoning", "effort")).to eq("low")
+    end
+
+    it "leaves a requested disabled effort alone (mlx-vlm reads it as thinking off)" do
+      sent = sent_for({ model: "effort-arm", messages: [{ role: "user", content: "hi" }],
+                        reasoning_effort: "none", })
+      expect(sent["reasoning_effort"]).to eq("none")
+    end
+
+    it "leaves aliases without a reasoning_effort default untouched" do
+      sent = sent_for({ model: "plain-arm", messages: [{ role: "user", content: "hi" }] })
+      expect(sent).not_to have_key("reasoning_effort")
+    end
+
+    it "strips assistant reasoning from history when preserve_thinking is false, keeping the text" do
+      sent = sent_for({
+                        model: "strict-arm",
+        messages: [
+          { role: "user", content: "a" },
+          { role: "assistant", content: "answer", reasoning_content: "long chain of thought" },
+          { role: "user", content: "b" },
+        ],
+                      })
+      assistant = sent["messages"].find { |m| m["role"] == "assistant" }
+      expect(assistant["content"]).to eq("answer")
+      expect(JSON.generate(sent)).not_to include("long chain of thought")
     end
   end
 
@@ -285,7 +457,7 @@ RSpec.describe SpaceInferenceGateway::App do
       end
     end
 
-    let(:request_body) { JSON.generate({ model: "any", messages: [], stream: true }) }
+    let(:request_body) { JSON.generate({ model: "qwen3.8-flash-next-oq3", messages: [], stream: true }) }
 
     before { post "/v1/chat/completions", request_body, "CONTENT_TYPE" => "application/json" }
 
@@ -330,15 +502,15 @@ RSpec.describe SpaceInferenceGateway::App do
     before { SpaceInferenceGateway::Metrics.reset_all }
 
     it "increments sig_requests_total for OAI non-stream" do
-      body = JSON.generate({ model: "any", messages: [] })
+      body = JSON.generate({ model: "qwen3.8-flash-next-oq3", messages: [] })
       post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
       expect(SpaceInferenceGateway::Metrics::REQUESTS.get(labels: { stream: "false" })).to eq(1)
     end
 
     it "increments sig_requests_total for OAI stream (legacy-seam path)" do
       streaming_fn = ->(_path, _body) { [oai_s_response, 200, {}] }
-      streaming_app = described_class.new(upstream_fn: streaming_fn)
-      body = JSON.generate({ model: "any", messages: [], stream: true })
+      streaming_app = described_class.new(upstream_fn: streaming_fn, controller: app_fixture_controller)
+      body = JSON.generate({ model: "qwen3.8-flash-next-oq3", messages: [], stream: true })
       post_response = Rack::MockRequest.new(streaming_app).post(
         "/v1/chat/completions", input: body, "CONTENT_TYPE" => "application/json",
       )
@@ -346,12 +518,12 @@ RSpec.describe SpaceInferenceGateway::App do
       expect(SpaceInferenceGateway::Metrics::REQUESTS.get(labels: { stream: "true" })).to eq(1)
     end
     it "exactly +1 for OAI non-stream and +1 for OAI stream after separate requests (AC2)" do
-      ns_body = JSON.generate({ model: "any", messages: [] })
+      ns_body = JSON.generate({ model: "qwen3.8-flash-next-oq3", messages: [] })
       post "/v1/chat/completions", ns_body, "CONTENT_TYPE" => "application/json"
 
       streaming_fn = ->(_path, _body) { [oai_s_response, 200, {}] }
-      streaming_app = described_class.new(upstream_fn: streaming_fn)
-      s_body = JSON.generate({ model: "any", messages: [], stream: true })
+      streaming_app = described_class.new(upstream_fn: streaming_fn, controller: app_fixture_controller)
+      s_body = JSON.generate({ model: "qwen3.8-flash-next-oq3", messages: [], stream: true })
       Rack::MockRequest.new(streaming_app).post(
         "/v1/chat/completions", input: s_body, "CONTENT_TYPE" => "application/json",
       )
@@ -371,7 +543,7 @@ RSpec.describe SpaceInferenceGateway::App do
 
       before do
         post "/v1/chat/completions",
-             JSON.generate({ model: "any", messages: [] }),
+             JSON.generate({ model: "qwen3.8-flash-next-oq3", messages: [] }),
              "CONTENT_TYPE" => "application/json"
       end
 
@@ -393,7 +565,7 @@ RSpec.describe SpaceInferenceGateway::App do
 
       before do
         post "/v1/chat/completions",
-             JSON.generate({ model: "any", messages: [] }),
+             JSON.generate({ model: "qwen3.8-flash-next-oq3", messages: [] }),
              "CONTENT_TYPE" => "application/json"
       end
 
