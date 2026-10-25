@@ -426,22 +426,6 @@ RSpec.describe "Model Control Plane (I05 — Supervisor Backend)" do
         end
       end
     end
-
-    it "ANT: ill-shaped messages body on an mlx alias 500s, then a cross-alias ensure_active still succeeds" do
-      Async do |task|
-        task.with_timeout(15) do
-          controller.ensure_active("model-a")
-
-          resp = call_app(app, "POST", "/v1/messages",
-                          JSON.generate({ "model" => "model-a", "messages" => [5] }),)
-          expect(resp.status).to eq(500)
-
-          swap_result = controller.ensure_active("model-b")
-          expect(swap_result).to be_success
-          expect(supervisor.active_alias).to eq("model-b")
-        end
-      end
-    end
   end
 
   # ── AC6 — Explicit endpoints, schema-valid ───────────────────────────────────

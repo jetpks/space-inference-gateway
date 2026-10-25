@@ -10,7 +10,7 @@ Gem::Specification.new do |spec|
   spec.version       = SpaceInferenceGateway::VERSION
   spec.authors       = ["eric"]
   spec.summary       = "Falcon gateway for local Apple-silicon inference: supervises mlx/optiq " \
-                       "engines, swaps models, and serves OpenAI + Anthropic flavors"
+                       "engines, swaps models, and serves the OpenAI wire"
   spec.executables   = ["space-inference-gateway"]
 
   spec.required_ruby_version = ">= 4.0"

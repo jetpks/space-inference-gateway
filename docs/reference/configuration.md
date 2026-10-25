@@ -141,13 +141,13 @@ production path.
 
 | Class | Job |
 |---|---|
-| `App` | Rack seam: routing, request rewrites, ANT→OAI translation, error mapping, stream lifecycle |
+| `App` | Rack seam: routing, request rewrites, error mapping, stream lifecycle |
 | `ModelRegistry` | loads `models.yml`, resolves aliases, `~`-expands path keys |
 | `ModelController` | single-flight engine transitions (one `Async::Semaphore(1)` gate makes the active/busy check, swap, and generation reservation atomic), busy-409 policy, zombie-strike accounting |
 | `InferenceServerSupervisor` | spawn/stop/swap the engine child; readiness gate; verified kill + port-release confirmation; stale-listener reap |
 | `UpstreamClient` | async-http client with idle + headers timeouts |
-| `OaiNormalizer` / `AntNormalizer` | strict-schema output conformance; reasoning lifting; OAI→ANT synthesis (non-stream + SSE) |
+| `OaiNormalizer` | strict-schema output conformance; reasoning lifting (non-stream + SSE) |
 | `ReasoningParser` | streaming-safe `<think>` extraction (holds back partial tags across chunk boundaries) |
-| `ErrorRelay::Oai` / `::Mlx` | upstream error relay per client flavor; `Mlx` reshapes string-shaped errors (`Oai` retained for a future true-OAI upstream) |
-| `Schemas` | dry-schema output contracts (plus the hand-rolled ANT key check that tolerates arbitrary `tool_use.input`) |
+| `ErrorRelay::Oai` / `::Mlx` | upstream error relay; `Mlx` reshapes string-shaped errors (`Oai` retained for a future true-OAI upstream) |
+| `Schemas` | dry-schema output contracts |
 | `Metrics` / `GenerationObserver` | Prometheus registry; per-generation phase/TTFT/usage taps ([metrics reference](metrics.md)) |

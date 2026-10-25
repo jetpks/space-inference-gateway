@@ -43,11 +43,11 @@
       "targets": [
         {
           "expr": "rate(sig_requests_total[1m])",
-          "legendFormat": "{{flavor}} stream={{stream}}",
+          "legendFormat": "stream={{stream}}",
           "refId": "A"
         }
       ],
-      "title": "Request rate by flavor + stream",
+      "title": "Request rate by stream",
       "type": "timeseries"
     },
     {
@@ -62,12 +62,12 @@
       "targets": [
         {
           "expr": "histogram_quantile(0.95, rate(sig_request_duration_seconds_bucket[5m]))",
-          "legendFormat": "p95 {{flavor}} stream={{stream}}",
+          "legendFormat": "p95 stream={{stream}}",
           "refId": "A"
         },
         {
           "expr": "histogram_quantile(0.50, rate(sig_request_duration_seconds_bucket[5m]))",
-          "legendFormat": "p50 {{flavor}} stream={{stream}}",
+          "legendFormat": "p50 stream={{stream}}",
           "refId": "B"
         }
       ],
@@ -221,11 +221,11 @@
       "targets": [
         {
           "expr": "rate(sig_upstream_errors_total[5m])",
-          "legendFormat": "{{status}} {{flavor}}",
+          "legendFormat": "{{status}}",
           "refId": "A"
         }
       ],
-      "title": "Upstream errors by status + flavor",
+      "title": "Upstream errors by status",
       "type": "timeseries"
     },
     {
@@ -240,7 +240,7 @@
       "targets": [
         {
           "expr": "rate(sig_keepalive_comments_total[5m])",
-          "legendFormat": "keepalives/s {{flavor}}",
+          "legendFormat": "keepalives/s",
           "refId": "A"
         }
       ],
