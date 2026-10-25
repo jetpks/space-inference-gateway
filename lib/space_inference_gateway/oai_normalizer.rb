@@ -194,11 +194,17 @@ module SpaceInferenceGateway
 
       observer&.on_finish(choice["finish_reason"]) if choice["finish_reason"]
 
-      if delta.key?(@reasoning_field)
+      # mlx-vlm ≥ 0.7 ships EVERY field on every delta with explicit nulls
+      # (content, reasoning, reasoning_content, tool_calls all present), so
+      # branching on key presence misroutes the answer chunk into the
+      # reasoning path. Branch on non-nil values instead — measured on the
+      # live 0.7.10 wire 2026-10-25, where presence-checking dropped all
+      # answer text and spammed tool_calls:null chunks.
+      if !delta[@reasoning_field].nil?
         observer&.on_delta(:reasoning)
         flush_into(result, parser, canonical, created, choice["index"])
         result.concat(emit_reasoning_delta(choice, base))
-      elsif delta.key?("content")
+      elsif !delta["content"].nil?
         observer&.on_delta(:content)
         result.concat(emit_content_delta(choice, base, canonical, created, parser))
       elsif choice["finish_reason"]
@@ -210,7 +216,8 @@ module SpaceInferenceGateway
 
       # mlx emits tool_calls in their own chunk (alongside content or
       # finish_reason); pass them through verbatim so the client can execute.
-      if delta.key?("tool_calls")
+      # Value check: 0.7.x carries a null tool_calls key on every delta.
+      unless delta["tool_calls"].nil?
         observer&.on_delta(:tool_args)
         flush_into(result, parser, canonical, created, choice["index"])
         result << base.merge("choices" => [{ "index" => choice["index"],
@@ -255,9 +262,10 @@ module SpaceInferenceGateway
       chunk = base.merge("choices" => [{ "index" => choice["index"], "delta" => {},
                                          "finish_reason" => choice["finish_reason"], }])
       # Carry tool_calls onto the finish chunk when present (some clients read
-      # them from the finish chunk rather than a separate delta).
+      # them from the finish chunk rather than a separate delta). Value check:
+      # mlx-vlm 0.7.x carries a null tool_calls key on every delta.
       delta = choice["delta"] || {}
-      chunk["choices"][0]["delta"]["tool_calls"] = delta["tool_calls"] if delta.key?("tool_calls")
+      chunk["choices"][0]["delta"]["tool_calls"] = delta["tool_calls"] unless delta["tool_calls"].nil?
       chunk
     end
 

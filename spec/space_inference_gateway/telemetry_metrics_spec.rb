@@ -208,6 +208,39 @@ RSpec.describe "Telemetry metrics (I09)" do
     end
   end
 
+  # ── mlx-vlm 0.7.10 wire shape: every delta carries every field, nulls and all ─
+  describe "nulls-everywhere delta shape (mlx-vlm 0.7.10 regression)" do
+    it "routes chunks by non-nil value, not key presence" do
+      chunks = [
+        { "id" => "c1", "object" => "chat.completion.chunk",
+          "choices" => [{ "index" => 0,
+                          "delta" => { "role" => "assistant", "content" => nil, "reasoning" => " We must answer",
+                                       "reasoning_content" => nil, "tool_calls" => nil, }, }], },
+        { "id" => "c1", "object" => "chat.completion.chunk",
+          "choices" => [{ "index" => 0,
+                          "delta" => { "role" => "assistant", "content" => "online", "reasoning" => nil,
+                                       "reasoning_content" => nil, "tool_calls" => nil, }, }], },
+        { "id" => "c1", "object" => "chat.completion.chunk",
+          "choices" => [{ "index" => 0,
+                          "delta" => { "role" => "assistant", "content" => nil, "reasoning" => nil,
+                                       "reasoning_content" => nil, "tool_calls" => nil, },
+                          "finish_reason" => "stop", }], },
+      ]
+      text = "#{chunks.map { |c| "data: #{JSON.generate(c)}" }.join("\n\n")}\n\n"
+
+      normalizer = SpaceInferenceGateway::OaiNormalizer.new(advertised_model: "m")
+      observer   = SpaceInferenceGateway::GenerationObserver.new(t0: monotonic_now)
+      sse = []
+      normalizer.stream_events_to_sse(raw_source(text), observer: observer) { |chunk| sse << chunk }
+      joined = sse.join
+
+      expect(joined).to include('"reasoning_content":" We must answer"')
+      expect(joined).to include('"content":"online"')
+      expect(joined).not_to include('"tool_calls":null')
+      expect(metrics::GENERATION_STOPS.get(labels: { stop_reason: "stop" })).to eq(1)
+    end
+  end
+
   # ── AC3 — usage tokens: upstream-reported only, never fabricated ───────
 
   describe "sig_usage_tokens_total" do
