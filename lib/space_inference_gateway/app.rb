@@ -4,10 +4,10 @@ require "json"
 require_relative "metrics"
 require_relative "generation_observer"
 require_relative "oai_normalizer"
-require_relative "ant_normalizer"
 require_relative "model_registry"
 require_relative "model_controller"
 require_relative "upstream_client"
+require_relative "raw_completions_streamer"
 require_relative "inference_server_supervisor"
 require_relative "error_relay"
 
@@ -26,17 +26,17 @@ module SpaceInferenceGateway
     KEEPALIVE_COMMENT = ": keepalive\n\n"
 
     # Streaming Rack body for SSE generation paths.
-    # Owns the upstream HTTP client and closes it when the body is done.
+    # Owns the raw-stream session and closes it when the body is done.
     # on_close is called once on first close (generation lifetime hook).
     #
-    # The upstream normalizer is drained in a fiber-scheduler fiber and its
-    # chunks are written to an IO pipe. #each reads from the pipe with a
+    # The session's drain task normalizes raw-surface events and writes the
+    # downstream SSE bytes to an IO pipe. #each reads from the pipe with a
     # KEEPALIVE_INTERVAL timeout via IO.select, yielding an SSE comment
     # (`: keepalive\n\n`) on timeout. This keeps the client's HTTP idle timer
     # from tripping while the upstream is silent — e.g. optiq spends minutes in
     # prompt prefill emitting zero bytes, which would otherwise abort the stream
     # (pi defaults to a 300s idle timeout). Comment lines are SSE-spec-legal and
-    # ignored by the OpenAI + Anthropic SDK decoders (verified:
+    # ignored by the OpenAI SDK decoders (verified:
     # openai/core/streaming.js SSEDecoder returns null on `line.startsWith(':')`).
     #
     # The pipe + IO.select approach (rather than Async::Notification) is
@@ -44,35 +44,16 @@ module SpaceInferenceGateway
     # `to_enum(:each).next`, which runs #each in a separate Enumerator fiber
     # where Async::Task.current is unavailable. IO.select and Fiber.scheduler
     # work in any fiber on the scheduler's thread.
-    StreamBody = Struct.new(:response, :client, :normalizer, :on_close, :flavor, :t0, :observer) do
+    StreamBody = Struct.new(:session, :on_close, :t0, :observer) do
       def each
-        read_io, write_io = IO.pipe
-        @read_io  = read_io
-        @write_io = write_io
-
-        # Drain the upstream normalizer in a scheduled fiber. Chunks are
-        # written to the pipe; closing the write end on exit signals EOF.
-        # An idle-gap timeout mid-stream (upstream silent past
-        # UPSTREAM_IDLE_TIMEOUT) surfaces as IO::TimeoutError here — counted
-        # separately from a downstream-abandon close (plain IOError) so it's
-        # observable in /metrics even though the SSE stream, already 200'd,
-        # can only end silently rather than carry a 5xx.
-        Fiber.scheduler.fiber do
-          normalizer.stream_to_sse(response.body, observer: observer) { |chunk| write_io.write(chunk) }
-        rescue IO::TimeoutError
-          Metrics::UPSTREAM_ERRORS.increment(labels: { status: "504", flavor: flavor.to_s })
-        rescue StandardError
-          nil
-        ensure
-          write_io.close unless write_io.closed?
-        end
+        read_io = session.read_io
 
         # Read from the pipe with a keepalive timeout. IO.select is
         # fiber-scheduler-aware and does not block the reactor.
         loop do
           if read_io.wait_readable(App::KEEPALIVE_INTERVAL).nil?
             yield App::KEEPALIVE_COMMENT
-            Metrics::KEEPALIVE_COMMENTS.increment(labels: { flavor: flavor.to_s })
+            Metrics::KEEPALIVE_COMMENTS.increment
           else
             data = read_io.read_nonblock(65_536, exception: false)
             break if data.nil? # EOF — upstream finished
@@ -87,24 +68,22 @@ module SpaceInferenceGateway
         read_io.close unless read_io.closed?
       end
 
-      # Single idempotent teardown: upstream response closed before client (so
-      # client#close's pool-drain wait returns promptly instead of hanging on
-      # the still-checked-out connection), both pipe ends closed, duration
-      # observed, and the generation counter released — exactly once. The
-      # counter release runs under ensure (AC8): a raise anywhere above it
-      # (response/client close, metrics) must not leak @active_generations.
+      # Single idempotent teardown: the raw-stream session aborted and both
+      # pipe ends closed (the session owns the upstream connection — closing
+      # it is the downstream-abandon signal the engine relies on to cancel
+      # generation), duration observed, and the generation counter released —
+      # exactly once. The counter release runs under ensure (AC8): a raise
+      # anywhere above it (session close, metrics) must not leak
+      # @active_generations.
       def close
         return if @closed
 
         @closed = true
         begin
-          response.close
-          client&.close
-          @read_io&.close unless @read_io&.closed?
-          @write_io&.close unless @write_io&.closed?
+          session.close
           Metrics::REQUEST_DURATION.observe(
             Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0,
-            labels: { flavor: flavor.to_s, stream: "true" },
+            labels: { stream: "true" },
           )
           observer&.close
         ensure
@@ -114,23 +93,18 @@ module SpaceInferenceGateway
     end
     private_constant :StreamBody
 
-    # Adapter: makes AntNormalizer#stream_to_sse_from_oai duck-type as stream_to_sse
-    # so it can be dropped into StreamBody for the mlx ANT streaming path.
-    OaiToAntAdapter = Struct.new(:normalizer) do
-      def stream_to_sse(body, observer: nil, &block)
-        normalizer.stream_to_sse_from_oai(body, observer: observer, &block)
-      end
-    end
-    private_constant :OaiToAntAdapter
-
     # upstream_fn:     optional (path, body) => [body, status, headers] — legacy test seam.
-    # upstream_client: optional UpstreamClient — injected test seam; wins over default.
+    # upstream_client: optional UpstreamClient — injected test seam; wins over default
+    #                  (control plane + buffered path).
+    # raw_streamer:    optional RawCompletionsStreamer — injected test seam; wins over
+    #                  default (streaming completions leg, I06/BRIEF §3).
     # controller:      optional ModelController — built from config/models.yml when omitted.
     # error_relay:     optional ErrorRelay::Oai/Mlx instance — injected for testing.
-    def initialize(upstream_fn: nil, upstream_client: nil, controller: nil, error_relay: nil)
+    def initialize(upstream_fn: nil, upstream_client: nil, raw_streamer: nil, controller: nil, error_relay: nil)
       @upstream_fn     = upstream_fn
       @controller      = controller || build_default_controller
       @upstream_client = upstream_client || UpstreamClient.new(base_url: -> { @controller.base_url })
+      @raw_streamer    = raw_streamer || RawCompletionsStreamer.new(base_url: -> { @controller.base_url })
       @error_relay     = error_relay || default_error_relay
       @advertised_model = ADVERTISED_MODEL
     end
@@ -141,8 +115,6 @@ module SpaceInferenceGateway
 
       case [method, path]
       when ["POST", "/v1/chat/completions"]      then handle_oai(env)
-      when ["POST", "/v1/messages"]              then handle_ant(env)
-      when ["POST", "/v1/messages/count_tokens"] then handle_count_tokens(env)
       when ["GET",  "/v1/models"]                then handle_models
       when ["POST", "/v1/load"]                  then handle_load(env)
       when ["POST", "/v1/unload"]                then handle_unload(env)
@@ -163,8 +135,8 @@ module SpaceInferenceGateway
       @controller.stop_engine
     end
 
-    # Engines that speak OpenAI HTTP only — the proxy synthesizes ANT for these
-    # itself and never forwards /v1/messages to them: "mlx", "optiq", "mlx-vlm".
+    # Engines that speak OpenAI HTTP only — their quirks are absorbed at this
+    # seam (request rewrites, error reshaping): "mlx", "optiq", "mlx-vlm".
     OAI_UPSTREAM_ENGINES = %w[mlx optiq mlx-vlm].freeze
 
     private
@@ -194,8 +166,8 @@ module SpaceInferenceGateway
       )
 
       if streaming && @upstream_fn.nil?
-        record_request_accepted(flavor: "oai", streaming: streaming)
-        return open_stream("/v1/chat/completions", body_str, normalizer, flavor: :oai, t0: t0)
+        record_request_accepted(streaming: streaming)
+        return open_stream(body_str, normalizer, t0: t0)
       end
 
       result = nil
@@ -207,98 +179,14 @@ module SpaceInferenceGateway
                      [200, SSE_HEADERS.dup, [normalizer.normalize_stream_to_sse(body_up)]]
                    else
                      parsed = JSON.parse(body_up)
-                     record_oai_usage_and_stop(parsed, flavor: "oai")
+                     record_oai_usage_and_stop(parsed)
                      [200, JSON_HEADERS.dup, [JSON.generate(normalizer.normalize(parsed))]]
                    end
                  else
-                   @error_relay.relay(status, body_up, flavor: :oai)
+                   @error_relay.relay(status, body_up)
                  end
       end
-      observe_request(t0, flavor: "oai", streaming: streaming)
-      result
-    end
-
-    def handle_ant(env)
-      t0          = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      body_str    = read_body(env)
-      request     = JSON.parse(body_str)
-      model_alias = request["model"]
-      streaming   = request["stream"] == true
-      mlx         = mlx_engine?(model_alias)
-
-      # ANT->OAI translation runs before the reservation (AC1/I02): it can
-      # raise on a JSON-parseable but ill-shaped body (e.g. a non-hash
-      # message), and it only touches the registry — never the active/busy
-      # decision — so nothing is lost by translating ahead of
-      # ensure_active_if_known.
-      oai_body = ant_to_oai(body_str, mlx_model_id(model_alias), stop_tokens: mlx_stop_tokens(model_alias)) if mlx
-
-      unless @upstream_fn # legacy test seam injects upstream directly; skip the supervisor
-        swap_r = @controller.ensure_active_if_known(model_alias)
-        return swap_error_response(swap_r.failure) if swap_r.failure?
-      end
-
-      mode       = @controller.active_mode
-      normalizer = AntNormalizer.new(
-        advertised_model:   effective_model(model_alias),
-        supports_reasoning: mode[:supports_reasoning],
-      )
-
-      # mlx/optiq path instruments inside handle_ant_mlx
-      return handle_ant_mlx(oai_body, normalizer, streaming) if mlx
-
-      if streaming && @upstream_fn.nil?
-        record_request_accepted(flavor: "ant", streaming: streaming)
-        return open_stream("/v1/messages", body_str, normalizer, flavor: :ant, t0: t0)
-      end
-
-      result = nil
-      with_active_generation do
-        body_up, status, = call_upstream("/v1/messages", body_str)
-        note_generation_outcome(status)
-        result = if status == 200
-                   if streaming
-                     [200, SSE_HEADERS.dup, [normalizer.normalize_stream_to_sse(body_up)]]
-                   else
-                     parsed = JSON.parse(body_up)
-                     record_ant_usage_and_stop(parsed, flavor: "ant")
-                     [200, JSON_HEADERS.dup, [JSON.generate(normalizer.normalize(parsed))]]
-                   end
-                 else
-                   @error_relay.relay(status, body_up, flavor: :ant)
-                 end
-      end
-      observe_request(t0, flavor: "ant", streaming: streaming)
-      result
-    end
-
-    def handle_ant_mlx(oai_body, normalizer, streaming)
-      t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-
-      if streaming && @upstream_fn.nil?
-        record_request_accepted(flavor: "ant", streaming: streaming)
-        return open_stream("/v1/chat/completions", oai_body, OaiToAntAdapter.new(normalizer), flavor: :ant, t0: t0)
-      end
-
-      result = nil
-      with_active_generation do
-        body_up, status, = call_upstream("/v1/chat/completions", oai_body)
-        note_generation_outcome(status)
-        result = if status == 200
-                   if streaming
-                     sse = +""
-                     normalizer.stream_to_sse_from_oai(Enumerator.new { |y| y << body_up }) { |s| sse << s }
-                     [200, SSE_HEADERS.dup, [sse]]
-                   else
-                     parsed = JSON.parse(body_up)
-                     record_oai_usage_and_stop(parsed, flavor: "ant")
-                     [200, JSON_HEADERS.dup, [JSON.generate(normalizer.normalize_oai(parsed))]]
-                   end
-                 else
-                   @error_relay.relay(status, body_up, flavor: :ant)
-                 end
-      end
-      observe_request(t0, flavor: "ant", streaming: streaming)
+      observe_request(t0, streaming: streaming)
       result
     end
 
@@ -306,27 +194,6 @@ module SpaceInferenceGateway
       data = @controller.models_list
       body = JSON.generate({ "object" => "list", "data" => data })
       [200, JSON_HEADERS.dup, [body]]
-    end
-
-    # Anthropic count_tokens — mlx_lm.server has no native count_tokens, and CC
-    # hits this before sending to size the prompt (a 404 makes CC refuse the
-    # model as "may not exist"). Return a rough char-based estimate (~4 chars/token);
-    # it is for the client's context-window accounting, not billing, so an
-    # approximation is fine. Accepts the ANT request shape (system + messages +
-    # tools), with content as a string or an array of content blocks.
-    def handle_count_tokens(env)
-      request = JSON.parse(read_body(env))
-      chars = 0
-      collect = lambda do |content|
-        case content
-        when String then chars += content.length
-        when Array  then content.each { |blk| collect.call(blk["text"] || blk["content"] || "") }
-        end
-      end
-      collect.call(request["system"]) if request["system"]
-      (request["messages"] || []).each { |m| collect.call(m["content"]) }
-      (request["tools"] || []).each { |t| collect.call(t.to_s) }
-      [200, JSON_HEADERS.dup, [JSON.generate({ "input_tokens" => (chars / 4.0).ceil })]]
     end
 
     def handle_load(env)
@@ -374,7 +241,7 @@ module SpaceInferenceGateway
       Metrics::CHILD_PID.set((pid || 0).to_f)
       Metrics::CHILD_RSS_BYTES.set(Metrics.child_rss_bytes(pid).to_f)
       update_model_info_metric
-      [200, { "content-type" => Prometheus::Client::Formats::Text::CONTENT_TYPE }, [Metrics.render]]
+      [200, { "content-type" => Fast::Prometheus::Formats::Text::CONTENT_TYPE }, [Metrics.render]]
     end
 
     # begin_generation already ran as part of ensure_active_if_known's
@@ -382,25 +249,41 @@ module SpaceInferenceGateway
     # call succeeded. This method owns the matching end_generation: once
     # (immediately below, on any non-success exit) or later, via StreamBody's
     # on_close, if the stream opens successfully.
-    def open_stream(path, body_str, normalizer, flavor:, t0:)
+    #
+    # I06: the streaming leg rides the fast-completions raw surface via
+    # @raw_streamer. The seam blocks until the upstream status is decided and
+    # the first normalized chunk is in the pipe (so the 200-vs-error relay
+    # split stays observable downstream exactly as before), then raises the
+    # raw surface's own errors for the rescue ladder below — the phase-named
+    # TimeoutError (TTFB watchdog) and ApiError (non-2xx, carrying status +
+    # body for the relay) map onto the same responses the UpstreamClient
+    # errors used to. The observer is created up front (its taps fire during
+    # the open gate) and closed on failure so GENERATION_PHASE stays net-zero.
+    def open_stream(body_str, normalizer, t0:)
       succeeded = false
-      response, client = @upstream_client.open_stream(path, body_str)
-      @controller.note_generation_success
-      if response.status == 200
-        observer  = GenerationObserver.new(flavor: flavor, t0: t0)
-        on_close  = -> { @controller.end_generation }
+      observer  = GenerationObserver.new(t0: t0)
+      begin
+        session = @raw_streamer.open(body_str, normalizer: normalizer, observer: observer)
+        @controller.note_generation_success
+        on_close = -> { @controller.end_generation }
         succeeded = true
-        [200, SSE_HEADERS.dup, StreamBody.new(response, client, normalizer, on_close, flavor, t0, observer)]
-      else
-        @error_relay.relay(response.status, response.read.tap { client.close }, flavor: flavor)
+        [200, SSE_HEADERS.dup, StreamBody.new(session, on_close, t0, observer)]
+      rescue Fast::Completions::ApiError => e
+        # A non-2xx response still proves the engine child is alive (headers
+        # arrived) — the zombie-watchdog streak resets on it, exactly as the
+        # pre-adoption open_stream did (note_generation_success ran on any
+        # response before the status split).
+        @controller.note_generation_success
+        @error_relay.relay(e.status, e.body)
+      rescue Fast::Completions::TimeoutError => e
+        @controller.note_generation_failure
+        @error_relay.relay(504, e.message)
+      rescue StandardError
+        upstream_error(502)
+      ensure
+        observer.close unless succeeded
+        @controller.end_generation unless succeeded
       end
-    rescue IO::TimeoutError, Async::TimeoutError => e
-      @controller.note_generation_failure
-      @error_relay.relay(504, e.message, flavor: flavor)
-    rescue StandardError
-      upstream_error(502)
-    ensure
-      @controller.end_generation unless succeeded
     end
 
     def call_upstream(path, body_str)
@@ -440,8 +323,8 @@ module SpaceInferenceGateway
       end
     end
 
-    def observe_request(t0, flavor:, streaming:)
-      labels = { flavor: flavor, stream: streaming.to_s }
+    def observe_request(t0, streaming:)
+      labels = { stream: streaming.to_s }
       Metrics::REQUESTS.increment(labels: labels)
       Metrics::REQUEST_DURATION.observe(Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0, labels: labels)
     end
@@ -449,31 +332,23 @@ module SpaceInferenceGateway
     # Streaming accept-time counter only — duration is observed at stream
     # teardown (StreamBody#close), not here, since a streaming request's
     # useful duration is the whole generation, not the ms it took to open it.
-    def record_request_accepted(flavor:, streaming:)
-      Metrics::REQUESTS.increment(labels: { flavor: flavor, stream: streaming.to_s })
+    def record_request_accepted(streaming:)
+      Metrics::REQUESTS.increment(labels: { stream: streaming.to_s })
     end
 
     # Non-stream OAI-upstream usage/stop recording (AC3): usage.prompt_tokens/
     # completion_tokens and choices[0].finish_reason, both upstream-verbatim.
-    def record_oai_usage_and_stop(parsed, flavor:)
-      record_usage(parsed["usage"], prompt_key: "prompt_tokens", completion_key: "completion_tokens", flavor: flavor)
+    def record_oai_usage_and_stop(parsed)
+      record_usage(parsed["usage"], prompt_key: "prompt_tokens", completion_key: "completion_tokens")
       finish = parsed.dig("choices", 0, "finish_reason")
-      Metrics::GENERATION_STOPS.increment(labels: { flavor: flavor, stop_reason: finish.to_s }) if finish
+      Metrics::GENERATION_STOPS.increment(labels: { stop_reason: finish.to_s }) if finish
     end
 
-    # Non-stream ANT-native usage/stop recording (AC3): usage.input_tokens/
-    # output_tokens and stop_reason, both upstream-verbatim.
-    def record_ant_usage_and_stop(parsed, flavor:)
-      record_usage(parsed["usage"], prompt_key: "input_tokens", completion_key: "output_tokens", flavor: flavor)
-      stop = parsed["stop_reason"]
-      Metrics::GENERATION_STOPS.increment(labels: { flavor: flavor, stop_reason: stop.to_s }) if stop
-    end
-
-    def record_usage(usage, prompt_key:, completion_key:, flavor:)
+    def record_usage(usage, prompt_key:, completion_key:)
       return unless usage.is_a?(Hash)
 
-      Metrics::USAGE_TOKENS.increment(by: usage[prompt_key].to_i, labels: { flavor: flavor, kind: "prompt" })
-      Metrics::USAGE_TOKENS.increment(by: usage[completion_key].to_i, labels: { flavor: flavor, kind: "completion" })
+      Metrics::USAGE_TOKENS.increment(by: usage[prompt_key].to_i, labels: { kind: "prompt" })
+      Metrics::USAGE_TOKENS.increment(by: usage[completion_key].to_i, labels: { kind: "completion" })
     end
 
     def update_model_info_metric
@@ -573,106 +448,17 @@ module SpaceInferenceGateway
       entry  = @controller.registry.resolve(model_alias) ||
                @controller.registry.resolve(@controller.registry.default_alias)
       parsed["model"] = mlx_model_id(model_alias) if %w[mlx mlx-vlm].include?(entry&.fetch(:engine, nil))
+      # Modern OAI clients (pi included) send max_completion_tokens; mlx-vlm's
+      # schema only reads max_tokens and silently defaults to 2048 when it's
+      # missing — xhigh thinking exhausts that before the answer begins. Fold
+      # the modern field into the engine's; an explicit max_tokens always wins.
+      # (Ported from prod f17acc5, I06.)
+      if parsed.key?("max_completion_tokens") && !parsed.key?("max_tokens")
+        parsed["max_tokens"] = parsed.delete("max_completion_tokens")
+      end
       (parsed["messages"] || []).each { |m| m["role"] = "system" if m["role"] == "developer" }
       inject_mlx_stop_tokens(parsed, model_alias)
       JSON.generate(parsed)
-    end
-
-    # Minimal ANT→OAI request translation for the mlx/optiq engine path.
-    # mlx/optiq speak OAI only; system becomes messages[0]; fields mapped;
-    # tool definitions, tool_result, and tool_use blocks are translated to
-    # their OAI equivalents (see ant_message_to_oai / ant_tools_to_oai).
-    def ant_to_oai(body_str, model_name, stop_tokens: nil)
-      ant  = JSON.parse(body_str)
-      msgs = []
-      msgs << { "role" => "system", "content" => ant["system"] } if ant["system"]
-      # Claude Code 2.1.214+ sends mid-conversation system-role entries inside
-      # messages[]; mlx/optiq reject any system message that isn't first, so
-      # demote them to user (content preserved) — the top-level "system" field
-      # above stays the only leading OAI system message.
-      (ant["messages"] || []).each do |m|
-        m["role"] = "user" if m["role"] == "system"
-        ant_message_to_oai(m, msgs)
-      end
-
-      oai = { "model" => model_name, "messages" => msgs }
-      oai["tools"]       = ant_tools_to_oai(ant["tools"]) if ant["tools"]
-      oai["max_tokens"]  = ant["max_tokens"]  if ant.key?("max_tokens")
-      oai["stream"]      = ant["stream"]      if ant.key?("stream")
-      oai["temperature"] = ant["temperature"] if ant.key?("temperature")
-      oai["top_p"]       = ant["top_p"]       if ant.key?("top_p")
-      oai["stop"]        = ant["stop_sequences"] if ant.key?("stop_sequences")
-      merge_stop_tokens(oai, stop_tokens) if stop_tokens
-      JSON.generate(oai)
-    end
-
-    # ANT tools -> OAI tools (AC1). ANT: {name, description, input_schema}.
-    def ant_tools_to_oai(tools)
-      tools.map do |t|
-        { "type" => "function",
-          "function" => { "name" => t["name"], "description" => t["description"], "parameters" => t["input_schema"] }, }
-      end
-    end
-
-    # Translates one ANT message into one or more OAI messages, appending to oai_msgs.
-    # - user message with tool_result blocks (AC2): one OAI {role: tool} message per
-    #   tool_result, plus a trailing {role: user} message for any leftover text.
-    # - assistant message with tool_use blocks (AC3): a single OAI assistant message
-    #   carrying both the flattened text (content) and the tool_calls array.
-    # - everything else: content (string or text-block array) flattened to a string.
-    def ant_message_to_oai(msg, oai_msgs)
-      role    = msg["role"]
-      content = msg["content"]
-      blocks  = content.is_a?(Array) ? content : []
-      types   = blocks.map { |b| b["type"] }
-
-      if role == "user" && types.include?("tool_result")
-        append_ant_tool_result_message(blocks, oai_msgs)
-      elsif role == "assistant" && types.include?("tool_use")
-        append_ant_tool_use_message(blocks, oai_msgs)
-      else
-        oai_msgs << { "role" => role, "content" => flatten_ant_text(content) }
-      end
-    end
-
-    # AC2: a tool_result-bearing user message becomes one OAI {role: tool}
-    # message per tool_result, plus a trailing {role: user} message for any
-    # leftover (non-tool_result) text in the same ANT message.
-    def append_ant_tool_result_message(blocks, oai_msgs)
-      blocks.each do |block|
-        next unless block["type"] == "tool_result"
-
-        oai_msgs << { "role" => "tool", "tool_call_id" => block["tool_use_id"],
-                      "content" => flatten_ant_text(block["content"]), }
-      end
-      text = flatten_ant_text(blocks.reject { |b| b["type"] == "tool_result" })
-      oai_msgs << { "role" => "user", "content" => text } unless text.empty?
-    end
-
-    # AC3: a tool_use-bearing assistant message becomes a single OAI assistant
-    # message carrying both the flattened text and the tool_calls array.
-    def append_ant_tool_use_message(blocks, oai_msgs)
-      text       = flatten_ant_text(blocks.reject { |b| b["type"] == "tool_use" })
-      tool_calls = blocks.select { |b| b["type"] == "tool_use" }.map { |b| ant_tool_use_to_oai(b) }
-      oai_msgs << { "role" => "assistant", "content" => text, "tool_calls" => tool_calls }
-    end
-
-    # ANT tool_use block -> OAI tool_calls entry (AC3). input is JSON-encoded
-    # into function.arguments, the shape mlx/optiq expect.
-    def ant_tool_use_to_oai(block)
-      { "id" => block["id"], "type" => "function",
-        "function" => { "name" => block["name"], "arguments" => JSON.generate(block["input"]) }, }
-    end
-
-    # Flattens ANT text content to a plain string: a string passes through;
-    # an array of content blocks joins each block's "text" (non-text blocks,
-    # e.g. tool_use/tool_result, contribute nothing — callers filter those out).
-    def flatten_ant_text(content)
-      case content
-      when String then content
-      when Array  then content.map { |b| b["text"].to_s }.join
-      else ""
-      end
     end
 
     def build_default_controller

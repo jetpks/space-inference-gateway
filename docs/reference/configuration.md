@@ -13,9 +13,10 @@ surfaces: environment variables (process-level) and `config/models.yml`
 | `MODEL_CONFIG_PATH` | `config/models.yml` (in the gem) | registry file location |
 | `ENGINE_LOG_DIR` | `~/Library/Logs/space-inference-gateway` | per-alias engine child logs (`<alias>.log`) — deliberately not a tmpdir, so crash forensics have somewhere stable to look |
 | `ZOMBIE_RESTART_THRESHOLD` | `2` | consecutive no-response generation failures before the watchdog restarts the child |
-| `UPSTREAM_IDLE_TIMEOUT` | `1400` (s) | per-socket-operation idle gap to the engine; resets on every read/write, so a stream that keeps emitting never times out |
-| `UPSTREAM_HEADERS_TIMEOUT` | `300` (s) | wall-clock bound on waiting for response headers when opening a stream |
+| `UPSTREAM_IDLE_TIMEOUT` | `1400` (s) | per-chunk inactivity gap on the streaming leg (fast-completions raw surface, I06); re-armed after every body chunk, so a stream that keeps emitting never times out |
+| `UPSTREAM_HEADERS_TIMEOUT` | `300` (s) | wall-clock bound on waiting for response headers when opening a stream (TTFB deadline on the raw surface) |
 | `UPSTREAM_BUFFERED_TIMEOUT` | `1800` (s) | end-to-end deadline for a buffered (non-streaming) call; independent of the streaming idle-gap above |
+| `UPSTREAM_TOKEN` | *(empty)* | engine bearer token for the streaming completions leg; empty omits the `authorization` header entirely (local engines need none) |
 
 Fixed constants worth knowing (not env-tunable): SSE keepalive comments after
 **8 s** of upstream silence (`App::KEEPALIVE_INTERVAL`, chosen well under
@@ -141,13 +142,13 @@ production path.
 
 | Class | Job |
 |---|---|
-| `App` | Rack seam: routing, request rewrites, ANT→OAI translation, error mapping, stream lifecycle |
+| `App` | Rack seam: routing, request rewrites, error mapping, stream lifecycle |
 | `ModelRegistry` | loads `models.yml`, resolves aliases, `~`-expands path keys |
 | `ModelController` | single-flight engine transitions (one `Async::Semaphore(1)` gate makes the active/busy check, swap, and generation reservation atomic), busy-409 policy, zombie-strike accounting |
 | `InferenceServerSupervisor` | spawn/stop/swap the engine child; readiness gate; verified kill + port-release confirmation; stale-listener reap |
 | `UpstreamClient` | async-http client with idle + headers timeouts |
-| `OaiNormalizer` / `AntNormalizer` | strict-schema output conformance; reasoning lifting; OAI→ANT synthesis (non-stream + SSE) |
+| `OaiNormalizer` | strict-schema output conformance; reasoning lifting (non-stream + SSE) |
 | `ReasoningParser` | streaming-safe `<think>` extraction (holds back partial tags across chunk boundaries) |
-| `ErrorRelay::Oai` / `::Mlx` | upstream error relay per client flavor; `Mlx` reshapes string-shaped errors (`Oai` retained for a future true-OAI upstream) |
-| `Schemas` | dry-schema output contracts (plus the hand-rolled ANT key check that tolerates arbitrary `tool_use.input`) |
+| `ErrorRelay::Oai` / `::Mlx` | upstream error relay; `Mlx` reshapes string-shaped errors (`Oai` retained for a future true-OAI upstream) |
+| `Schemas` | dry-schema output contracts |
 | `Metrics` / `GenerationObserver` | Prometheus registry; per-generation phase/TTFT/usage taps ([metrics reference](metrics.md)) |

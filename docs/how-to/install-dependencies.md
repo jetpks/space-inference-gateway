@@ -51,7 +51,7 @@ and debugging:
 
 | Piece | Where | Why |
 |---|---|---|
-| Ruby 4.0.5 via mise | `~/.local/share/mise/installs/ruby/4.0.5/bin` | the launcher puts this on `PATH` explicitly so launchd gets the right interpreter without a login shell |
+| Ruby 4.0.9 via mise | `~/.local/share/mise/installs/ruby/4.0.9/bin` | the launcher puts this on `PATH` explicitly so launchd gets the right interpreter without a login shell |
 | Gateway checkout + bundle | `~/src/space-inference-gateway` | runtime checkout, pulled and `bundle install`ed on every apply |
 | optiq venv | `~/.venv-optiq` (`mlx-optiq==0.3.5`) | the `optiq serve` engine; the binary is `~/.venv-optiq/bin/optiq` |
 | mlx venv | `~/.venv-vllm-metal` (`mlx-lm==0.31.3`) | the `mlx_lm.server` engine. The name is historical — it matches `config/models.yml` `venv:` paths, **do not rename one without the other** |
@@ -83,7 +83,7 @@ story in the [architecture explanation](../explanation/architecture.md#the-tcc-g
    not substitute a Homebrew/mise Python; it would be gated like any other
    binary. Nothing to install: the shim is stdlib-only precisely so the stock
    interpreter can run it.
-2. **Install the clients normally** (`claude`, `opencode`) — they'll talk to
+2. **Install the clients normally** (`pi`, `opencode`) — they'll talk to
    `127.0.0.1`, never the LAN. Wiring them up is
    [connect clients](connect-clients.md).
 
@@ -91,7 +91,7 @@ story in the [architecture explanation](../explanation/architecture.md#the-tcc-g
 
 ```sh
 brew install mise
-mise use -g ruby@4.0.5     # anything ≥ 3.3 works; this matches production
+mise use -g ruby@4.0.9     # anything ≥ 4.0 works; this matches production
 bundle install
 bundle exec rspec && bundle exec rubocop
 ```
@@ -106,7 +106,7 @@ step 0).
 |---|---|
 | `op --version` | prints a version (playbook hard-fails without it) |
 | `test -f ~/.config/secret/op && stat -f %Lp ~/.config/secret/op` | `600` |
-| `mise which ruby` | `~/.local/share/mise/installs/ruby/4.0.5/bin/ruby` |
+| `mise which ruby` | `~/.local/share/mise/installs/ruby/4.0.9/bin/ruby` |
 | `~/.venv-optiq/bin/optiq --help` | optiq usage text |
 | `~/.venv-vllm-metal/bin/python -c 'import mlx_lm'` | exits 0 |
 | `~/caddy-build/caddy list-modules \| grep digitalocean` | `dns.providers.digitalocean` |

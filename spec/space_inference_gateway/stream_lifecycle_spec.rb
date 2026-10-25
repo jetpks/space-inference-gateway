@@ -5,7 +5,10 @@ require_relative "../support/fake_upstream_server"
 # Streaming-lifecycle specs (I02): drives the public Rack surface against a
 # real in-process Async::HTTP proxy stack and a hand-scripted raw-socket fake
 # upstream — no mock/stub of App, UpstreamClient, or ModelController. Every
-# stall scenario runs with a short UPSTREAM_IDLE_TIMEOUT so the suite stays fast.
+# stall scenario runs with a short idle/headers timeout so the suite stays
+# fast. I06: the streaming leg rides RawCompletionsStreamer (fast-completions
+# raw surface); the scenarios inject it exactly where they used to inject
+# UpstreamClient, with the same timeout kwargs.
 RSpec.describe "Stream lifecycle (I02 AC2-AC7, AC9)" do
   include FakeUpstreamServer
 
@@ -25,7 +28,7 @@ RSpec.describe "Stream lifecycle (I02 AC2-AC7, AC9)" do
   # ── AC4 — buffered (non-stream) path timeout ─────────────────────────────────
 
   describe "AC4 — buffered path timeout" do
-    it "never-responding upstream yields 504 in OAI flavor within the configured budget" do
+    it "never-responding upstream yields 504 within the configured budget" do
       @task.with_timeout(5) do
         upstream = FakeUpstreamServer::RawUpstream.new(@task)
         upstream.accept { |_sock| @task.sleep(60) } # never responds
@@ -73,14 +76,16 @@ RSpec.describe "Stream lifecycle (I02 AC2-AC7, AC9)" do
   # ── AC4 — streaming (open_stream) header-wait idle-gap timeout ─────────────
 
   describe "AC4 — streaming path header-wait idle-gap timeout" do
-    it "never-responding upstream on a streaming request yields 504 in OAI flavor, full teardown" do
+    it "never-responding upstream on a streaming request yields 504, full teardown" do
       @task.with_timeout(5) do
         SpaceInferenceGateway::Metrics.reset_all
         upstream = FakeUpstreamServer::RawUpstream.new(@task)
         upstream.accept { |_sock| @task.sleep(60) } # never responds
 
-        upstream_client = SpaceInferenceGateway::UpstreamClient.new(base_url: upstream.base_url, idle_timeout: 0.2)
-        app = make_app(upstream_client: upstream_client)
+        streamer = SpaceInferenceGateway::RawCompletionsStreamer.new(
+          base_url: upstream.base_url, idle_timeout: 30, headers_timeout: 0.2,
+        )
+        app = make_app(raw_streamer: streamer)
         proxy_port, proxy_task, proxy_bound = boot_proxy(app)
         client = client_for(proxy_port)
 
@@ -104,7 +109,7 @@ RSpec.describe "Stream lifecycle (I02 AC2-AC7, AC9)" do
 
           # AC7 — timeout observable, distinguishable by status label.
           expect(
-            SpaceInferenceGateway::Metrics::UPSTREAM_ERRORS.get(labels: { status: "504", flavor: "oai" }),
+            SpaceInferenceGateway::Metrics::UPSTREAM_ERRORS.get(labels: { status: "504" }),
           ).to eq(1)
         ensure
           client.close
@@ -119,29 +124,54 @@ RSpec.describe "Stream lifecycle (I02 AC2-AC7, AC9)" do
   # ── AC4 — streaming path idle-gap timeout resets on activity ───────────────
   # #call has no idle-gap bound (its buffered_timeout is an end-to-end budget on
   # a path that emits nothing until generation completes) — this property only
-  # holds on #open_stream, whose idle_timeout resets on every successful read.
+  # holds on the streaming leg (I06: RawCompletionsStreamer on the raw surface),
+  # whose inactivity watchdog re-arms after every body chunk.
 
   describe "AC4 — streaming path idle-gap timeout" do
     it "a continuously-emitting body never times out, despite exceeding the idle timeout in total" do
-      @task.with_timeout(5) do
+      @task.with_timeout(8) do
         upstream = FakeUpstreamServer::RawUpstream.new(@task)
+        sent = fixture("oai_s.txt").split(/(?<=\n\n)/).reject(&:empty?).first(4)
         upstream.accept do |sock|
           sse_headers(sock)
-          3.times do
-            @task.sleep(0.08) # < 0.2s idle timeout, but 3 * 0.08s = 0.24s > 0.2s total
-            http_chunk(sock, "x")
+          4.times do |i|
+            @task.sleep(0.08) # < 0.2s idle timeout, but 4 * 0.08s = 0.32s > 0.2s total
+            http_chunk(sock, sent[i])
           end
           end_chunks(sock)
         end
 
-        client = SpaceInferenceGateway::UpstreamClient.new(base_url: upstream.base_url, idle_timeout: 0.2)
-        response, http_client = client.open_stream("/v1/chat/completions", "{}")
+        streamer = SpaceInferenceGateway::RawCompletionsStreamer.new(base_url: upstream.base_url, idle_timeout: 0.2)
+        app = make_app(raw_streamer: streamer)
+        proxy_port, proxy_task, proxy_bound = boot_proxy(app)
+        client = client_for(proxy_port)
 
-        expect(response.status).to eq(200)
-        expect(response.read).to eq("xxx")
-      ensure
-        http_client&.close
-        upstream.stop
+        body = JSON.generate({ model: "diffusiongemma", messages: [], stream: true })
+
+        begin
+          response = client.post("/v1/chat/completions", [["content-type", "application/json"]], body)
+          expect(response.status).to eq(200)
+
+          chunks = []
+          while (chunk = response.body.read)
+            chunks << chunk
+          end
+          full = chunks.join
+
+          # Byte-identical to the buffered text path on the same events: the
+          # events path and normalize_stream_to_sse share the emit seam.
+          normalizer = SpaceInferenceGateway::OaiNormalizer.new(
+            advertised_model:   "diffusiongemma",
+            supports_reasoning: true,
+          )
+          expect(full).to eq(normalizer.normalize_stream_to_sse(sent.join))
+          expect(full).to end_with("data: [DONE]\n\n")
+        ensure
+          client.close
+          proxy_task.stop
+          proxy_bound.close
+          upstream.stop
+        end
       end
     end
   end
@@ -155,10 +185,10 @@ RSpec.describe "Stream lifecycle (I02 AC2-AC7, AC9)" do
         upstream = FakeUpstreamServer::RawUpstream.new(@task)
         upstream.accept { |_sock| @task.sleep(60) } # never responds
 
-        upstream_client = SpaceInferenceGateway::UpstreamClient.new(
+        streamer = SpaceInferenceGateway::RawCompletionsStreamer.new(
           base_url: upstream.base_url, idle_timeout: 30, headers_timeout: 0.2,
         )
-        app = make_app(upstream_client: upstream_client)
+        app = make_app(raw_streamer: streamer)
         proxy_port, proxy_task, proxy_bound = boot_proxy(app)
         client = client_for(proxy_port)
 
@@ -175,7 +205,7 @@ RSpec.describe "Stream lifecycle (I02 AC2-AC7, AC9)" do
           expect(elapsed).to be < 3 # bounded by headers_timeout (0.2s), not idle_timeout (30s)
 
           expect(
-            SpaceInferenceGateway::Metrics::UPSTREAM_ERRORS.get(labels: { status: "504", flavor: "oai" }),
+            SpaceInferenceGateway::Metrics::UPSTREAM_ERRORS.get(labels: { status: "504" }),
           ).to eq(1)
         ensure
           client.close
@@ -198,10 +228,10 @@ RSpec.describe "Stream lifecycle (I02 AC2-AC7, AC9)" do
           @task.sleep(60) # headers + one chunk arrive, then stall
         end
 
-        upstream_client = SpaceInferenceGateway::UpstreamClient.new(
+        streamer = SpaceInferenceGateway::RawCompletionsStreamer.new(
           base_url: upstream.base_url, idle_timeout: 0.2, headers_timeout: 30,
         )
-        app = make_app(upstream_client: upstream_client)
+        app = make_app(raw_streamer: streamer)
         proxy_port, proxy_task, proxy_bound = boot_proxy(app)
         client = client_for(proxy_port)
 
@@ -222,11 +252,11 @@ RSpec.describe "Stream lifecycle (I02 AC2-AC7, AC9)" do
 
           @task.with_timeout(3) do
             @task.sleep(0.05) until SpaceInferenceGateway::Metrics::UPSTREAM_ERRORS.get(
-              labels: { status: "504", flavor: "oai" },
+              labels: { status: "504" },
             ) == 1
           end
           expect(
-            SpaceInferenceGateway::Metrics::UPSTREAM_ERRORS.get(labels: { status: "504", flavor: "oai" }),
+            SpaceInferenceGateway::Metrics::UPSTREAM_ERRORS.get(labels: { status: "504" }),
           ).to eq(1)
         ensure
           client.close
@@ -257,8 +287,8 @@ RSpec.describe "Stream lifecycle (I02 AC2-AC7, AC9)" do
           # stall — no more chunks, no close; only a downstream abandon should end this
         end
 
-        upstream_client = SpaceInferenceGateway::UpstreamClient.new(base_url: upstream.base_url, idle_timeout: 30)
-        app = make_app(upstream_client: upstream_client)
+        streamer = SpaceInferenceGateway::RawCompletionsStreamer.new(base_url: upstream.base_url, idle_timeout: 30)
+        app = make_app(raw_streamer: streamer)
         proxy_port, proxy_task, proxy_bound = boot_proxy(app)
         stream_client = client_for(proxy_port)
 
@@ -316,8 +346,8 @@ RSpec.describe "Stream lifecycle (I02 AC2-AC7, AC9)" do
           )
         end
 
-        upstream_client = SpaceInferenceGateway::UpstreamClient.new(base_url: upstream.base_url, idle_timeout: 5)
-        app = make_app(upstream_client: upstream_client)
+        streamer = SpaceInferenceGateway::RawCompletionsStreamer.new(base_url: upstream.base_url, idle_timeout: 5)
+        app = make_app(raw_streamer: streamer)
         proxy_port, proxy_task, proxy_bound = boot_proxy(app)
         client = client_for(proxy_port)
         body = JSON.generate({ model: "diffusiongemma", messages: [], stream: true })
@@ -346,10 +376,10 @@ RSpec.describe "Stream lifecycle (I02 AC2-AC7, AC9)" do
         dead_port   = dead_server.local_address.ip_port
         dead_server.close # port now refuses connections
 
-        upstream_client = SpaceInferenceGateway::UpstreamClient.new(
+        streamer = SpaceInferenceGateway::RawCompletionsStreamer.new(
           base_url: "http://127.0.0.1:#{dead_port}", idle_timeout: 5,
         )
-        app = make_app(upstream_client: upstream_client)
+        app = make_app(raw_streamer: streamer)
         proxy_port, proxy_task, proxy_bound = boot_proxy(app)
         client = client_for(proxy_port)
         body = JSON.generate({ model: "diffusiongemma", messages: [], stream: true })
@@ -387,8 +417,8 @@ RSpec.describe "Stream lifecycle (I02 AC2-AC7, AC9)" do
           end_chunks(sock)
         end
 
-        upstream_client = SpaceInferenceGateway::UpstreamClient.new(base_url: upstream.base_url, idle_timeout: 5)
-        app = make_app(upstream_client: upstream_client)
+        streamer = SpaceInferenceGateway::RawCompletionsStreamer.new(base_url: upstream.base_url, idle_timeout: 5)
+        app = make_app(raw_streamer: streamer)
         proxy_port, proxy_task, proxy_bound = boot_proxy(app)
         client = client_for(proxy_port)
         body = JSON.generate({ model: "diffusiongemma", messages: [], stream: true })
@@ -399,7 +429,7 @@ RSpec.describe "Stream lifecycle (I02 AC2-AC7, AC9)" do
 
           # sig_requests_total counts at accept, before any duration has elapsed.
           expect(
-            SpaceInferenceGateway::Metrics::REQUESTS.get(labels: { flavor: "oai", stream: "true" }),
+            SpaceInferenceGateway::Metrics::REQUESTS.get(labels: { stream: "true" }),
           ).to eq(1)
 
           nil while response.body.read # drain to natural completion (closes the body)
@@ -412,7 +442,7 @@ RSpec.describe "Stream lifecycle (I02 AC2-AC7, AC9)" do
           end
 
           observed_sum = SpaceInferenceGateway::Metrics::REQUEST_DURATION.get(
-            labels: { flavor: "oai", stream: "true" },
+            labels: { stream: "true" },
           )["sum"]
           expect(observed_sum).to be >= 0.1
         ensure

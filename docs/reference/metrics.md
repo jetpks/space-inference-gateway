@@ -10,22 +10,22 @@ Two design principles shape what you'll see:
   only counts what the engine reports; a stream whose upstream omits usage
   contributes nothing. For rates, `sig_stream_deltas_total` is the proxy —
   one delta ≈ one token for the token-by-token mlx/optiq upstreams.
-- **The store is `SingleThreaded`** — safe because the gateway is one Falcon
-  reactor of cooperative fibers and metric increments never await; no mutex
-  overhead.
+- **The metrics client is fiber-native** (`fast-prometheus`): one shared
+  registry across the reactor's cooperative fibers, guarded at the store
+  boundary — no global data-store configuration needed.
 
 ## Request traffic
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
-| `sig_requests_total` | counter | `flavor`, `stream` | inference requests accepted (`flavor`: `oai`/`ant`) |
-| `sig_request_duration_seconds` | histogram | `flavor`, `stream` | non-stream: whole request; streaming: observed at stream teardown, so it spans the full generation |
-| `sig_time_to_first_token_seconds` | histogram | `flavor` | stream open → first delta (prefill duration) |
+| `sig_requests_total` | counter | `stream` | inference requests accepted |
+| `sig_request_duration_seconds` | histogram | `stream` | non-stream: whole request; streaming: observed at stream teardown, so it spans the full generation |
+| `sig_time_to_first_token_seconds` | histogram | — | stream open → first delta (prefill duration) |
 | `sig_generation_phase` | gauge | `phase` | streaming generations currently in `prefill` vs `decode` |
 | `sig_active_generations` | gauge | — | streaming generations in flight |
-| `sig_stream_deltas_total` | counter | `flavor`, `channel` | streamed deltas by channel (`reasoning`/`content`/`tool_args`) |
-| `sig_usage_tokens_total` | counter | `flavor`, `kind` | upstream-reported tokens (`prompt`/`completion`) |
-| `sig_generation_stops_total` | counter | `flavor`, `stop_reason` | end-of-output events, upstream's verbatim finish/stop reason |
+| `sig_stream_deltas_total` | counter | `channel` | streamed deltas by channel (`reasoning`/`content`/`tool_args`) |
+| `sig_usage_tokens_total` | counter | `kind` | upstream-reported tokens (`prompt`/`completion`) |
+| `sig_generation_stops_total` | counter | `stop_reason` | end-of-output events, upstream's verbatim finish/stop reason |
 
 ## Engine child
 
@@ -43,8 +43,8 @@ Two design principles shape what you'll see:
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
 | `sig_model_operation_results_total` | counter | `operation`, `result` | load/unload outcomes (`success`/`busy`/`timeout`/…) |
-| `sig_upstream_errors_total` | counter | `status`, `flavor` | engine errors relayed to clients; includes the silent mid-stream 504s an already-200 SSE response can't carry |
-| `sig_keepalive_comments_total` | counter | `flavor` | `: keepalive` SSE comments emitted during upstream silence |
+| `sig_upstream_errors_total` | counter | `status` | engine errors relayed to clients; includes the silent mid-stream 504s an already-200 SSE response can't carry |
+| `sig_keepalive_comments_total` | counter | — | `: keepalive` SSE comments emitted during upstream silence |
 
 ## Scraping and dashboard
 

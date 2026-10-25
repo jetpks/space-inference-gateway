@@ -45,7 +45,7 @@ prepends `/opt/homebrew/bin` to PATH for non-interactive SSH, and pins
 |---|---|
 | Homebrew PATH | `/opt/homebrew/bin` added to `~/.zprofile` |
 | op CLI | verified on PATH; service-account token sourced at apply time from `~/.config/secret/op` (operator-managed) |
-| mise + Ruby | `ruby@4.0.5` installed and set as global via mise |
+| mise + Ruby | `ruby@4.0` (prefix — latest 4.0.x) installed and set as global via mise |
 | Gateway checkout | `~/src/space-inference-gateway` cloned/pulled each apply (runtime checkout; the playbook itself runs from the ansible-pull clone) |
 | bundle install | runs before every gateway restart (load-bearing guard) |
 | Gateway launchd agent | `com.slushsystems.space-inference-gateway` on port 9292, KeepAlive |

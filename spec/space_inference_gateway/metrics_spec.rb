@@ -9,13 +9,11 @@ RSpec.describe SpaceInferenceGateway::Metrics do
 
   let(:oai_ns_response) { fixture("oai_ns.json") }
   let(:oai_s_response)  { fixture("oai_s.txt") }
-  let(:ant_ns_response) { fixture("ant_ns.json") }
 
   let(:upstream_fn) do
     lambda do |path, _body|
       case path
       when "/v1/chat/completions" then [oai_ns_response, 200, {}]
-      when "/v1/messages"         then [ant_ns_response, 200, {}]
       else ["not found", 404, {}]
       end
     end
@@ -80,7 +78,7 @@ RSpec.describe SpaceInferenceGateway::Metrics do
     it "increments sig_requests_total for OAI non-stream" do
       body = JSON.generate({ model: "any", messages: [] })
       post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
-      expect(described_class::REQUESTS.get(labels: { flavor: "oai", stream: "false" })).to eq(1)
+      expect(described_class::REQUESTS.get(labels: { stream: "false" })).to eq(1)
     end
 
     it "increments sig_requests_total for OAI stream (legacy-seam path)" do
@@ -91,18 +89,12 @@ RSpec.describe SpaceInferenceGateway::Metrics do
 
       body = JSON.generate({ model: "any", messages: [], stream: true })
       rack_env.post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
-      expect(described_class::REQUESTS.get(labels: { flavor: "oai", stream: "true" })).to eq(1)
-    end
-
-    it "increments sig_requests_total for ANT non-stream" do
-      body = JSON.generate({ model: "any", messages: [], max_tokens: 100 })
-      post "/v1/messages", body, "CONTENT_TYPE" => "application/json"
-      expect(described_class::REQUESTS.get(labels: { flavor: "ant", stream: "false" })).to eq(1)
+      expect(described_class::REQUESTS.get(labels: { stream: "true" })).to eq(1)
     end
 
     it "counter does not increment for non-inference routes" do
       get "/v1/models"
-      expect(described_class::REQUESTS.get(labels: { flavor: "oai", stream: "false" })).to eq(0)
+      expect(described_class::REQUESTS.get(labels: { stream: "false" })).to eq(0)
     end
   end
 
@@ -111,20 +103,14 @@ RSpec.describe SpaceInferenceGateway::Metrics do
   describe "upstream error counter" do
     it "increments sig_upstream_errors_total via Oai relay" do
       relay = SpaceInferenceGateway::ErrorRelay::Oai.new
-      relay.relay(400, '{"error":{"message":"bad"}}', flavor: :oai)
-      expect(described_class::UPSTREAM_ERRORS.get(labels: { status: "400", flavor: "oai" })).to eq(1)
-    end
-
-    it "increments sig_upstream_errors_total via Oai relay for ANT flavor" do
-      relay = SpaceInferenceGateway::ErrorRelay::Oai.new
-      relay.relay(503, '{"error":{"message":"overloaded"}}', flavor: :ant)
-      expect(described_class::UPSTREAM_ERRORS.get(labels: { status: "503", flavor: "ant" })).to eq(1)
+      relay.relay(400, '{"error":{"message":"bad"}}')
+      expect(described_class::UPSTREAM_ERRORS.get(labels: { status: "400" })).to eq(1)
     end
 
     it "increments sig_upstream_errors_total via Mlx relay for mlx string errors" do
       relay = SpaceInferenceGateway::ErrorRelay::Mlx.new
-      relay.relay(400, '{"error":"bad json body"}', flavor: :oai)
-      expect(described_class::UPSTREAM_ERRORS.get(labels: { status: "400", flavor: "oai" })).to eq(1)
+      relay.relay(400, '{"error":"bad json body"}')
+      expect(described_class::UPSTREAM_ERRORS.get(labels: { status: "400" })).to eq(1)
     end
 
     it "increments via App when upstream returns an error" do
@@ -134,7 +120,7 @@ RSpec.describe SpaceInferenceGateway::Metrics do
       rack_env = Rack::Test::Session.new(session)
       body = JSON.generate({ model: "any", messages: [] })
       rack_env.post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
-      expect(described_class::UPSTREAM_ERRORS.get(labels: { status: "502", flavor: "oai" })).to eq(1)
+      expect(described_class::UPSTREAM_ERRORS.get(labels: { status: "502" })).to eq(1)
     end
   end
 

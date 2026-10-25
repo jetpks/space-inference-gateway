@@ -5,7 +5,7 @@ require_relative "reasoning_parser"
 require_relative "schemas"
 
 module SpaceInferenceGateway
-  class OaiNormalizer # rubocop:disable Metrics/ClassLength
+  class OaiNormalizer
     # reasoning_field: the upstream key that carries the reasoning text.
     # mlx uses "reasoning"; a true-OAI upstream (llama-server) uses "reasoning_content".
     def initialize(advertised_model:, supports_reasoning: true, reasoning_field: "reasoning")
@@ -51,10 +51,7 @@ module SpaceInferenceGateway
       end
 
       # Flush any remaining buffered content before done
-      if parser && canonical
-        flush = parser.flush
-        result.concat(flush_chunks(flush, canonical, created)) unless flush[:thinking].empty? && flush[:visible].empty?
-      end
+      result.concat(flush_stream_tail(parser, canonical, created))
 
       result
     end
@@ -67,40 +64,63 @@ module SpaceInferenceGateway
       lines.join
     end
 
-    # Incremental streaming entry — pulls raw SSE bytes from upstream_body chunk-by-chunk
-    # and yields normalized SSE strings as they become available.
-    # Byte-identical to normalize_stream_to_sse when output is concatenated.
+    # Incremental streaming entry (I06): pulls PARSED SSE payloads from a
+    # raw-surface source — anything callable that yields each parsed data
+    # payload (Hash) in arrival order plus the Fast::Completions::SSE::DONE
+    # sentinel in wire position, i.e. Client#raw_stream's block contract —
+    # and yields normalized SSE strings as they become available. The SSE
+    # codec lives in the gem (one codec, one wire discipline, BRIEF §3);
+    # this is the consumption side only. Output is byte-identical to
+    # normalize_stream_to_sse on the same events (the shared emit_chunks
+    # seam does the normalizing for both).
     # observer (I09): optional GenerationObserver tapping deltas/finish/usage.
-    def stream_to_sse(upstream_body, observer: nil)
+    # A malformed upstream payload never reaches here — the raw surface
+    # repairs-then-drops it (I61); today's text path raised instead.
+    def stream_events_to_sse(source, observer: nil)
       parser    = @supports_reasoning ? ReasoningParser.new : nil
       canonical = nil
       created   = nil
-      buf       = +""
 
-      upstream_body.each do |raw_chunk|
-        buf << raw_chunk
+      source.call do |item|
+        next if item.equal?(Fast::Completions::SSE::DONE)
+        next if item["type"] == "diffusion_frame"
 
-        while (idx = buf.index("\n\n"))
-          buf.slice!(0, idx + 2).each_line do |line|
-            canonical, created, chunks = normalize_sse_line(line, canonical, created, parser, observer)
-            chunks.each { |chunk| yield "data: #{JSON.generate(chunk)}\n\n" }
-          end
+        canonical ||= item["id"]
+        created   ||= item["created"]
+        emit_chunks(item, canonical, created, parser, observer).each do |chunk|
+          yield "data: #{JSON.generate(chunk)}\n\n"
         end
       end
 
-      if parser && canonical
-        flush = parser.flush
-        unless flush[:thinking].empty? && flush[:visible].empty?
-          flush_chunks(flush, canonical, created).each do |chunk|
-            yield "data: #{JSON.generate(chunk)}\n\n"
-          end
-        end
+      flush_stream_tail(parser, canonical, created).each do |chunk|
+        yield "data: #{JSON.generate(chunk)}\n\n"
       end
 
       yield "data: [DONE]\n\n"
     end
 
     private
+
+    # The shared stream tail: flush the reasoning parser's remaining buffered
+    # content once the upstream events are exhausted (both the buffered
+    # text path and the events path land here).
+    def flush_stream_tail(parser, canonical, created)
+      return [] unless parser && canonical
+
+      flush = parser.flush
+      return [] if flush[:thinking].empty? && flush[:visible].empty?
+
+      flush_chunks(flush, canonical, created)
+    end
+
+    def parse_sse_data(text)
+      text.lines.filter_map do |line|
+        stripped = line.strip
+        next unless stripped.start_with?("data:")
+
+        stripped.sub(/\Adata:\s*/, "")
+      end
+    end
 
     def normalize_choice(choice)
       msg     = choice["message"] || {}
@@ -147,30 +167,6 @@ module SpaceInferenceGateway
         "completion_tokens" => usage["completion_tokens"].to_i,
         "total_tokens" => usage["total_tokens"].to_i,
       }
-    end
-
-    def normalize_sse_line(line, canonical, created, parser, observer = nil)
-      stripped = line.strip
-      return [canonical, created, []] unless stripped.start_with?("data:")
-
-      raw = stripped.sub(/\Adata:\s*/, "")
-      return [canonical, created, []] if raw == "[DONE]"
-
-      data = JSON.parse(raw)
-      return [canonical, created, []] if data["type"] == "diffusion_frame"
-
-      canonical ||= data["id"]
-      created   ||= data["created"]
-      [canonical, created, emit_chunks(data, canonical, created, parser, observer)]
-    end
-
-    def parse_sse_data(text)
-      text.lines.filter_map do |line|
-        stripped = line.strip
-        next unless stripped.start_with?("data:")
-
-        stripped.sub(/\Adata:\s*/, "")
-      end
     end
 
     def base_chunk(canonical_id, created)

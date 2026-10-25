@@ -2,6 +2,12 @@
 
 ## Recently landed (context)
 
+- **2026-10 — single wire.** The synthesized second-wire layer — its
+  normalizer, request translation, token-count estimate, and error-relay
+  arms, plus the now-redundant per-client metric label — is removed entirely
+  (decision record: BRIEF §2). pi is the client of record and speaks the
+  OpenAI wire. Future second-wire support would be a `fast-messages`
+  sibling gem, not in-gateway synthesis.
 - **2026-08-05 — single-flight swap + wedge-proof supervision (I01/I02).**
   Engine transitions (active/busy check, swap, generation reservation) are
   atomic behind one gate, closing the swap TOCTOU and the cross-alias
@@ -13,12 +19,12 @@
   ≥100B models get per-model `readiness_timeout` budgets.
 - **2026-08 — inference telemetry.** Prometheus `/metrics` with generation
   phases, TTFT, verbatim usage; Grafana dashboard in `deploy/observability/`.
-- **2026-07 — engine re-home: llama.cpp → mlx/optiq.** The gateway now
-  supervises `mlx_lm.server` and `optiq serve` (both OpenAI-HTTP upstreams)
-  and synthesizes the Anthropic flavor itself, including full tool-call
-  translation. `ErrorRelay::Oai` and the `spec/fixtures/llamacpp/` captures
-  were deliberately retained so a future llama-server registry entry works
-  again without archaeology.
+- **2026-07 — engine re-home: llama.cpp → mlx/optiq.** The gateway began
+  supervising `mlx_lm.server` and `optiq serve` (both OpenAI-HTTP upstreams)
+  and synthesized a second client wire on top of them (that synthesis layer
+  was removed in 2026-10). `ErrorRelay::Oai` and the `spec/fixtures/llamacpp/`
+  captures were deliberately retained so a future llama-server registry entry
+  works again without archaeology.
 - **2026-07 — Ansible deploy.** `deploy/run.sh` → `ansible-pull` replaced the
   rsync + manual-launchctl workflow. See
   [deploy/ansible/README.md](deploy/ansible/README.md).
@@ -34,9 +40,6 @@
 - **No context-window knob.** The llama.cpp-era `ctx`/`parallel` tuning has no
   mlx/optiq analogue exposed in the registry; `extra_args` is the escape hatch.
   Add first-class keys if a real need shows up.
-- **Shared fixture-path constant.** Both normalizer specs define a top-level
-  `LLAMACPP_FIXTURE_PATH`, producing a harmless "already initialized constant"
-  warning in the combined suite. Hoist to one shared spec helper.
-- **Anthropic stream stop-dispatch ignores event `index`.** Correct for the
-  current 2-block (thinking + text) shape; revisit if an upstream ever emits
-  more than two content blocks natively.
+- **Shared fixture-path constant.** The normalizer spec defines a top-level
+  `LLAMACPP_FIXTURE_PATH`; harmless, but hoist to a shared spec helper if
+  another spec ever needs it.

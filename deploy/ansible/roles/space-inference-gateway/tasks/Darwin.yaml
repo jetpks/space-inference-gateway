@@ -17,7 +17,7 @@
   ansible.builtin.command: op --version
   changed_when: false
 
-# ── 3. mise + Ruby 4.0.5 ─────────────────────────────────────────────────────
+# ── 3. mise + Ruby 4.0 (prefix — latest 4.0.x) ──────────────────────────────
 
 - name: space-inference-gateway | install ruby via mise
   ansible.builtin.command: "{{ mise_bin }} install ruby@{{ mise_ruby_version }}"

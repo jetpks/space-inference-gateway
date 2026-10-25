@@ -76,11 +76,15 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
   # Boot an App with a fixture controller so model-name assertions don't depend
   # on the production config/models.yml. The fake supervisor reports diffusiongemma
   # as already-active so no subprocess spawns in edge tests.
-  def make_app(upstream_client:)
+  def make_app(upstream_client: nil, raw_streamer: nil)
     registry   = fixture_registry
     supervisor = FakeSupervisor.new("diffusiongemma")
     controller = SpaceInferenceGateway::ModelController.new(registry: registry, supervisor: supervisor)
-    SpaceInferenceGateway::App.new(upstream_client: upstream_client, controller: controller)
+    SpaceInferenceGateway::App.new(
+      upstream_client: upstream_client,
+      raw_streamer:    raw_streamer,
+      controller:      controller,
+    )
   end
 
   # ── AC1 — Boot + routing over real HTTP ────────────────────────────────────
@@ -226,8 +230,8 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
         end
 
         stub_port, stub_task, stub_bound = boot_stub(stub_handler)
-        upstream = SpaceInferenceGateway::UpstreamClient.new(base_url: "http://localhost:#{stub_port}")
-        app      = make_app(upstream_client: upstream)
+        streamer = SpaceInferenceGateway::RawCompletionsStreamer.new(base_url: "http://localhost:#{stub_port}")
+        app      = make_app(raw_streamer: streamer)
         proxy_port, proxy_task, proxy_bound = boot_proxy(app)
         client = client_for(proxy_port)
 
@@ -313,8 +317,8 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
         end
 
         stub_port, stub_task, stub_bound = boot_stub(stub_handler)
-        upstream = SpaceInferenceGateway::UpstreamClient.new(base_url: "http://localhost:#{stub_port}")
-        app      = make_app(upstream_client: upstream)
+        streamer = SpaceInferenceGateway::RawCompletionsStreamer.new(base_url: "http://localhost:#{stub_port}")
+        app      = make_app(raw_streamer: streamer)
         proxy_port, proxy_task, proxy_bound = boot_proxy(app)
         client = client_for(proxy_port)
 
@@ -346,8 +350,7 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
           expect(full).to include("data:")
 
           # AC6: keepalive counter wired to the real emission path (IO.pipe + wait_readable).
-          # Flavor is :oai — the request is POST /v1/chat/completions via handle_oai → open_stream(flavor: :oai).
-          expect(SpaceInferenceGateway::Metrics::KEEPALIVE_COMMENTS.get(labels: { flavor: "oai" })).to be >= 1
+          expect(SpaceInferenceGateway::Metrics::KEEPALIVE_COMMENTS.get).to be >= 1
         ensure
           begin
             response&.body&.close
@@ -391,8 +394,8 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
           end
 
           stub_port, stub_task, stub_bound = boot_stub(stub_handler)
-          upstream = SpaceInferenceGateway::UpstreamClient.new(base_url: "http://localhost:#{stub_port}")
-          app = make_app(upstream_client: upstream)
+          streamer = SpaceInferenceGateway::RawCompletionsStreamer.new(base_url: "http://localhost:#{stub_port}")
+          app = make_app(raw_streamer: streamer)
           proxy_port, proxy_task, proxy_bound = boot_proxy(app)
           stream_client = client_for(proxy_port)
           swap_client = client_for(proxy_port)
@@ -542,8 +545,8 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
           end
 
           stub_port, stub_task, stub_bound = boot_stub(stub_handler)
-          upstream = SpaceInferenceGateway::UpstreamClient.new(base_url: "http://localhost:#{stub_port}")
-          app = make_app(upstream_client: upstream)
+          streamer = SpaceInferenceGateway::RawCompletionsStreamer.new(base_url: "http://localhost:#{stub_port}")
+          app = make_app(raw_streamer: streamer)
           proxy_port, proxy_task, proxy_bound = boot_proxy(app)
           client = client_for(proxy_port)
           load_resp = nil
@@ -571,57 +574,6 @@ RSpec.describe "Edge — Real Served Path (AC1–AC4)" do
             begin
               response&.body&.close
               load_resp&.body&.close
-            rescue StandardError
-              nil
-            end
-            client.close
-            proxy_task.stop
-            proxy_bound.close
-            stub_task.stop
-            stub_bound.close
-          end
-        end
-      end
-    end
-
-    it "ANT stream — upstream 400 relayed as ANT JSON envelope, no SSE (AC4)" do
-      Async do |task|
-        task.with_timeout(10) do
-          incident_body = '{"error":{"code":400,"message":"Cannot have 2 or more assistant messages at the end of the list.","type":"invalid_request_error"}}'
-
-          stub_handler = lambda do |req|
-            case req.path
-            when "/v1/messages"
-              Protocol::HTTP::Response[400, { "content-type" => "application/json" }, [incident_body]]
-            else
-              Protocol::HTTP::Response[404, {}, []]
-            end
-          end
-
-          stub_port, stub_task, stub_bound = boot_stub(stub_handler)
-          upstream = SpaceInferenceGateway::UpstreamClient.new(base_url: "http://localhost:#{stub_port}")
-          app = make_app(upstream_client: upstream)
-          proxy_port, proxy_task, proxy_bound = boot_proxy(app)
-          client = client_for(proxy_port)
-
-          begin
-            response = client.post(
-              "/v1/messages",
-              [["content-type", "application/json"]],
-              JSON.generate({ model: "diffusiongemma", messages: [], stream: true }),
-            )
-            expect(response.status).to eq(400)
-            expect(response.headers["content-type"]).to include("application/json")
-            expect(response.headers["content-type"]).not_to include("text/event-stream")
-            body = JSON.parse(response.read)
-            expect(body["type"]).to eq("error")
-            expect(body.dig("error", "type")).to eq("invalid_request_error")
-            expect(body.dig("error", "message")).to eq(
-              "Cannot have 2 or more assistant messages at the end of the list.",
-            )
-          ensure
-            begin
-              response&.body&.close
             rescue StandardError
               nil
             end

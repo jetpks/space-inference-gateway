@@ -7,17 +7,17 @@ the [reference](../reference/http-api.md).
 
 ## The problem
 
-Running a local LLM for daily use with Claude Code and opencode hits three
-walls at once:
+Running a local LLM for daily use with pi and opencode hits three walls at
+once:
 
 1. **Reasoning leaks into content.** Local engines emit chain-of-thought
    either inline as `<think>…</think>` mixed into visible text, or on
    engine-specific fields no client knows about. Clients render the model's
    scratchpad as the answer.
-2. **Strict parsers meet loose dialects.** opencode validates responses with
-   zod; Claude Code expects an exact Anthropic shape. "OpenAI-compatible"
-   engines bolt on extra fields, shape errors as bare strings, and — in mlx's
-   case — don't speak the Anthropic dialect at all.
+2. **Strict parsers meet loose dialects.** OpenAI-wire clients validate
+   responses strictly (opencode validates with zod; pi parses the streaming
+   grammar exactly). "OpenAI-compatible" engines bolt on extra fields and
+   shape errors as bare strings.
 3. **The LAN is privacy-gated.** macOS blocks signed CLI binaries from
    reaching a private-IP host, so the clients can't even connect to the
    studio directly.
@@ -29,7 +29,7 @@ solved with a loopback shim (below), not by the proxy.
 ## The serving path
 
 ```
-Claude Code / opencode
+pi / opencode
    → 127.0.0.1 loopback TLS shim         (laptop; Apple python3)
    → studio.slush.systems:443            (Caddy; LE cert via DNS-01/DigitalOcean)
    → space-inference-gateway :9292       (this gem; Falcon)
@@ -44,30 +44,35 @@ Each hop earns its place:
   (built with the `caddy-dns/digitalocean` plugin via `xcaddy`) rather than
   hand-rolling ACME in Ruby. Ruby is reserved for the custom normalization
   logic.
-- **The gateway** is the only bespoke component: serve both flavors and own
-  the model lifecycle.
+- **The gateway** is the only bespoke component: serve the OpenAI wire and
+  own the model lifecycle.
 - **The engine** does the inference. The gateway supervises it as a child
   process.
 
-## One upstream protocol, two client flavors
+## One wire, one upstream protocol
 
-The central architectural fact: **both engines speak OpenAI HTTP only**, so
-the Anthropic surface is *synthesized*, not proxied. `/v1/chat/completions`
-is normalize-and-forward; `/v1/messages` never reaches an engine — the
-gateway translates the request ANT→OAI (system message placement, tool
-definitions, `tool_use`/`tool_result` blocks), calls the engine's OAI
-endpoint, and emits a spec-shaped Anthropic response — including the full
-streaming event grammar (`message_start` → `content_block_*` →
-`message_delta` → `message_stop`) built from OAI deltas on the fly.
+The central architectural fact: **both engines and all clients speak OpenAI
+HTTP**. `/v1/chat/completions` is normalize-and-forward, and the output is
+*our* output — schema-conformant by construction, checked by `dry-schema` in
+the suite, never at the mercy of an engine's approximation of the SSE
+grammar. There is exactly one wire to capture fixtures for.
 
-This sounds like more machinery than proxying two dialects, but it's less:
-there is exactly one upstream protocol to capture fixtures for, and the
-Anthropic output is *our* output — schema-conformant by construction, checked
-by `dry-schema` in the suite, never at the mercy of an engine's
-approximation of Anthropic's SSE grammar. When llama.cpp was the engine it
-did speak both dialects, and the gateway proxied `/v1/messages` natively;
-that passthrough path (and `ErrorRelay::Oai`, and the `llamacpp` fixtures)
-is retained so a future true-OAI/ANT engine can slot back in.
+The gateway once *synthesized* a second client wire on top of the same
+engines (request translation, streamed event synthesis, a token-count
+estimate). That layer was removed wholesale (2026-10 — decision record in
+the space BRIEF §2): the client of record is pi, one wire means one
+translation surface to maintain, and a future second-wire client would be
+a `fast-messages` sibling gem, never in-gateway synthesis again.
+`ErrorRelay::Oai` and the `llamacpp` fixtures are retained so a future
+true-OAI engine (e.g. llama-server) can slot back in without archaeology.
+
+The streaming completions leg rides `fast-completions`' raw surface
+(`Client#raw_stream` via `RawCompletionsStreamer`, 2026-10 — BRIEF §3):
+one SSE codec and one wire discipline, shared with pi. Raw body in, parsed
+SSE events out, no chat accumulation, no auto-retry, parameterized watchdog
+(TTFB + per-chunk inactivity re-arm). The control plane and the buffered
+non-stream path stay on the internal `UpstreamClient` — out of the gem's
+charter by design.
 
 Engine quirks are absorbed at this seam too, invisibly to clients: mlx
 validates the request's `model` field (and would try to fetch unknown names
@@ -80,11 +85,9 @@ are injected into requests.
 
 The codebase keeps two concerns strictly separate:
 
-**Normalization** (the `*Normalizer` classes + `ReasoningParser` +
-`Schemas`). Pure input→output transforms over captured response shapes.
-Reasoning is lifted to the correct channel per flavor (OpenAI
-`reasoning_content`; Anthropic `thinking` blocks), and output validates
-against strict `dry-schema`s. Critically, the parser is **streaming-safe**: a
+**Normalization** (`OaiNormalizer` + `ReasoningParser` + `Schemas`). Pure
+input→output transforms over captured response shapes. Reasoning is lifted
+to `reasoning_content`, and output validates against a strict `dry-schema`. Critically, the parser is **streaming-safe**: a
 `<think>` tag split across two SSE chunks must never leak a partial tag, so
 `ReasoningParser` holds back the last few bytes of its buffer until it can
 decide.
@@ -110,7 +113,7 @@ channels. For models that don't reason at all (`hermes-4-70b`),
 A lesson that survives every engine change: **capture fixtures from a live
 server, never assume field shapes.** An earlier normalizer written against
 LM-Studio-shaped fixtures silently dropped thousands of characters of
-reasoning and emitted schema-invalid Anthropic output (empty `signature`).
+reasoning and emitted schema-invalid output.
 Real captures closed both defects, and each engine era has left its fixture
 directory (`spec/fixtures/llamacpp/`, `mlx/`, `optiq/`) as the ground truth
 its code was written against.
@@ -129,9 +132,8 @@ residue of what each one taught:
 2. **llama.cpp → mlx/optiq.** Apple-silicon-native engines (mlx-lm, then
    optiq with multi-token prediction for the default model) replaced
    `llama-server`. Because the supervisor/normalizer split already existed,
-   the re-home was mostly a new argv builder and the ANT-synthesis path —
-   the registry grew an `engine:` key and each entry carries its engine's
-   launch recipe.
+   the re-home was mostly a new argv builder — the registry grew an
+   `engine:` key and each entry carries its engine's launch recipe.
 
 The trace of pivot 1 still matters operationally: swaps are in-process, so a
 gateway crash could orphan an engine child holding `:8080`. Two mechanisms
@@ -182,8 +184,7 @@ exist purely to keep long generations alive and observable:
 - **Keepalive comments.** optiq can spend minutes in prompt prefill emitting
   zero bytes; client HTTP idle timers (pi defaults to 300 s) would abort the
   stream. After 8 s of upstream silence the gateway emits a `: keepalive`
-  SSE comment — spec-legal, and verified ignored by the OpenAI and Anthropic
-  SDK decoders.
+  SSE comment — spec-legal, and verified ignored by the OpenAI SDK decoders.
 - **Two-phase upstream timeouts.** Opening a stream is bounded by a headers
   timeout (300 s — this is what catches zombies); once streaming, only an
   idle *gap* over 1400 s times out, so a stream that keeps emitting never
@@ -193,10 +194,10 @@ exist purely to keep long generations alive and observable:
 - **Stream lifetime is the unit of accounting.** Falcon consumes a streaming
   body lazily *after* the handler returns, so the in-flight generation count
   is held from stream open until the body's idempotent `close` — teardown
-  closes upstream response before client (so pool drain doesn't hang),
-  observes duration, and releases the counter exactly once. Getting this
-  wrong (the count dropping to zero before relay) was a real regression
-  caught and fixed during the build.
+  aborts the raw-stream session (which closes the upstream response before
+  the client, so pool drain doesn't hang), observes duration, and releases
+  the counter exactly once. Getting this wrong (the count dropping to zero
+  before relay) was a real regression caught and fixed during the build.
 - **The pipe trick.** The normalizer drains in a scheduler fiber writing to
   an `IO.pipe`, and the Rack body reads it with `IO.select` timeouts —
   because Falcon drives the body from an Enumerator fiber where
@@ -207,7 +208,7 @@ exist purely to keep long generations alive and observable:
 
 macOS Tahoe's Local Network privacy gate keys on the **destination IP being
 private**. `studio.slush.systems` resolves to a LAN address, so the signed
-`claude` binary is blocked regardless of hostname or TLS — the reverse proxy
+`pi` binary is blocked regardless of hostname or TLS — the reverse proxy
 does **not** fix this. Two facts make the shim work:
 
 - **Loopback (`127.0.0.1`) is exempt.** Client → shim plaintext is fine.
@@ -226,8 +227,9 @@ encrypted, across the VLAN. This is the one piece that can't move to Ruby.
 
 Everything async-owned is cooperative concurrency on fibers (`async`,
 `async-http`, `async-process`, Falcon) — one process, no threads in our code.
-Model swaps are serialized with `Async::Semaphore(1)`; the single-reactor
-model is also why the Prometheus store can be `SingleThreaded` with no mutex.
+Model swaps are serialized with `Async::Semaphore(1)`; the metrics registry
+(`fast-prometheus`) guards each store at the metric boundary, so the
+single-reactor model needs no global store configuration.
 Control-plane flow uses `dry-monads` `Result`
 (`Success`/`Failure(:busy)`/`Failure(:unknown_model)`/`Failure(:timeout)`)
 rather than exceptions-as-control-flow, and `App` maps failures to HTTP
@@ -240,13 +242,12 @@ edges.
 - **Auth beyond the VLAN.** The private ~3-host VLAN plus TLS is the
   responsible bar; the dummy API key the clients send is ignored (and
   `/metrics` is likewise open inside the boundary).
-- **Clients beyond Claude Code + opencode.** The surface is general (standard
-  OpenAI + Anthropic), but only these two are validated end-to-end.
-- **Translating every OpenAI↔Anthropic semantic.** Translation is scoped to
-  what CC/opencode actually send — tool calls, system placement, the stop
-  reasons they read — not a general dialect bridge.
-- **Precise token counting.** `count_tokens` is chars/4 by design; it feeds
-  the client's context accounting, not billing.
+- **Clients beyond pi + opencode.** The surface is general (standard
+  OpenAI), but only these two are validated end-to-end.
+- **A second client wire, ever again.** The synthesis layer was
+  removed (2026-10 — BRIEF §2); if a non-OpenAI-wire client is ever needed
+  it becomes a `fast-messages` sibling gem in the fast-llm monorepo, not
+  in-gateway translation.
 - **Rewriting the Python shim in Ruby.** It can't be — the TCC exemption is
   per-binary (see above).
 
