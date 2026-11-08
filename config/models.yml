@@ -439,3 +439,25 @@ models:
     reasoning_effort_values: [high, medium, low, none]
     max_num_seqs: 1
     readiness_timeout: 600
+  # Shiftedx/Qwen3.8-27B-Abliterated-MLX-MXFP8 — the abliterated Qwen3.8-27B
+  # at mxfp8 (refusal direction zeroed; see the mxfp4-MTP alias above for the
+  # lineage). Chosen 2026-11-07 for the hermes journal assistant: Eric first
+  # asked for OBLITERATUS bf16 (kept above, quality-over-speed) then
+  # sahilchachra/Huihui-...-MXFP8 — that repo is deleted (404s even
+  # authenticated; search index is stale) — so Shiftedx's MXFP8 is the exact
+  # quant match. No bundled MTP in this build, so no speculative decoding;
+  # mxfp8 single-stream ≈ the mxfp8-concurrent1 tuning notes. APC on: hermes
+  # reinjects its full system prompt + memory every session.
+  qwen3.8-27b-abliterated-mxfp8:
+    engine: mlx-vlm
+    model: Shiftedx/Qwen3.8-27B-Abliterated-MLX-MXFP8
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    enable_thinking: true
+    apc_enabled: true
+    apc_exact_cache_entries: 4
+    supports_reasoning: true
+    reasoning_effort: medium
+    reasoning_effort_values: [high, medium, low, none]
+    max_num_seqs: 1
+    readiness_timeout: 600
