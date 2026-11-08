@@ -431,6 +431,7 @@ models:
     model: OBLITERATUS/Qwen3.8-27B-OBLITERATED
     port: 8080
     venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    max_tokens: 32768  # engine default when client omits it — mlx 2048 starves thinking models
     enable_thinking: true
     apc_enabled: true
     apc_exact_cache_entries: 4
@@ -453,6 +454,7 @@ models:
     model: Shiftedx/Qwen3.8-27B-Abliterated-MLX-MXFP8
     port: 8080
     venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    max_tokens: 32768  # engine default when client omits it — mlx 2048 starves thinking models
     enable_thinking: true
     apc_enabled: true
     apc_exact_cache_entries: 4
