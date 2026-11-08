@@ -417,3 +417,25 @@ models:
     supports_reasoning: true
     max_num_seqs: 1
     readiness_timeout: 600
+  # OBLITERATUS/Qwen3.8-27B-OBLITERATED — bf16 obliteration (refusal
+  # direction ablated, harsher cut than the Shiftedx alias above) pulled
+  # 2026-11-07 for the hermes journal assistant. The HF repo mixes 128GB of
+  # GGUF and an orphaned 18-shard bf16 original alongside the canonical
+  # 28-shard bf16 mlx layout + 1.8GB vision tower that the index references
+  # (~55.6GB) — only the indexed set was downloaded. No MTP ships with the
+  # finetune, so no speculative decoding; bf16 ≈ half the mxfp8 default's
+  # tok/s — quality over speed, journal duty. APC on: hermes reinjects its
+  # full system prompt + memory every session, prefix-cache pays there.
+  qwen3.8-27b-obliterated:
+    engine: mlx-vlm
+    model: OBLITERATUS/Qwen3.8-27B-OBLITERATED
+    port: 8080
+    venv: ~/.venv-mlx-vlm/bin/mlx_vlm.server
+    enable_thinking: true
+    apc_enabled: true
+    apc_exact_cache_entries: 4
+    supports_reasoning: true
+    reasoning_effort: medium
+    reasoning_effort_values: [high, medium, low, none]
+    max_num_seqs: 1
+    readiness_timeout: 600
