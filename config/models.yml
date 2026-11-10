@@ -382,9 +382,17 @@ models:
     # Blackfrost-AI/Muse-Glimmer-30B-Abliterated-BF16 via mlx-vlm;
     # same Onyx ATEM channel (to=self→to=user) as the stock
     # Muse-Glimmer aliases above.
+    # Journal duty 2026-11-09: promoted to the hermes default over the
+    # qwen3.8-27b abliterated arms — same journal-duty keys they carry:
+    # max_tokens 32768 (mlx 2048 default starves thinking generations)
+    # and APC (hermes reinjects its full system prompt + memory every
+    # session, prefix-cache pays there; 4 = 2 snapshots x 2 conversations).
     supports_reasoning: true
     reasoning_effort: medium
     reasoning_effort_values: [high, medium, low, none]
+    max_tokens: 32768  # engine default when client omits it — mlx 2048 starves thinking models
+    apc_enabled: true
+    apc_exact_cache_entries: 4
     max_num_seqs: 1
     readiness_timeout: 600
   # Qwen3.8-27B abliterated with BUNDLED MTP — native mtp.safetensors in the
