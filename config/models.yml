@@ -389,7 +389,15 @@ models:
     # session, prefix-cache pays there; 4 = 2 snapshots x 2 conversations).
     supports_reasoning: true
     reasoning_effort: medium
-    reasoning_effort_values: [high, medium, low, none]
+    # Measured 2026-11-09 (engine-direct sweep, temp 0, sheep + battery-budget
+    # prompts): reasoning chars low 385 < medium 612 < high 1060/4754 <
+    # xhigh 1055/5129 (xhigh's edge only shows on runway-heavy prompts, +8%).
+    # DROPPED: "none" — Muse has NO off mode: the template renders
+    # "Reasoning strength: <v>." unconditionally and the model reasons at
+    # ~375ch even fed "none" (matches the old floor note: ~1,650ch).
+    # DROPPED: "max" — measured 5072ch, BELOW xhigh's 5129: not a trained
+    # rung, just an untrained string the template passes through.
+    reasoning_effort_values: [xhigh, high, medium, low]
     max_tokens: 32768  # engine default when client omits it — mlx 2048 starves thinking models
     apc_enabled: true
     apc_exact_cache_entries: 4
