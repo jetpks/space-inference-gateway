@@ -180,11 +180,15 @@ module SpaceInferenceGateway
 
     def emit_chunks(data, canonical, created, parser, observer = nil)
       base = base_chunk(canonical, created)
-      if data["usage"]
-        observer&.on_usage(prompt: data.dig("usage", "prompt_tokens"),
-                           completion: data.dig("usage", "completion_tokens"),)
-      end
-      (data["choices"] || []).flat_map { |c| emit_choice(c, base, [canonical, created], parser, observer) }
+      usage = data["usage"]
+      observer&.on_usage(prompt: usage["prompt_tokens"], completion: usage["completion_tokens"]) if usage
+      chunks = (data["choices"] || []).flat_map { |c| emit_choice(c, base, [canonical, created], parser, observer) }
+      # Forward the terminal usage payload (stream_options.include_usage):
+      # the choices:[] usage chunk previously vanished client-side (observed
+      # for metrics only, never emitted). Absent upstream → nothing emitted.
+      return chunks unless usage.is_a?(Hash)
+
+      chunks << base.merge("choices" => [], "usage" => sanitize_usage(usage))
     end
 
     def emit_choice(choice, base, ids, parser, observer = nil)
@@ -193,6 +197,9 @@ module SpaceInferenceGateway
       result = []
 
       observer&.on_finish(choice["finish_reason"]) if choice["finish_reason"]
+      # One tool_args tap per tool_calls-bearing delta, whichever site emits
+      # it, so STREAM_DELTAS stays truthful without double-tapping.
+      observer&.on_delta(:tool_args) unless delta["tool_calls"].nil?
 
       # mlx-vlm ≥ 0.7 ships EVERY field on every delta with explicit nulls
       # (content, reasoning, reasoning_content, tool_calls all present), so
@@ -214,16 +221,20 @@ module SpaceInferenceGateway
         result << base.merge("choices" => [{ "index" => choice["index"], "delta" => delta.slice("role") }])
       end
 
-      # mlx emits tool_calls in their own chunk (alongside content or
-      # finish_reason); pass them through verbatim so the client can execute.
-      # Value check: 0.7.x carries a null tool_calls key on every delta.
-      unless delta["tool_calls"].nil?
-        observer&.on_delta(:tool_args)
-        flush_into(result, parser, canonical, created, choice["index"])
-        result << base.merge("choices" => [{ "index" => choice["index"],
-                                             "delta" => { "tool_calls" => delta["tool_calls"] }, }])
-      end
-      result
+      result.concat(relay_progressive_tool_calls(choice, base, delta, ids, parser))
+    end
+
+    # Verbatim relay for tool_calls deltas WITHOUT finish_reason — qwen-style
+    # progressive fragments, one chunk per delta, byte-identical to upstream.
+    # A tool_calls delta arriving WITH finish_reason (muse/ATEM terminal
+    # shape) is emitted exactly once by finish_chunk's carry — relaying it
+    # here too doubled the complete call client-side (I06 gateway-ab).
+    def relay_progressive_tool_calls(choice, base, delta, ids, parser)
+      return [] if delta["tool_calls"].nil? || choice["finish_reason"]
+
+      result = parser ? flush_chunks(parser.flush, ids.first, ids.last, choice["index"]) : []
+      result << base.merge("choices" => [{ "index" => choice["index"],
+                                           "delta" => { "tool_calls" => delta["tool_calls"] }, }])
     end
 
     def emit_reasoning_delta(choice, base)
@@ -249,7 +260,6 @@ module SpaceInferenceGateway
 
       flush_into(result, parser, canonical, created, choice["index"])
       result << finish_chunk(base, choice)
-      result
     end
 
     def flush_into(result, parser, canonical, created, index)
@@ -261,9 +271,10 @@ module SpaceInferenceGateway
     def finish_chunk(base, choice)
       chunk = base.merge("choices" => [{ "index" => choice["index"], "delta" => {},
                                          "finish_reason" => choice["finish_reason"], }])
-      # Carry tool_calls onto the finish chunk when present (some clients read
-      # them from the finish chunk rather than a separate delta). Value check:
-      # mlx-vlm 0.7.x carries a null tool_calls key on every delta.
+      # Carry tool_calls onto the finish chunk when present — for the
+      # muse/ATEM terminal shape this carry is the tool_call's SINGLE
+      # emission (finish_reason + the complete call on one chunk, the
+      # engine's own terminal shape). Value check per 0f81bf6.
       delta = choice["delta"] || {}
       chunk["choices"][0]["delta"]["tool_calls"] = delta["tool_calls"] unless delta["tool_calls"].nil?
       chunk
