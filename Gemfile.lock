@@ -91,9 +91,9 @@ GEM
       protocol-http (~> 0.31)
       protocol-rack (~> 0.7)
       samovar (~> 2.3)
-    fast-completions (0.6.0)
+    fast-completions (0.7.0)
       async-http (~> 0.95)
-    fast-prometheus (0.4.0)
+    fast-prometheus (0.5.0)
       async (>= 2.38)
       async-grpc (~> 0.7)
       async-http (~> 0.95)
@@ -147,7 +147,7 @@ GEM
       rack (>= 1.0)
     protocol-url (0.19.0)
     racc (1.8.1)
-    rack (3.2.7)
+    rack (3.2.8)
     rack-test (2.3.0)
       rack (>= 1.3)
     rainbow (3.1.1)
@@ -166,7 +166,7 @@ GEM
       diff-lcs (>= 1.2.0, < 2.0)
       rspec-support (~> 3.13.0)
     rspec-support (3.13.7)
-    rubocop (1.92.1)
+    rubocop (1.92.2)
       json (>= 2.3)
       language_server-protocol (~> 3.17.0.2)
       lint_roller (~> 1.1.0)
@@ -241,8 +241,8 @@ CHECKSUMS
   dry-schema (1.16.0) sha256=cd3aaeabc0f1af66ec82a29096d4c4fb92a0a58b9dae29a22b1bbceb78985727
   dry-types (1.9.1) sha256=baebeecdb9f8395d6c9d227b62011279440943e3ef2468fe8ccc1ba11467f178
   falcon (0.57.0) sha256=c9b060bc23a3b90a80376078aae037d8f48e0b2f12f5f30f360d4b29d7baf0f7
-  fast-completions (0.6.0) sha256=f436fcf1e9000c4e08228517e66d8edc58b0a9cd61f6cec9c10769e1dffe8b77
-  fast-prometheus (0.4.0) sha256=bdfde3347b933371c547e903b20945d7e28b3c97b1694b57e13fde78d0ad3bb1
+  fast-completions (0.7.0) sha256=837358eff29fb69b7e6e127c3b0520004eca3574a18edfb85e35202ce8cffe48
+  fast-prometheus (0.5.0) sha256=962c2e20fe57becdf9a28a9791f793d8b6332c12ec2dcf5d70016bf3d79ad737
   fast-protowire (0.3.0) sha256=f0fae7e87ee6a7784ca98a92e1c8d9c197647fb69f2cf0133725dec577220877
   fiber-annotation (0.2.0) sha256=7abfadf1d119f508867d4103bf231c0354d019cc39a5738945dec2edadaf6c03
   fiber-local (1.1.0) sha256=c885f94f210fb9b05737de65d511136ea602e00c5105953748aa0f8793489f06
@@ -269,7 +269,7 @@ CHECKSUMS
   protocol-rack (0.23.0) sha256=63eec3341b20565b3dd155345fd1426ecbbed322cdc8a6accc993905388c03d7
   protocol-url (0.19.0) sha256=3f6b9f6aa742a259a0b3610fbbd9685dcd9506adf6734f428ff96259faabfb21
   racc (1.8.1) sha256=4a7f6929691dbec8b5209a0b373bc2614882b55fc5d2e447a21aaa691303d62f
-  rack (3.2.7) sha256=93e13e1c24f93556671d85d2d79fa228c3485815c50d7e2f265b5330c6528fb7
+  rack (3.2.8) sha256=1fecc85e463ebc7a2a945fff829ffcd549babeb1556384796fad946c28dc4ec7
   rack-test (2.3.0) sha256=b118d177cc002c572fc1b6fd8d19c9ed5881a36e8d6f689f9e618f9f861241e8
   rainbow (3.1.1) sha256=039491aa3a89f42efa1d6dec2fc4e62ede96eb6acd95e52f1ad581182b79bc6a
   rake (13.4.2) sha256=cb825b2bd5f1f8e91ca37bddb4b9aaf345551b4731da62949be002fa89283701
@@ -279,7 +279,7 @@ CHECKSUMS
   rspec-expectations (3.13.5) sha256=33a4d3a1d95060aea4c94e9f237030a8f9eae5615e9bd85718fe3a09e4b58836
   rspec-mocks (3.13.8) sha256=086ad3d3d17533f4237643de0b5c42f04b66348c28bf6b9c2d3f4a3b01af1d47
   rspec-support (3.13.7) sha256=0640e5570872aafefd79867901deeeeb40b0c9875a36b983d85f54fb7381c47c
-  rubocop (1.92.1) sha256=a905381a5344215a79abcfe80f6c94366447e6a55347c9a525b5a24990e33f62
+  rubocop (1.92.2) sha256=14fb31eed143a0dc6f78186c550c1715e81cd38f59d05d1165050e445c1f5382
   rubocop-ast (1.50.0) sha256=b9ca88300da0803ee222ad20cdb30494c0a784eed06fdc35d254b06d662788db
   rubocop-performance (1.27.0) sha256=eeeb1374d062a368ee1c787b70eb0b0cc4b184cb1f8565f424760946146d61ce
   ruby-progressbar (1.13.0) sha256=80fc9c47a9b640d6834e0dc7b3c94c9df37f08cb072b7761e4a71e22cff29b33
