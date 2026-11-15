@@ -436,6 +436,18 @@ RSpec.describe SpaceInferenceGateway::OaiNormalizer do
       expect(tool_call_deltas).not_to be_empty
       expect(tool_call_deltas.first.first["function"]["name"]).to eq("get_weather")
     end
+
+    it "emits the terminal tool_call EXACTLY ONCE — count, not presence (the I06 lesson)" do
+      sse = normalizer.normalize_stream_to_sse(stream_text)
+      chunks = sse.lines.map { |l| l.sub(/^data: /, "").strip }
+                  .reject { |l| l.empty? || l == "[DONE]" }
+                  .map { |l| JSON.parse(l) }
+      tool_call_deltas = chunks.flat_map { |c| c["choices"] }
+                               .filter_map { |c| c["delta"]["tool_calls"] }
+      expect(tool_call_deltas.size).to eq(1)
+      expect(tool_call_deltas.first.first.dig("function", "arguments")).to eq("{\"city\":\"Tokyo\"}")
+      expect(chunks.count { |c| c.dig("choices", 0, "finish_reason") }).to eq(1)
+    end
   end
 
   # ── AC4: OAI normalizer against optiq fixtures (no code change) ──────────
@@ -527,6 +539,169 @@ RSpec.describe SpaceInferenceGateway::OaiNormalizer do
         result = SpaceInferenceGateway::Schemas::OAI_CHUNK.call(chunk)
         expect(result).to be_success, "failed: #{result.errors.to_h.inspect}"
       end
+    end
+  end
+
+  # ── I06: tool-call truth on the response side (muse/ATEM wire shapes) ────
+  # Fixtures are byte-identical copies of the frozen 2026-11-15 gateway-ab
+  # corpus (build/glimmer-ladder/gateway-ab, space 20261110-knowledge-builder):
+  # direct-1.sse.txt = the ENGINE-side wire of the failing run (complete
+  # tool_call on the terminal delta + a choices:[] usage chunk);
+  # gateway-1.sse.txt = the buggy gateway's client-side artifact (the same
+  # complete tool_call on TWO consecutive chunks, usage chunk absent).
+  # These specs COUNT — the presence-only assertions that preceded them are
+  # exactly why the double emit survived review.
+  MUSE_FIXTURE_PATH = File.expand_path("../fixtures/muse", __dir__) unless defined?(MUSE_FIXTURE_PATH)
+
+  def muse_fixture(name)
+    File.read(File.join(MUSE_FIXTURE_PATH, name))
+  end
+
+  # Every tool_calls array the upstream wire carries, in arrival order —
+  # the byte-truth the normalizer must relay without loss or duplication.
+  def muse_upstream_tool_calls(name)
+    muse_fixture(name).lines.filter_map do |line|
+      stripped = line.strip
+      next unless stripped.start_with?("data:")
+
+      raw = stripped.sub(/\Adata:\s*/, "")
+      next if raw == "[DONE]"
+
+      JSON.parse(raw).dig("choices", 0, "delta", "tool_calls")
+    end
+  end
+
+  describe "complete tool_call on the terminal delta (muse/ATEM shape) — emitted exactly once" do
+    let(:muse_normalizer) { described_class.new(advertised_model: "muse-glimmer-30b") }
+    let(:chunks) { muse_normalizer.normalize_stream_chunks(muse_fixture("direct-1.sse.txt")) }
+    let(:tool_call_chunks) { chunks.select { |c| c.dig("choices", 0, "delta", "tool_calls") } }
+    let(:finish_chunks) { chunks.select { |c| c.dig("choices", 0, "finish_reason") } }
+    let(:usage_chunks) { chunks.select { |c| c.key?("usage") } }
+
+    it "emits EXACTLY ONE tool_calls chunk (base doubled: finish carry + verbatim passthrough)" do
+      expect(tool_call_chunks.size).to eq(1)
+    end
+
+    it "the single emission is byte-identical to the engine's complete tool_call" do
+      emitted = tool_call_chunks.map { |c| c.dig("choices", 0, "delta", "tool_calls") }
+      expect(emitted).to eq(muse_upstream_tool_calls("direct-1.sse.txt"))
+    end
+
+    it "arguments parse to the engine's full payload (what the defect hollowed to {})" do
+      args = JSON.parse(tool_call_chunks.first.dig("choices", 0, "delta", "tool_calls").first.dig("function", "arguments"))
+      expect(args).to eq("query" => "Antikythera mechanism", "numResults" => 5, "includeText" => false)
+    end
+
+    it "finish_reason delivered exactly once, on the same chunk as the tool_call" do
+      expect(finish_chunks.size).to eq(1)
+      expect(tool_call_chunks.first.dig("choices", 0, "finish_reason")).to eq("tool_calls")
+    end
+
+    it "forwards the upstream usage chunk exactly once, sanitized to three fields" do
+      expect(usage_chunks.size).to eq(1)
+      expect(usage_chunks.first["choices"]).to eq([])
+      expect(usage_chunks.first["usage"]).to eq("prompt_tokens" => 3078, "completion_tokens" => 267, "total_tokens" => 3345)
+    end
+
+    it "every emitted chunk validates the strict OAI_CHUNK schema (usage chunk included)" do
+      chunks.each do |chunk|
+        result = SpaceInferenceGateway::Schemas::OAI_CHUNK.call(chunk)
+        expect(result).to be_success, "chunk failed schema: #{result.errors.to_h.inspect}\nchunk=#{chunk.inspect}"
+      end
+    end
+
+    it "advertises the alias, never the upstream model path" do
+      expect(chunks.map { |c| c["model"] }.uniq).to eq(["muse-glimmer-30b"])
+    end
+  end
+
+  describe "nulls-everywhere terminal delta (mlx ≥0.7 ships every key with explicit nulls)" do
+    let(:tool_call) do
+      { "type" => "function", "index" => 0, "id" => "call_9",
+        "function" => { "name" => "web_search", "arguments" => "{\"query\":\"x\"}" }, }
+    end
+    let(:stream_text) do
+      [
+        { "id" => "c9", "object" => "chat.completion.chunk", "created" => 1_794_772_268, "model" => "m",
+          "choices" => [{ "index" => 0,
+                          "delta" => { "role" => "assistant", "content" => nil, "reasoning" => nil,
+                                       "reasoning_content" => nil, "tool_calls" => nil, }, }], },
+        { "id" => "c9", "object" => "chat.completion.chunk", "created" => 1_794_772_268, "model" => "m",
+          "choices" => [{ "index" => 0, "finish_reason" => "tool_calls",
+                          "delta" => { "role" => "assistant", "content" => nil, "reasoning" => nil,
+                                       "reasoning_content" => nil, "tool_calls" => [tool_call], }, }], },
+      ].map { |payload| "data: #{JSON.generate(payload)}" }.then { |lines| "#{lines.join("\n\n")}\n\ndata: [DONE]\n\n" }
+    end
+    let(:chunks) { normalizer.normalize_stream_chunks(stream_text) }
+    let(:tool_call_chunks) { chunks.select { |c| c.dig("choices", 0, "delta", "tool_calls") } }
+
+    it "routes by VALUE: the nulls-only delta emits one role chunk; no null payload keys relayed" do
+      expect(chunks.size).to eq(2)
+      expect(normalizer.normalize_stream_to_sse(stream_text)).not_to include(":null")
+    end
+
+    it "the terminal nulls-everywhere delta emits the complete tool_call EXACTLY ONCE" do
+      expect(tool_call_chunks.size).to eq(1)
+      expect(tool_call_chunks.first.dig("choices", 0, "delta", "tool_calls")).to eq([tool_call])
+      expect(tool_call_chunks.first.dig("choices", 0, "finish_reason")).to eq("tool_calls")
+    end
+  end
+
+  describe "progressive tool_calls fragments (qwen-style) — one chunk per delta, unchanged" do
+    let(:fragments) do
+      [
+        [{ "type" => "function", "index" => 0, "id" => "call_7",
+           "function" => { "name" => "get_weather", "arguments" => "" }, }],
+        [{ "type" => "function", "index" => 0,
+           "function" => { "name" => nil, "arguments" => "{\"city\":" }, }],
+        [{ "type" => "function", "index" => 0,
+           "function" => { "name" => nil, "arguments" => "\"Tokyo\"}" }, }],
+      ]
+    end
+    let(:stream_text) do
+      lines = fragments.each_with_index.map do |frags, i|
+        delta = i.zero? ? { "role" => "assistant", "tool_calls" => frags } : { "tool_calls" => frags }
+        payload = { "choices" => [{ "index" => 0, "delta" => delta }] }
+        "data: #{JSON.generate(payload)}"
+      end
+      lines << %(data: {"choices":[{"index":0,"finish_reason":"tool_calls","delta":{}}]})
+      (lines << "data: [DONE]").join("\n\n") << "\n\n"
+    end
+    let(:chunks) { normalizer.normalize_stream_chunks(stream_text) }
+    let(:tool_call_chunks) { chunks.select { |c| c.dig("choices", 0, "delta", "tool_calls") } }
+
+    it "relays ONE chunk per fragment delta — no merging, no dropping, no doubling" do
+      expect(tool_call_chunks.size).to eq(fragments.size)
+    end
+
+    it "each relayed fragment is byte-identical to its upstream fragment" do
+      expect(tool_call_chunks.map { |c| c.dig("choices", 0, "delta", "tool_calls") }).to eq(fragments)
+    end
+
+    it "concatenated arguments reassemble the full call exactly" do
+      args = tool_call_chunks.flat_map { |c| c.dig("choices", 0, "delta", "tool_calls") }
+                             .filter_map { |tc| tc.dig("function", "arguments") }.join
+      expect(JSON.parse(args)).to eq("city" => "Tokyo")
+    end
+
+    it "finish_reason delivered exactly once, on its own terminal chunk" do
+      finish_chunks = chunks.select { |c| c.dig("choices", 0, "finish_reason") }
+      expect(finish_chunks.size).to eq(1)
+      expect(finish_chunks.first.dig("choices", 0, "delta")).to eq({})
+    end
+  end
+
+  describe "the doubled artifact re-fed (gateway-1.sse.txt) — no amplification, usage absent" do
+    let(:muse_normalizer) { described_class.new(advertised_model: "muse-glimmer-30b") }
+    let(:chunks) { muse_normalizer.normalize_stream_chunks(muse_fixture("gateway-1.sse.txt")) }
+
+    it "emits at most one tool_calls chunk per tool_calls-bearing upstream delta (2 in → 2 out; base amplified 2 → 3)" do
+      emitted = chunks.count { |c| c.dig("choices", 0, "delta", "tool_calls") }
+      expect(emitted).to eq(muse_upstream_tool_calls("gateway-1.sse.txt").size)
+    end
+
+    it "usage absent upstream → no usage chunk emitted (no fabrication)" do
+      expect(chunks.none? { |c| c.key?("usage") }).to be(true)
     end
   end
 end

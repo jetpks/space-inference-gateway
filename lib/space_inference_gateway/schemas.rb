@@ -4,6 +4,16 @@ require "dry-schema"
 
 module SpaceInferenceGateway
   module Schemas
+    # Token usage — shared by the non-stream completion and the forwarded
+    # terminal stream chunk (stream_options.include_usage).
+    USAGE = Dry::Schema.JSON do
+      config.validate_keys = true
+
+      required(:prompt_tokens).filled(:integer)
+      required(:completion_tokens).filled(:integer)
+      required(:total_tokens).filled(:integer)
+    end
+
     # OpenAI non-stream chat.completion
     OAI_COMPLETION = Dry::Schema.JSON do
       config.validate_keys = true
@@ -23,11 +33,7 @@ module SpaceInferenceGateway
         required(:finish_reason).maybe(:string)
         optional(:logprobs)
       end
-      required(:usage).hash do
-        required(:prompt_tokens).filled(:integer)
-        required(:completion_tokens).filled(:integer)
-        required(:total_tokens).filled(:integer)
-      end
+      required(:usage).value(USAGE)
       optional(:system_fingerprint).maybe(:string)
     end
 
@@ -46,9 +52,22 @@ module SpaceInferenceGateway
           optional(:content).maybe(:string)
           optional(:reasoning_content).maybe(:string)
           optional(:refusal).maybe(:string)
+          # Streaming tool-call deltas — relayed verbatim, complete or fragment.
+          optional(:tool_calls).array(:hash) do
+            optional(:type).maybe(:string)
+            optional(:index).maybe(:integer)
+            optional(:id).maybe(:string)
+            optional(:function).hash do
+              optional(:name).maybe(:string)
+              optional(:arguments).maybe(:string)
+            end
+          end
         end
         optional(:finish_reason).maybe(:string)
       end
+      # Terminal usage (stream_options.include_usage): upstream sends it on a
+      # final choices:[] chunk; the normalizer forwards it sanitized (USAGE).
+      optional(:usage).value(USAGE)
     end
 
     DIFFUSION_BANNED_KEYS = %w[type block step total text].freeze
