@@ -238,6 +238,74 @@ RSpec.describe SpaceInferenceGateway::App do
     end
   end
 
+  # ── Request seed randomization ─────────────────────────────────────
+  # Fleet-wide (no per-alias key): mlx-vlm pins DEFAULT_SEED=0, so without
+  # this an identical request body replays byte-identically at any
+  # temperature. Random by default, deterministic by explicit request.
+  describe "request seed randomization" do
+    let(:forwarded) { [] }
+    let(:upstream_fn) do
+      lambda do |path, body|
+        forwarded << { path: path, body: body }
+        [fixture("oai_ns.json"), 200, {}]
+      end
+    end
+
+    let(:registry) do
+      SpaceInferenceGateway::ModelRegistry.new(
+        "default" => "seed-arm",
+        "models"  => {
+          "seed-arm" => { "engine" => "mlx-vlm", "model" => "fixture/seed-arm", "port" => 8080 },
+        },
+      )
+    end
+
+    let(:app) do
+      supervisor = FakeUpstreamServer::FakeSupervisor.new("seed-arm", "http://unused")
+      controller = SpaceInferenceGateway::ModelController.new(registry: registry, supervisor: supervisor)
+      described_class.new(upstream_fn: upstream_fn, controller: controller)
+    end
+
+    def sent_for(body)
+      post "/v1/chat/completions", JSON.generate(body), "CONTENT_TYPE" => "application/json"
+      JSON.parse(forwarded.last[:body])
+    end
+
+    # g1 — a request without a seed must carry an injected integer seed, and a
+    # DIFFERENT one on the next request: the point is per-request randomness,
+    # not a new constant pin.
+    it "injects a fresh integer seed on each request that omits one" do
+      first  = sent_for({ model: "seed-arm", messages: [{ role: "user", content: "hi" }] })
+      second = sent_for({ model: "seed-arm", messages: [{ role: "user", content: "hi" }] })
+
+      expect(first["seed"]).to be_an(Integer)
+      expect(second["seed"]).to be_an(Integer)
+      expect(first["seed"]).to eq(first["seed"] & 0xFFFF_FFFF)
+      expect(second["seed"]).to eq(second["seed"] & 0xFFFF_FFFF)
+      expect(first["seed"]).not_to eq(second["seed"])
+    end
+
+    # g2 — comparability by request is preserved: an explicit seed is the
+    # client's determinism switch and passes through untouched.
+    it "passes a client-supplied seed through byte-untouched" do
+      sent = sent_for({ model: "seed-arm", messages: [{ role: "user", content: "hi" }], seed: 1234 })
+
+      expect(sent["seed"]).to eq(1234)
+    end
+
+    # g3 — GATEWAY_RANDOM_SEED=0 is the escape hatch restoring the legacy
+    # pinned (engine DEFAULT_SEED) behaviour: no injection at all.
+    it "does not inject when GATEWAY_RANDOM_SEED=0" do
+      ENV["GATEWAY_RANDOM_SEED"] = "0"
+      begin
+        sent = sent_for({ model: "seed-arm", messages: [{ role: "user", content: "hi" }] })
+        expect(sent).not_to have_key("seed")
+      ensure
+        ENV.delete("GATEWAY_RANDOM_SEED")
+      end
+    end
+  end
+
   # ── Reasoning effort passthrough (OAI, mlx-vlm) ───────────────────────
   # On a local fixture registry: these assert inject_reasoning_effort's
   # behaviour, which must hold whatever the live fleet currently declares

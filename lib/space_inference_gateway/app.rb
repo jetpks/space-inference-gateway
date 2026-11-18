@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "json"
+require "securerandom"
 require_relative "metrics"
 require_relative "generation_observer"
 require_relative "oai_normalizer"
@@ -537,6 +538,23 @@ module SpaceInferenceGateway
       end
     end
 
+    # mlx-vlm pins DEFAULT_SEED=0 (generate/dispatch.py) and its request
+    # schema defaults an omitted "seed" onto that pin, so an identical
+    # request body replays byte-identically at ANY temperature — the sampler
+    # derives its per-position draw keys from the request seed alone. Fleet
+    # policy is the opposite of an eval harness: random by default. A
+    # per-request SecureRandom seed is injected fill-if-absent so identical
+    # prompts diverge; a client that states its own seed keeps it (requests
+    # stay comparable when the caller asks them to be). GATEWAY_RANDOM_SEED=0
+    # restores the legacy pinned-replay behaviour — an escape hatch for a
+    # future eval need, not a tuning knob, so it is deliberately NOT a
+    # per-alias registry key.
+    def inject_request_seed(parsed)
+      return if ENV["GATEWAY_RANDOM_SEED"] == "0"
+
+      parsed["seed"] = SecureRandom.random_number(2**32) unless parsed.key?("seed")
+    end
+
     # A client may express effort as either the flat reasoning_effort field or
     # the nested Responses-API reasoning: {effort:}. mlx-vlm checks the nested
     # form first, so both are read here and both are rewritten below.
@@ -579,7 +597,8 @@ module SpaceInferenceGateway
     # - mlx and mlx-vlm: rewrites the "model" field to the HF repo id (both
     #   validate this field against their loaded model; optiq single-model
     #   mode accepts any value, so it is excluded).
-    # - all three engines: normalizes "developer" role to "system" and injects stop_tokens.
+    # - all three engines: normalizes "developer" role to "system", injects
+    #   stop_tokens, and injects a per-request random seed (inject_request_seed).
     def rewrite_model_for_mlx(body_str, model_alias)
       return body_str unless mlx_engine?(model_alias)
 
@@ -598,6 +617,7 @@ module SpaceInferenceGateway
       inject_mlx_stop_tokens(parsed, model_alias)
       inject_reasoning_effort(parsed, entry)
       inject_sampling_penalties(parsed, entry)
+      inject_request_seed(parsed)
       strip_history_reasoning(parsed) if entry && entry[:preserve_thinking] == false
       JSON.generate(parsed)
     end
