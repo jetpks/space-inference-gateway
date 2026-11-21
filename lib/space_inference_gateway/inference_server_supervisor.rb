@@ -128,8 +128,23 @@ module SpaceInferenceGateway
     # APC, thinking_budget and max_num_seqs all have no CLI flag on mlx-vlm —
     # environment-only, so an entry declaring none of them leaves the child's
     # environment unchanged. The mapping lives with the rest of that engine's
-    # vocabulary; this stays as the supervisor's seam onto it.
-    def build_env(entry) = MlxVlmFlags.env_for(entry)
+    # vocabulary; this stays as the supervisor's seam onto it. A generic
+    # per-alias `env:` mapping merges on top (engine-agnostic escape hatch for
+    # env-only knobs that have no CLI flag on ANY engine — e.g. TensorFold's
+    # FLASHNEXT_LOAD_LIMIT_GB admission policy; names and values pass through
+    # verbatim as strings, so the operator owns spelling them exactly).
+    # MlxVlmFlags.env_for is gated to mlx-vlm entries: its vocabulary IS that
+    # engine's (APC, MLX_VLM_* — meaningful only to the mlx_vlm.server child),
+    # and max_num_seqs is shared key-space with other engines whose children
+    # must not inherit the mlx-vlm spelling of it.
+    def build_env(entry)
+      engine_env = entry[:engine].to_s == "mlx-vlm" ? MlxVlmFlags.env_for(entry) : {}
+      engine_env.merge(entry_env_overrides(entry))
+    end
+
+    def entry_env_overrides(entry)
+      entry[:env].to_h { |k, v| [k.to_s, v.to_s] }
+    end
 
     def build_mlx_argv(entry)
       argv = [entry[:venv].to_s, "-m", "mlx_lm.server",

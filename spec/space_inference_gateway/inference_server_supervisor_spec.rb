@@ -386,6 +386,25 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
       entry = { engine: "mlx-vlm", thinking_budget: 512 }
       expect(supervisor.send(:build_env, entry)).to eq("MLX_VLM_THINKING_BUDGET" => "512")
     end
+
+    # The generic per-alias env: mapping — the engine-agnostic escape hatch
+    # for env-only knobs no engine exposes as a CLI flag (TensorFold's
+    # FLASHNEXT_LOAD_LIMIT_GB admission policy being the first resident).
+    it "merges a per-alias env: mapping over the engine-derived environment" do
+      entry = { engine: "tensorfold", env: { "FLASHNEXT_LOAD_LIMIT_GB" => 100 } }
+      expect(supervisor.send(:build_env, entry)).to eq("FLASHNEXT_LOAD_LIMIT_GB" => "100")
+    end
+
+    it "stringifies keys and values, and an mlx-vlm entry can carry env: too" do
+      entry = { engine: "mlx-vlm", apc_enabled: true, env: { custom_flag: "on" } }
+      expect(supervisor.send(:build_env, entry))
+        .to eq("APC_ENABLED" => "1", "custom_flag" => "on")
+    end
+
+    it "leaves the environment unchanged when env: is absent" do
+      entry = { engine: "mlx", model: "M", port: 8080, venv: "/x" }
+      expect(supervisor.send(:build_env, entry)).to eq({})
+    end
   end
 
   # ── ModelRegistry — mlx fields ─────────────────────────────────────────────

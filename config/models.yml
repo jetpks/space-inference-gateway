@@ -605,4 +605,15 @@ models:
     # tables auto host-map: 105 GiB weights > 75% of the recommended working
     # set). Revisit if the mlx-vlm arm's 262k sessions ever move over.
     context: 131072
+    # Working recipe, GPU-verified 2026-11-21 (23.7s warm load from page
+    # cache, 88.3 GiB wired, MTP drafts, quality battery 6/6 vs the mlx-vlm
+    # external-PLE arm, ~80-90 tok/s informal): --ple-on-ssd moves the ~25 GiB
+    # of n-gram PLE rows to bounded SSD reads (the native external-PLE
+    # analogue — plan drops 126.6 -> 91.7 GiB), and FLASHNEXT_LOAD_LIMIT_GB
+    # raises TF's conservative 70%-of-RAM admission policy (89.6) to 100,
+    # still under the 118 GiB wired limit that is the real bound and that
+    # stays untouched per the standing rule.
+    extra_args: ["--ple-on-ssd"]
+    env:
+      FLASHNEXT_LOAD_LIMIT_GB: "100"
     readiness_timeout: 900
