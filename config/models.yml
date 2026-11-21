@@ -530,9 +530,11 @@ models:
     readiness_timeout: 600
   # The sharp dense-format comparison: qwen3.8-27b-mxfp8-concurrent1 measured
   # 22.5 tok/s single-stream on mlx-vlm (spec-decode + APC); -plain and the
-  # mxfp4 twin measured 15.8. Same cached weights here (26.7 GiB), drafter
-  # dropped for the first arm — DFlash2 (z-lab/Qwen3.8-27B-DFlash2) pairs
-  # automatically when cached, else add draft_model once pulled.
+  # mxfp4 twin measured 15.8. Same cached weights here — the "mxfp8" repo is
+  # actually MLX affine 8-bit g32 (tensorfold info verified), 26.72 GiB,
+  # 50.6 GiB startup budget @32k ctx. Drafter dropped for the first arm —
+  # DFlash2 (z-lab/Qwen3.8-27B-DFlash2) pairs automatically when cached, else
+  # add draft_model once pulled.
   tf-qwen3.8-27b-mxfp8:
     engine: tensorfold
     model: mlx-community/Qwen3.8-27B-mxfp8
@@ -562,11 +564,25 @@ models:
   # (36 tok/s measured) with TensorFold's pinned 4-bit MTP repack — 75.3 GiB,
   # ~92 tok/s est. from M3 Ultra, quality 92%. NOT in the HF cache yet:
   #   tensorfold pull TensorFold/Qwen3.8-Flash-Next-MLX-4bit-MTP
-  # Metal caveats (docs/known-issues.md): single-host only (--parallel >= 2
-  # is a measured regression on Metal, #1893 — max_num_seqs stays 1); ~2s
-  # first token after >900s idle (keep-warm rewiring; consider --keep-warm
-  # via extra_args if that matters); the 6-bit variant drifts tokens on
-  # M1-M4 — this is the 4-bit and unaffected.
+  # The repack is REQUIRED, not preferred: the cached community flash-next
+  # weights don't serve — txgsync mxfp4 probes UnsupportedQuantization (the
+  # qwen4_exp family is affine-only in TF), and the four affine community
+  # repos probe NoSafetensors: their hub snapshot dirs carry only
+  # config+README, while the weight blobs live deduped in HF's new shared
+  # content-addressed store (hub/blobs/<xx>/<sha>), which TF 1.3.2 does not
+  # resolve through a repo manifest. (The mxfp4 weights themselves are fine
+  # on disk — the 92G external-PLE view hard-links the same CAS blobs.)
+  # Comparability caveat: mlx-vlm arm is mxfp4, this is affine 4-bit — a
+  # tok/s comparison is engine+kernels, any quality delta confounds quant
+  # with engine.
+  # The fork's external-PLE memory hack has native TF equivalents:
+  # TF_NGRAM_HOST auto host-mapping (≈29.8 of 105.4 GiB) and --ple-on-ssd
+  # (extra_args if the wired limit bites). Metal caveats (docs/known-
+  # issues.md): single-host only (--parallel >= 2 is a measured regression
+  # on Metal, #1893 — max_num_seqs stays 1); ~2s first token after >900s
+  # idle (keep-warm rewiring; consider --keep-warm via extra_args if that
+  # matters); the 6-bit variant drifts tokens on M1-M4 — this is the 4-bit
+  # and unaffected.
   tf-qwen3.8-flash-next-4bit:
     engine: tensorfold
     model: TensorFold/Qwen3.8-Flash-Next-MLX-4bit-MTP
