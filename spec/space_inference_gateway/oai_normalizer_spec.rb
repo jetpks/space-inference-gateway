@@ -392,6 +392,57 @@ RSpec.describe SpaceInferenceGateway::OaiNormalizer do
 
   # mlx emits tool_calls (OpenAI function-calling shape) in both non-stream
   # messages and stream deltas. The proxy must pass them through so clients can
+  # TensorFold and llama-server carry thinking on the de-facto OAI key
+  # (reasoning_content) on both the finished message and stream deltas, with
+  # no "reasoning" key at all. The normalizer must surface it without the
+  # caller configuring anything (measured on the tensorfold 1.3.2 wire:
+  # thinking arrived and was silently dropped 2026-11-21).
+  describe "reasoning_content-keyed upstreams (tensorfold / llama-server)" do
+    let(:tf_input) do
+      { "choices" => [{ "index" => 0, "finish_reason" => "stop",
+                        "message" => { "role" => "assistant", "content" => "Hello!",
+                                       "reasoning_content" => "Thinking Process:\n1. Parse.", }, }] }
+    end
+
+    it "surfaces reasoning_content on the finished message with default config" do
+      msg = normalizer.normalize(tf_input).dig("choices", 0, "message")
+      expect(msg["reasoning_content"]).to eq("Thinking Process:\n1. Parse.")
+      expect(msg["content"]).to eq("Hello!")
+    end
+
+    it "routes reasoning_content stream deltas through the reasoning path" do
+      stream_text = [
+        'data: {"choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"step one"}}]}',
+        'data: {"choices":[{"index":0,"delta":{"role":"assistant","content":"Hello!"}}]}',
+        'data: {"choices":[{"index":0,"finish_reason":"stop","delta":{}}]}',
+        "data: [DONE]",
+      ].join("\n\n")
+      chunks = normalizer.normalize_stream_chunks(stream_text)
+      reasoning = chunks.flat_map { |c| c.dig("choices", 0, "delta").to_h.keys }.uniq
+      expect(reasoning).to include("reasoning_content")
+      contents = chunks.filter_map { |c| c.dig("choices", 0, "delta", "content") }.join
+      expect(contents).to eq("Hello!")
+    end
+
+    it "prefers a non-nil reasoning_content when both keys are present (mlx-vlm dual-field wire)" do
+      dual = { "choices" => [{ "index" => 0, "finish_reason" => "stop",
+                                "message" => { "role" => "assistant", "content" => "ok",
+                                               "reasoning" => nil,
+                                               "reasoning_content" => "on the oai key", }, }] }
+      msg = normalizer.normalize(dual).dig("choices", 0, "message")
+      expect(msg["reasoning_content"]).to eq("on the oai key")
+    end
+
+    it "still reads the configured mlx key when reasoning_content is nil" do
+      mlx_shape = { "choices" => [{ "index" => 0, "finish_reason" => "stop",
+                                    "message" => { "role" => "assistant", "content" => "ok",
+                                                   "reasoning" => "on the mlx key",
+                                                   "reasoning_content" => nil, }, }] }
+      msg = normalizer.normalize(mlx_shape).dig("choices", 0, "message")
+      expect(msg["reasoning_content"]).to eq("on the mlx key")
+    end
+  end
+
   # execute the call — dropping them strands the turn (finish_reason=tool_calls
   # but no tool_calls array).
   describe "tool_calls passthrough (non-stream)" do

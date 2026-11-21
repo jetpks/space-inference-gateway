@@ -7,7 +7,9 @@ require_relative "schemas"
 module SpaceInferenceGateway
   class OaiNormalizer
     # reasoning_field: the upstream key that carries the reasoning text.
-    # mlx uses "reasoning"; a true-OAI upstream (llama-server) uses "reasoning_content".
+    # mlx uses "reasoning"; a true-OAI upstream (llama-server, tensorfold)
+    # uses "reasoning_content". Both are read (see #reasoning_text): a
+    # non-nil "reasoning_content" wins, then the configured field.
     def initialize(advertised_model:, supports_reasoning: true, reasoning_field: "reasoning")
       @advertised_model   = advertised_model
       @supports_reasoning = supports_reasoning
@@ -122,14 +124,25 @@ module SpaceInferenceGateway
       end
     end
 
+    # The reasoning text an upstream payload carries, whichever standard's
+    # key it rides: non-nil "reasoning_content" first (the de-facto OAI
+    # extension — tensorfold, llama-server), then the configured mlx field.
+    # nil when neither is present → inline <think> lifting.
+    def reasoning_text(payload)
+      payload["reasoning_content"] || payload[@reasoning_field]
+    end
+
     def normalize_choice(choice)
       msg     = choice["message"] || {}
       content = msg["content"].to_s
 
+      visible  = content
+      thinking = ""
+
       if @supports_reasoning
-        if msg.key?(@reasoning_field)
-          thinking = msg[@reasoning_field].to_s
-          visible  = content
+        native = reasoning_text(msg)
+        if native
+          thinking = native.to_s
         else
           parser   = ReasoningParser.new
           r        = parser.push(content)
@@ -137,9 +150,6 @@ module SpaceInferenceGateway
           thinking = r[:thinking] + r2[:thinking]
           visible  = r[:visible]  + r2[:visible]
         end
-      else
-        thinking = ""
-        visible  = content
       end
 
       message = {
@@ -206,8 +216,10 @@ module SpaceInferenceGateway
       # branching on key presence misroutes the answer chunk into the
       # reasoning path. Branch on non-nil values instead — measured on the
       # live 0.7.10 wire 2026-10-25, where presence-checking dropped all
-      # answer text and spammed tool_calls:null chunks.
-      if !delta[@reasoning_field].nil?
+      # answer text and spammed tool_calls:null chunks. reasoning_text reads
+      # reasoning_content first, so a true-OAI upstream (tensorfold,
+      # llama-server) streams its thinking on the same path.
+      if !reasoning_text(delta).nil?
         observer&.on_delta(:reasoning)
         flush_into(result, parser, canonical, created, choice["index"])
         result.concat(emit_reasoning_delta(choice, base))
@@ -239,7 +251,7 @@ module SpaceInferenceGateway
 
     def emit_reasoning_delta(choice, base)
       delta = choice["delta"] || {}
-      rc    = delta[@reasoning_field]
+      rc    = reasoning_text(delta)
       result = [base.merge("choices" => [{ "index" => choice["index"], "delta" => { "reasoning_content" => rc } }])]
       result << finish_chunk(base, choice) if choice["finish_reason"]
       result
