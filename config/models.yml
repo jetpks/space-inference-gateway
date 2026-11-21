@@ -600,4 +600,9 @@ models:
     supports_reasoning: true
     max_tokens: 32768
     max_num_seqs: 1
+    # 128k not 262k: TF's startup budget at the trained window is 132.4 GiB
+    # against the 120832 MB wired limit — 131072 fits with margin (n-gram
+    # tables auto host-map: 105 GiB weights > 75% of the recommended working
+    # set). Revisit if the mlx-vlm arm's 262k sessions ever move over.
+    context: 131072
     readiness_timeout: 900
