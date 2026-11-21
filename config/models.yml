@@ -513,13 +513,23 @@ models:
     supports_reasoning: true
     max_num_seqs: 1
     readiness_timeout: 120
-  # Direct twin of qwen3.6-35b-a3b-4bit (same cached weights, 19.0 GiB).
-  # thinking_budget mirrors the twin's 4096; TensorFold's own catalog offers
-  # TensorFold/Qwen3.6-35B-A3B-MLX-4bit-MTP (bundled drafter) — pull needed,
-  # evaluate whether the drafter pays before switching model repos.
+    # 2026-11-21 GPU-verified: serves clean, benchmark 82-85 tok/s stream
+    # delivery (receipt 272f3903), reasoning_content native. The ONLY cached
+    # community checkpoint that loads — see loader findings below.
+  # ⚠ 2026-11-21 loader findings (benchmark-time refusals; `tensorfold info`
+  # validates only the index — quant mode and shape are checked at serve):
+  #   - Qwen3.8-27B-mxfp8 (cached): BadAffine — mxfp8-mode config, not affine.
+  #   - Qwen3.6-35B-A3B-4bit (cached): UnqualifiedQwenShape — community shape
+  #     not qualified for the native engine.
+  #   - NVIDIA-Nemotron-3.5-Lightning-mxfp8 (cached): UnsupportedQuantization —
+  #     "the native Nemotron kernels read MLX affine checkpoints".
+  # Every arm below therefore points at a TensorFold repack (pull required).
+  # Direct twin of qwen3.6-35b-a3b-4bit semantics (MoE 35B-A3B, bundled MTP
+  # drafter). Quant-mismatch caveat: mlx-vlm twin is the community affine 4bit;
+  # same nominal quant, different uploader + bundled MTP.
   tf-qwen3.6-35b-a3b-4bit:
     engine: tensorfold
-    model: mlx-community/Qwen3.6-35B-A3B-4bit
+    model: TensorFold/Qwen3.6-35B-A3B-MLX-4bit-MTP
     port: 8080
     venv: /opt/homebrew/bin/tensorfold
     enable_thinking: true
@@ -528,31 +538,29 @@ models:
     max_tokens: 32768
     max_num_seqs: 1
     readiness_timeout: 600
-  # The sharp dense-format comparison: qwen3.8-27b-mxfp8-concurrent1 measured
-  # 22.5 tok/s single-stream on mlx-vlm (spec-decode + APC); -plain and the
-  # mxfp4 twin measured 15.8. Same cached weights here — the "mxfp8" repo is
-  # actually MLX affine 8-bit g32 (tensorfold info verified), 26.72 GiB,
-  # 50.6 GiB startup budget @32k ctx. Drafter dropped for the first arm —
-  # DFlash2 (z-lab/Qwen3.8-27B-DFlash2) pairs automatically when cached, else
-  # add draft_model once pulled.
-  tf-qwen3.8-27b-mxfp8:
+  # The dense-27B comparison arm. The mlx-vlm twins measured 22.5 tok/s
+  # (concurrent1, spec-decode+APC) / 15.8 (plain) on mxfp8 weights; this arm
+  # is TF's affine 4-bit repack + DFlash2 drafter — quant and engine both
+  # differ, so read it as "what TF serves at this size", not a controlled
+  # format comparison. TF catalog estimates ~57 tok/s (from M5 Max).
+  tf-qwen3.8-27b-4bit:
     engine: tensorfold
-    model: mlx-community/Qwen3.8-27B-mxfp8
+    model: TensorFold/Qwen3.8-27B-MLX-4bit
     port: 8080
     venv: /opt/homebrew/bin/tensorfold
     enable_thinking: true
     supports_reasoning: true
     max_tokens: 32768
     max_num_seqs: 1
+    draft_model: z-lab/Qwen3.8-27B-DFlash2
     readiness_timeout: 600
-  # Nemotron arm over the cached mxfp8 weights (30.4 GiB, nemotron_h).
-  # TensorFold's own repack (TensorFold/NVIDIA-Nemotron-3.5-Lightning-30B-
-  # A3B-MLX-4bit, 19.3 GiB, MTP bundled, ~234 tok/s est. from M5 Max) is the
-  # catalog-recommended arm — needs `tensorfold pull`; register it as a
-  # second arm if the cached-weights probe looks good.
+  # The efficiency arm: TF's Lightning repack — MLX affine 4-bit with MTP
+  # bundled, 19.3 GiB, catalog estimate ~234 tok/s (from M5 Max). Replaces
+  # the unservable cached mxfp8 build (see loader findings above). mlx-vlm
+  # twin measured on the mxfp8 weights — quant-mismatch caveat applies.
   tf-nemotron-3.5-lightning-30b:
     engine: tensorfold
-    model: mlx-community/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-mxfp8
+    model: TensorFold/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit
     port: 8080
     venv: /opt/homebrew/bin/tensorfold
     enable_thinking: true
