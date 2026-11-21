@@ -603,7 +603,7 @@ models:
     # first refused; 110 = 102.4 GiB admits it. No --ssd-experts needed
     # (and unwanted: decode measured 0.31-0.39x when it spills; both ssd
     # features are pread-only, no inference writes, no SSD wear).
-    # 2026-11-21 evening: env 110→115 (107 GiB budget) + --prompt-cache-gib
+    # 2026-11-21 evening: env 110→120 (111.8 GiB budget — the explicit cache GiB is charged at admission, so 115/107.1 refused with plan 108.45) + --prompt-cache-gib
     # 12 — at ~150k-token depth one cache state costs ~5.3 GiB and the
     # auto-sized 7.1 GiB cache held only ONE (measured: three 0%-resume
     # turns = 232-311s cold prefills at ~500 tok/s, prompt_changed misses
@@ -621,5 +621,5 @@ models:
     # admission policy — the wired limit stays the real, untouched bound.
     extra_args: ["--ple-on-ssd", "--prompt-cache-gib", "12"]
     env:
-      FLASHNEXT_LOAD_LIMIT_GB: "115"
+      FLASHNEXT_LOAD_LIMIT_GB: "120"
     readiness_timeout: 900
