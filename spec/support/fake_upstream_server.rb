@@ -159,6 +159,7 @@ module FakeUpstreamServer
         "hermes-4-70b" => { "engine" => "mlx", "model" => "fixture/hermes", "port" => 8080,
                                              "stop_tokens" => ["<|eot_id|>"], },
         "qwen3-27b-optiq" => { "engine" => "optiq", "model" => "fixture/optiq", "port" => 8081 },
+        "tf-qwen3.5-9b" => { "engine" => "tensorfold", "model" => "mlx-community/Qwen3.5-9B-MLX-4bit", "port" => 8080 },
       },
     )
   end

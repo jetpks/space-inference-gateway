@@ -228,6 +228,75 @@ RSpec.describe SpaceInferenceGateway::InferenceServerSupervisor do
     end
   end
 
+  # ── AC1 — exact tensorfold argv ─────────────────────────────────────────
+  describe "#build_argv — tensorfold engine (AC1)" do
+    let(:tensorfold_entry) do
+      {
+        engine:          "tensorfold",
+        venv:            "/opt/homebrew/bin/tensorfold",
+        model:           "mlx-community/Qwen3.5-9B-MLX-4bit",
+        port:            8080,
+        enable_thinking: true,
+        thinking_budget: 4096,
+        max_num_seqs:    1,
+        max_tokens:      32_768,
+        context:         32_768,
+        draft_model:     "TensorFold/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+      }
+    end
+
+    it "builds exact tensorfold argv, serving under the gateway alias" do
+      expect(supervisor.send(:build_argv, tensorfold_entry, "tf-qwen3.5-9b")).to eq([
+                                                                                      "/opt/homebrew/bin/tensorfold",
+                                                                                      "serve",
+                                                                                      "mlx-community/Qwen3.5-9B-MLX-4bit",
+                                                                                      "--host", "127.0.0.1",
+                                                                                      "--port", "8080",
+                                                                                      "--name", "tf-qwen3.5-9b",
+                                                                                      "--thinking",
+                                                                                      "--thinking-budget", "4096",
+                                                                                      "--max-tokens", "32768",
+                                                                                      "--context", "32768",
+                                                                                      "--parallel", "1",
+                                                                                      "--drafter", "TensorFold/Qwen3.8-Flash-Next-MLX-4bit-MTP",
+                                                                                    ])
+    end
+
+    it "maps enable_thinking: false to --no-thinking (the template default must not leak in)" do
+      argv = supervisor.send(:build_argv, tensorfold_entry.merge(enable_thinking: false), "a")
+      expect(argv).to include("--no-thinking")
+      expect(argv).not_to include("--thinking")
+    end
+
+    it "emits neither thinking flag when enable_thinking is absent" do
+      argv = supervisor.send(:build_argv, tensorfold_entry.except(:enable_thinking), "a")
+      expect(argv).not_to include("--thinking")
+      expect(argv).not_to include("--no-thinking")
+    end
+
+    it "drops every optional flag when only required keys are declared" do
+      minimal = tensorfold_entry.slice(:engine, :venv, :model, :port)
+      expect(supervisor.send(:build_argv, minimal, "a")).to eq([
+                                                                 "/opt/homebrew/bin/tensorfold",
+                                                                 "serve", "mlx-community/Qwen3.5-9B-MLX-4bit",
+                                                                 "--host", "127.0.0.1",
+                                                                 "--port", "8080",
+                                                                 "--name", "a",
+                                                               ])
+    end
+
+    it "passes extra_args through verbatim after the mapped flags" do
+      argv = supervisor.send(:build_argv, tensorfold_entry.merge(extra_args: ["--keep-warm", "60"]), "a")
+      expect(argv.last(2)).to eq(["--keep-warm", "60"])
+    end
+
+    it "raises on mlx-vlm-only keys instead of silently dropping them" do
+      entry = tensorfold_entry.merge(apc_enabled: true, mtp: true)
+      expect { supervisor.send(:build_argv, entry, "a") }
+        .to raise_error(ArgumentError, /apc_enabled, mtp/)
+    end
+  end
+
   # ── AC2 — unrecognized engine fails loudly ────────────────────────────────
 
   describe "#build_argv — unrecognized engine (AC2)" do

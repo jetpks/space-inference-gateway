@@ -136,8 +136,12 @@ module SpaceInferenceGateway
     end
 
     # Engines that speak OpenAI HTTP only — their quirks are absorbed at this
-    # seam (request rewrites, error reshaping): "mlx", "optiq", "mlx-vlm".
-    OAI_UPSTREAM_ENGINES = %w[mlx optiq mlx-vlm].freeze
+    # seam (request rewrites, error reshaping): "mlx", "optiq", "mlx-vlm",
+    # "tensorfold". TensorFold serves under --name <alias> and answers for
+    # exactly that model id, so it joins the set for the body-rewrite pipeline
+    # (max_completion_tokens fold, developer→system) but NOT the model-field
+    # rewrite below, which stays mlx/mlx-vlm-only.
+    OAI_UPSTREAM_ENGINES = %w[mlx optiq mlx-vlm tensorfold].freeze
 
     # Efforts that mean "no reasoning at all" rather than "less of it".
     # mlx-vlm reads these as a request to disable thinking, so they are a

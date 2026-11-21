@@ -327,6 +327,43 @@ RSpec.describe SpaceInferenceGateway::App do
     end
   end
 
+  # ── TensorFold engine path ───────────────────────────────────────────────
+  # TensorFold serves under --name <alias> and answers for exactly that id:
+  # the alias must pass through unrewritten, while the engine-agnostic body
+  # rewrites (max_completion_tokens fold, developer→system) still apply.
+  describe "tensorfold engine — OAI path" do
+    let(:forwarded) { [] }
+    let(:upstream_fn) do
+      lambda do |path, body|
+        forwarded << { path: path, body: body }
+        [fixture("oai_ns.json"), 200, {}]
+      end
+    end
+
+    it "does not rewrite the model field — the alias is the served name" do
+      body = JSON.generate({ model: "tf-qwen3.5-9b", messages: [{ role: "user", content: "hi" }] })
+      post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
+      expect(last_response.status).to eq(200)
+      expect(JSON.parse(forwarded.first[:body])["model"]).to eq("tf-qwen3.5-9b")
+    end
+
+    it "applies the body-rewrite pipeline (developer→system, max_completion_tokens fold)" do
+      body = JSON.generate({
+                             model: "tf-qwen3.5-9b",
+                             max_completion_tokens: 512,
+                             messages: [
+                               { role: "developer", content: "be helpful" },
+                               { role: "user",      content: "hi" },
+                             ],
+                           })
+      post "/v1/chat/completions", body, "CONTENT_TYPE" => "application/json"
+      sent = JSON.parse(forwarded.first[:body])
+      expect(sent["max_tokens"]).to eq(512)
+      expect(sent).not_to have_key("max_completion_tokens")
+      expect(sent["messages"].map { |m| m["role"] }).to eq(%w[system user])
+    end
+  end
+
   # ── AC3: optiq engine path ────────────────────────────────────────────────
   describe "optiq engine — OAI path (AC3)" do
     let(:forwarded) { [] }

@@ -62,3 +62,35 @@ RSpec.describe SpaceInferenceGateway::ModelRegistry do
     expect(entry).not_to have_key(:penalties)
   end
 end
+
+def registry_with_engine(engine, extra = {})
+  described_class.new(
+    "default" => "m",
+    "models"  => { "m" => { "engine" => engine, "model" => "x", "port" => 8080 }.merge(extra) },
+  )
+end
+
+# A tensorfold alias declaring an mlx-vlm/optiq-only key would read as a
+# tuned knob and silently do nothing — the same class of untruthful config
+# the penalties guard refuses.
+RSpec.describe SpaceInferenceGateway::ModelRegistry, "tensorfold engine validation" do
+  it "accepts a clean tensorfold entry" do
+    entry = registry_with_engine("tensorfold", "enable_thinking" => true, "max_num_seqs" => 1).resolve("m")
+
+    expect(entry[:engine]).to eq("tensorfold")
+  end
+
+  it "refuses an apc_* key on a tensorfold entry at load, naming it" do
+    expect { registry_with_engine("tensorfold", "apc_enabled" => true) }
+      .to raise_error(ArgumentError, /tensorfold engine does not accept: apc_enabled/)
+  end
+
+  it "refuses optiq and mlx_lm keys on a tensorfold entry" do
+    expect { registry_with_engine("tensorfold", "mtp" => true, "decode_concurrency" => 2) }
+      .to raise_error(ArgumentError, /decode_concurrency, mtp/)
+  end
+
+  it "does not apply tensorfold validation to other engines' entries" do
+    expect { registry_with_engine("mlx-vlm", "apc_enabled" => true, "mtp" => true) }.not_to raise_error
+  end
+end

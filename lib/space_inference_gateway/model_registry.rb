@@ -2,6 +2,7 @@
 
 require "yaml"
 require_relative "mlx_vlm_flags"
+require_relative "tensorfold_flags"
 
 module SpaceInferenceGateway
   class ModelRegistry
@@ -24,6 +25,7 @@ module SpaceInferenceGateway
         entry = v.transform_keys(&:to_sym)
         PATH_KEYS.each { |k| entry[k] = File.expand_path(entry[k]) if entry[k] }
         validate_penalties!(entry)
+        TensorfoldFlags.validate!(entry) if entry[:engine].to_s == "tensorfold"
         entry
       end
     end

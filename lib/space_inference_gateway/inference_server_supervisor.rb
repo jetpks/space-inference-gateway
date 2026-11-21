@@ -75,7 +75,7 @@ module SpaceInferenceGateway
       port = entry[:port]
       return Failure(:port_in_use) unless port_ready_for_spawn?(port)
 
-      argv   = build_argv(entry)
+      argv   = build_argv(entry, alias_name)
       env    = build_env(entry)
       child  = spawn_child(argv, env, alias_name)
       budget = entry[:readiness_timeout] || @timeouts.readiness
@@ -110,11 +110,17 @@ module SpaceInferenceGateway
       child
     end
 
-    def build_argv(entry)
+    # alias_name rides along for the tensorfold engine: it serves under the
+    # gateway's alias (--name), because the app layer forwards the request's
+    # model field to it unrewritten — see TensorfoldFlags.serve_argv, which
+    # owns that engine's whole argv vocabulary. The mlx-family builders
+    # ignore the argument.
+    def build_argv(entry, alias_name = nil)
       case entry[:engine].to_s
-      when "", "mlx" then build_mlx_argv(entry)
-      when "optiq"   then build_optiq_argv(entry)
-      when "mlx-vlm" then build_mlx_vlm_argv(entry)
+      when "", "mlx"    then build_mlx_argv(entry)
+      when "optiq"      then build_optiq_argv(entry)
+      when "mlx-vlm"    then build_mlx_vlm_argv(entry)
+      when "tensorfold" then TensorfoldFlags.serve_argv(entry, alias_name)
       else raise ArgumentError, "unrecognized engine: #{entry[:engine].inspect}"
       end
     end
