@@ -5,13 +5,22 @@ require "dry-schema"
 module SpaceInferenceGateway
   module Schemas
     # Token usage — shared by the non-stream completion and the forwarded
-    # terminal stream chunk (stream_options.include_usage).
+    # terminal stream chunk (stream_options.include_usage). I11 S6: the
+    # upstream prompt_tokens_details object (mlx-vlm's cached_tokens — the
+    # APC cache-truth observable; llama.cpp also sends audio_tokens)
+    # forwards VERBATIM through sanitize_usage; the strict-response
+    # conformance schema declares the members this stack emits (both
+    # optional; absent upstream → the key never appears).
     USAGE = Dry::Schema.JSON do
       config.validate_keys = true
 
       required(:prompt_tokens).filled(:integer)
       required(:completion_tokens).filled(:integer)
       required(:total_tokens).filled(:integer)
+      optional(:prompt_tokens_details).schema do
+        optional(:cached_tokens).value(:integer)
+        optional(:audio_tokens).value(:integer)
+      end
     end
 
     # OpenAI non-stream chat.completion

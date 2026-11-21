@@ -54,8 +54,10 @@ Metrics/MethodLength:
   Exclude:
     - "spec/**/*"
 
+# 205: OaiNormalizer carries both wire standards' reasoning keys plus the
+# forwarded usage-details object (I11 S6) — grown by features, not drift.
 Metrics/ClassLength:
-  Max: 200
+  Max: 205
 
 Metrics/AbcSize:
   Max: 40

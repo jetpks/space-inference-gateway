@@ -169,14 +169,21 @@ module SpaceInferenceGateway
       out
     end
 
+    # I11 S6: prompt_tokens_details (mlx-vlm's usage carries
+    # cached_tokens — the APC cache-truth observable) forwards VERBATIM
+    # through both serving paths (non-stream normalize + the stream's
+    # terminal usage chunk ride this one mapper). Absent upstream →
+    # nothing added; no other usage semantics change.
     def sanitize_usage(usage)
       return {} unless usage.is_a?(Hash)
 
-      {
+      out = {
         "prompt_tokens" => usage["prompt_tokens"].to_i,
         "completion_tokens" => usage["completion_tokens"].to_i,
         "total_tokens" => usage["total_tokens"].to_i,
       }
+      out["prompt_tokens_details"] = usage["prompt_tokens_details"] if usage["prompt_tokens_details"].is_a?(Hash)
+      out
     end
 
     def base_chunk(canonical_id, created)

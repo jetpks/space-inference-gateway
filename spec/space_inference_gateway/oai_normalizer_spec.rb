@@ -214,8 +214,9 @@ RSpec.describe SpaceInferenceGateway::OaiNormalizer do
       expect(result.keys).not_to include("timings")
     end
 
-    it "usage has exactly prompt_tokens/completion_tokens/total_tokens" do
-      expect(result["usage"].keys.sort).to eq(%w[completion_tokens prompt_tokens total_tokens])
+    it "usage carries the flat fields plus the forwarded details (I11 S6)" do
+      expect(result["usage"].keys.sort).to eq(%w[completion_tokens prompt_tokens prompt_tokens_details total_tokens])
+      expect(result.dig("usage", "prompt_tokens_details")).to eq({ "cached_tokens" => 0 })
     end
   end
 
@@ -328,12 +329,12 @@ RSpec.describe SpaceInferenceGateway::OaiNormalizer do
       expect(result.keys).not_to include("system_fingerprint")
     end
 
-    it "prompt_tokens_details dropped from usage" do
-      expect(result.dig("usage", "prompt_tokens_details")).to be_nil
+    it "prompt_tokens_details forwarded verbatim (I11 S6 — cache truth survives the hop)" do
+      expect(result.dig("usage", "prompt_tokens_details")).to eq({ "cached_tokens" => 0 })
     end
 
-    it "usage has exactly prompt_tokens/completion_tokens/total_tokens" do
-      expect(result["usage"].keys.sort).to eq(%w[completion_tokens prompt_tokens total_tokens])
+    it "usage carries the three flat fields plus the details object when upstream sends one" do
+      expect(result["usage"].keys.sort).to eq(%w[completion_tokens prompt_tokens prompt_tokens_details total_tokens])
     end
 
     it "validates against OAI_COMPLETION schema" do
@@ -533,12 +534,12 @@ RSpec.describe SpaceInferenceGateway::OaiNormalizer do
       expect(result.keys).not_to include("system_fingerprint")
     end
 
-    it "prompt_tokens_details dropped from usage" do
-      expect(result.dig("usage", "prompt_tokens_details")).to be_nil
+    it "prompt_tokens_details forwarded verbatim (I11 S6 — cache truth survives the hop)" do
+      expect(result.dig("usage", "prompt_tokens_details")).to eq({ "cached_tokens" => 0 })
     end
 
-    it "usage has exactly prompt_tokens/completion_tokens/total_tokens" do
-      expect(result["usage"].keys.sort).to eq(%w[completion_tokens prompt_tokens total_tokens])
+    it "usage carries the three flat fields plus the details object when upstream sends one" do
+      expect(result["usage"].keys.sort).to eq(%w[completion_tokens prompt_tokens prompt_tokens_details total_tokens])
     end
 
     it "model is advertised alias, not HF repo id" do
@@ -651,7 +652,8 @@ RSpec.describe SpaceInferenceGateway::OaiNormalizer do
     it "forwards the upstream usage chunk exactly once, sanitized to three fields" do
       expect(usage_chunks.size).to eq(1)
       expect(usage_chunks.first["choices"]).to eq([])
-      expect(usage_chunks.first["usage"]).to eq("prompt_tokens" => 3078, "completion_tokens" => 267, "total_tokens" => 3345)
+      expect(usage_chunks.first["usage"]).to eq("prompt_tokens" => 3078, "completion_tokens" => 267, "total_tokens" => 3345,
+                                                "prompt_tokens_details" => { "cached_tokens" => 0 },)
     end
 
     it "every emitted chunk validates the strict OAI_CHUNK schema (usage chunk included)" do
@@ -753,6 +755,51 @@ RSpec.describe SpaceInferenceGateway::OaiNormalizer do
 
     it "usage absent upstream → no usage chunk emitted (no fabrication)" do
       expect(chunks.none? { |c| c.key?("usage") }).to be(true)
+    end
+  end
+
+  # ── I11 S6: usage.prompt_tokens_details (incl. cached_tokens) survives the
+  # gateway hop — BOTH serving paths, a fixture usage payload with
+  # cached_tokens > 0 (the APC cache-truth observable; mlx-vlm's only
+  # cache surface). Forwarded VERBATIM; absent upstream → nothing added.
+  describe "usage prompt_tokens_details forwarding (I11 S6)" do
+    let(:usage_payload) do
+      { "prompt_tokens" => 4181, "completion_tokens" => 96,
+       "total_tokens" => 4277,
+       "prompt_tokens_details" => { "cached_tokens" => 4096 }, }
+    end
+
+    it "non-stream normalize forwards the details object verbatim" do
+      out = normalizer.normalize({ "id" => "x", "object" => "chat.completion",
+                                  "created" => 1,
+                                  "choices" => [{ "index" => 0, "message" => { "role" => "assistant", "content" => "ok" },
+                                                 "finish_reason" => "stop", }],
+                                  "usage" => usage_payload, })
+      expect(out.dig("usage", "prompt_tokens_details")).to eq({ "cached_tokens" => 4096 })
+      expect(out["usage"]["prompt_tokens"]).to eq(4181)
+    end
+
+    it "non-stream normalize adds nothing when upstream omits the details" do
+      out = normalizer.normalize({ "id" => "x", "object" => "chat.completion",
+                                  "created" => 1,
+                                  "choices" => [{ "index" => 0, "message" => { "role" => "assistant", "content" => "ok" },
+                                                 "finish_reason" => "stop", }],
+                                  "usage" => { "prompt_tokens" => 3, "completion_tokens" => 1, "total_tokens" => 4 }, })
+      expect(out["usage"].key?("prompt_tokens_details")).to be(false)
+    end
+
+    it "the stream terminal usage chunk forwards the details object verbatim" do
+      sse = "data: #{JSON.generate({ "id" => "s", "object" => "chat.completion.chunk", "created" => 1,
+                                      "model" => "up",
+                                      "choices" => [{ "index" => 0, "delta" => { "content" => "hi" }, "finish_reason" => nil }], })}\n\n"
+      sse << "data: #{JSON.generate({ "id" => "s", "choices" => [], "usage" => usage_payload })}\n\n"
+      sse << "data: [DONE]\n\n"
+
+      chunks = normalizer.normalize_stream_chunks(sse)
+      usage_chunks = chunks.select { |c| c.key?("usage") }
+      expect(usage_chunks.size).to eq(1)
+      expect(usage_chunks.first.dig("usage", "prompt_tokens_details")).to eq({ "cached_tokens" => 4096 })
+      expect(usage_chunks.first.dig("usage", "prompt_tokens")).to eq(4181)
     end
   end
 end
