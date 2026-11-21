@@ -603,6 +603,13 @@ models:
     # first refused; 110 = 102.4 GiB admits it. No --ssd-experts needed
     # (and unwanted: decode measured 0.31-0.39x when it spills; both ssd
     # features are pread-only, no inference writes, no SSD wear).
+    # 2026-11-21 evening: env 110→115 (107 GiB budget) + --prompt-cache-gib
+    # 12 — at ~150k-token depth one cache state costs ~5.3 GiB and the
+    # auto-sized 7.1 GiB cache held only ONE (measured: three 0%-resume
+    # turns = 232-311s cold prefills at ~500 tok/s, prompt_changed misses
+    # evicting the live state). 12 GiB holds two full-depth states;
+    # footprint ~105 GiB actual vs the 118 wired bound, with the image
+    # servers and Docker VM gone from the box.
     context: 262144
     # Working recipe, GPU-verified 2026-11-21 (20s warm load, 93.1 GiB
     # wired @262k, MTP drafts, quality battery 6/6 vs the mlx-vlm
@@ -612,7 +619,7 @@ models:
     # already included in the receipt), and FLASHNEXT_LOAD_LIMIT_GB=110
     # (decimal GB = 102.4 GiB) raises TF's conservative 70%-of-RAM
     # admission policy — the wired limit stays the real, untouched bound.
-    extra_args: ["--ple-on-ssd"]
+    extra_args: ["--ple-on-ssd", "--prompt-cache-gib", "12"]
     env:
-      FLASHNEXT_LOAD_LIMIT_GB: "110"
+      FLASHNEXT_LOAD_LIMIT_GB: "115"
     readiness_timeout: 900
