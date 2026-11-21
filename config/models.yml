@@ -595,22 +595,24 @@ models:
     supports_reasoning: true
     max_tokens: 32768
     max_num_seqs: 1
-    # 160k, not the 262k trained window (admission-probed 2026-11-21):
-    # with --ple-on-ssd the wired ceiling is 93.1 GiB; 262k plans 96.45
-    # (3.31 over — would need --ssd-experts spilling, putting the
-    # 90-107 tok/s all-resident receipt at risk), 160k wires 89.5 GiB.
-    # Actual fleet usage peaked ~70k on the mlx-vlm arm; 262k was ceiling,
-    # not working set. Re-probe on TF upgrades.
-    context: 163840
-    # Working recipe, GPU-verified 2026-11-21 (23.7s warm load from page
-    # cache, 88.3 GiB wired, MTP drafts, quality battery 6/6 vs the mlx-vlm
-    # external-PLE arm, ~80-90 tok/s informal): --ple-on-ssd moves the ~25 GiB
-    # of n-gram PLE rows to bounded SSD reads (the native external-PLE
-    # analogue — plan drops 126.6 -> 91.7 GiB), and FLASHNEXT_LOAD_LIMIT_GB
-    # raises TF's conservative 70%-of-RAM admission policy (89.6) to 100,
-    # still under the 118 GiB wired limit that is the real bound and that
-    # stays untouched per the standing rule.
+    # Full trained window, 262k (admission-probed 2026-11-21): with
+    # --ple-on-ssd the plan is 96.45 GiB, actual wired 93.1 GiB — inside the
+    # 118 GiB OS wired limit (untouched, per the standing rule). NOTE THE
+    # UNITS GOTCHA: FLASHNEXT_LOAD_LIMIT_GB is DECIMAL gigabytes (1e9),
+    # while TF's reports are GiB — 100 means 93.13 GiB, which is why 262k
+    # first refused; 110 = 102.4 GiB admits it. No --ssd-experts needed
+    # (and unwanted: decode measured 0.31-0.39x when it spills; both ssd
+    # features are pread-only, no inference writes, no SSD wear).
+    context: 262144
+    # Working recipe, GPU-verified 2026-11-21 (20s warm load, 93.1 GiB
+    # wired @262k, MTP drafts, quality battery 6/6 vs the mlx-vlm
+    # external-PLE arm, 90.6-106.9 tok/s benchmark receipt beb94407):
+    # --ple-on-ssd moves the ~29.8 GiB of n-gram PLE rows to bounded SSD
+    # reads (the native external-PLE analogue; recipe cost 3.5-8% decode,
+    # already included in the receipt), and FLASHNEXT_LOAD_LIMIT_GB=110
+    # (decimal GB = 102.4 GiB) raises TF's conservative 70%-of-RAM
+    # admission policy — the wired limit stays the real, untouched bound.
     extra_args: ["--ple-on-ssd"]
     env:
-      FLASHNEXT_LOAD_LIMIT_GB: "100"
+      FLASHNEXT_LOAD_LIMIT_GB: "110"
     readiness_timeout: 900
