@@ -595,11 +595,13 @@ models:
     supports_reasoning: true
     max_tokens: 32768
     max_num_seqs: 1
-    # 128k not 262k: TF's startup budget at the trained window is 132.4 GiB
-    # against the 120832 MB wired limit — 131072 fits with margin (n-gram
-    # tables auto host-map: 105 GiB weights > 75% of the recommended working
-    # set). Revisit if the mlx-vlm arm's 262k sessions ever move over.
-    context: 131072
+    # 160k, not the 262k trained window (admission-probed 2026-11-21):
+    # with --ple-on-ssd the wired ceiling is 93.1 GiB; 262k plans 96.45
+    # (3.31 over — would need --ssd-experts spilling, putting the
+    # 90-107 tok/s all-resident receipt at risk), 160k wires 89.5 GiB.
+    # Actual fleet usage peaked ~70k on the mlx-vlm arm; 262k was ceiling,
+    # not working set. Re-probe on TF upgrades.
+    context: 163840
     # Working recipe, GPU-verified 2026-11-21 (23.7s warm load from page
     # cache, 88.3 GiB wired, MTP drafts, quality battery 6/6 vs the mlx-vlm
     # external-PLE arm, ~80-90 tok/s informal): --ple-on-ssd moves the ~25 GiB
